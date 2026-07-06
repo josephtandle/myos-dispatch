@@ -153,15 +153,14 @@ Ok "Index written to $IndexPath"
 
 # --- 5. Register the Claude Code hook --------------------------------------
 Step "5/6  Registering the Claude Code dispatch hook"
+$HookRegistered = $false
 if ($NoHook) {
   Info "-NoHook set; skipping settings.json registration."
 } else {
   New-Item -ItemType Directory -Force -Path $ClaudeDir | Out-Null
-  if (Test-Path $Settings) {
-    $bak = "$Settings.bak-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
-    Copy-Item $Settings $bak
-    Ok "Backed up existing settings.json -> $bak"
-  } else {
+  # register-hook.js backs up (timestamped) before every write — add and remove —
+  # so no separate backup step is needed here.
+  if (-not (Test-Path $Settings)) {
     Info "No existing settings.json; a minimal one will be created."
   }
 
@@ -177,6 +176,7 @@ if ($NoHook) {
   if ($proceed) {
     & $NodeBin @regArgs
     Ok "Hook merged (idempotent; unrelated settings untouched)."
+    $HookRegistered = $true
   }
 }
 
@@ -187,6 +187,17 @@ $smoke = '{"prompt":"test","hookEventName":"UserPromptSubmit"}' | & $NodeBin $Ho
 if ($smoke -match '"additionalContext"') {
   Ok "Hook emitted hookSpecificOutput.additionalContext"
 } else {
+  # Auto-revert: if we just wrote a hook, strip it so a failed install never
+  # leaves a broken hook wired into settings.json.
+  if ($HookRegistered) {
+    Warn "Smoke test failed — auto-reverting the hook just added…"
+    try {
+      & $NodeBin (Join-Path $RepoDir "scripts\register-hook.js") --settings $Settings --remove
+      Ok "Reverted the MyOS Dispatch hook (settings.json restored; a timestamped backup also remains)."
+    } catch {
+      Warn "Auto-revert reported an issue — inspect $Settings and its .bak-* backups."
+    }
+  }
   Die "Smoke test failed — hook did not emit additionalContext. Output: $smoke"
 }
 

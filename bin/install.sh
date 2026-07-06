@@ -124,7 +124,7 @@ NODE_BIN="$(resolve_node)"
 [ -n "$NODE_BIN" ] || fail "Node.js >= 20 is required but not found. Install via nvm (https://github.com/nvm-sh/nvm) or 'brew install node'."
 NODE_MAJOR="$("$NODE_BIN" -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)"
 if [ "$NODE_MAJOR" -lt 20 ]; then
-  fail "Node.js >= 20 required (found $("$NODE_BIN" -v). Upgrade via nvm or brew."
+  fail "Node.js >= 20 required (found $("$NODE_BIN" -v)). Upgrade via nvm or brew."
 fi
 ok "node $("$NODE_BIN" -v) ($NODE_BIN)"
 
@@ -208,12 +208,9 @@ if [ "$NO_HOOK" -eq 1 ]; then
   info "--no-hook set; skipping settings.json registration."
 else
   mkdir -p "$CLAUDE_DIR"
-  # Back up first — always, before any touch.
-  if [ -f "$SETTINGS" ]; then
-    BAK="$SETTINGS.bak-$(date +%Y%m%d-%H%M%S)"
-    cp "$SETTINGS" "$BAK"
-    ok "Backed up existing settings.json → $BAK"
-  else
+  # register-hook.js backs up (timestamped) before every write — add and remove —
+  # so no separate backup step is needed here.
+  if [ ! -f "$SETTINGS" ]; then
     info "No existing settings.json; a minimal one will be created."
   fi
 
@@ -245,6 +242,16 @@ SMOKE_OUT="$(printf '%s' '{"prompt":"test","hookEventName":"UserPromptSubmit"}' 
 if printf '%s' "$SMOKE_OUT" | grep -q '"additionalContext"'; then
   ok "Hook emitted hookSpecificOutput.additionalContext"
 else
+  # Auto-revert: if we just wrote a hook, strip it so a failed install never
+  # leaves a broken hook wired into settings.json.
+  if [ "$NO_HOOK" -ne 1 ]; then
+    warn "Smoke test failed — auto-reverting the hook just added…"
+    if "$NODE_BIN" "$REPO_DIR/scripts/register-hook.js" --settings "$SETTINGS" --remove; then
+      ok "Reverted the MyOS Dispatch hook (settings.json restored; a timestamped backup also remains)."
+    else
+      warn "Auto-revert reported an issue — inspect $SETTINGS and its .bak-* backups."
+    fi
+  fi
   fail "Smoke test failed — hook did not emit additionalContext. Output was: $SMOKE_OUT"
 fi
 

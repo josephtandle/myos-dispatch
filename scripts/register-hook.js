@@ -24,6 +24,13 @@ const fs = require("node:fs");
 const path = require("node:path");
 
 const MARKER = "myos-dispatch-hook"; // stable substring present in our command
+// Precise match for OUR hook only: the hook binary (optionally .js) immediately
+// followed by our --surface flag. This avoids false-positive matches against a
+// foreign command that merely CONTAINS the substring "myos-dispatch-hook"
+// (e.g. ".../my-wrapper-for-myos-dispatch-hook-logging.sh"). The char before the
+// marker must be a path/quote/whitespace boundary, and the char(s) after (before
+// --surface) must be quote/whitespace — so a hyphenated wrapper name never matches.
+const MARKER_RE = /(^|[/\\"'\s])myos-dispatch-hook(\.js)?["'\s]+--surface\b/;
 const HOME_ENV_KEY = "MYOS_HOME_ROOT";
 
 function parseArgs(argv) {
@@ -78,7 +85,36 @@ function isOurHookEntry(entry) {
   return entry
     && typeof entry === "object"
     && typeof entry.command === "string"
-    && entry.command.includes(MARKER);
+    && MARKER_RE.test(entry.command);
+}
+
+// Human-readable description of an unexpected value, for error messages.
+function describeShape(value) {
+  if (value === null) return "null";
+  if (Array.isArray(value)) return "an array";
+  return `a ${typeof value}`;
+}
+
+// B1 fail-safe: before ANY add or remove, prove the `hooks` block has the shape
+// we know how to safely edit. `hooks` must be absent OR a plain object whose
+// every event value is an array. Anything else (array/string/null hooks, or a
+// non-array event value) means a schema we don't understand — refuse rather than
+// risk silently dropping a user's foreign hooks. Throws; caller exits 1 without
+// rewriting the file.
+function validateHooksShape(hooks) {
+  if (hooks === undefined) return;
+  if (hooks === null || typeof hooks !== "object" || Array.isArray(hooks)) {
+    throw new Error(
+      `Refusing to touch settings.json: unexpected 'hooks' shape (expected a plain object, got ${describeShape(hooks)}). No changes made.`
+    );
+  }
+  for (const [event, value] of Object.entries(hooks)) {
+    if (!Array.isArray(value)) {
+      throw new Error(
+        `Refusing to touch settings.json: unexpected 'hooks' shape (event '${event}' is ${describeShape(value)}, expected an array). No changes made.`
+      );
+    }
+  }
 }
 
 // Remove every MyOS Dispatch hook entry from a single event array, dropping
@@ -120,6 +156,10 @@ function merge(settings, args) {
   const out = { ...settings };
   const command = buildCommand(args.node, args.hook, args.surface);
 
+  // B1: fail-safe on unexpected `hooks` shape BEFORE any add or remove. Applies
+  // to both code paths (add and --remove) since both flow through here.
+  validateHooksShape(out.hooks);
+
   // Always start by stripping any prior MyOS Dispatch hook entries.
   let hooks = stripAll(out.hooks || {});
 
@@ -151,6 +191,43 @@ function merge(settings, args) {
   return { settings: out, command };
 }
 
+// Timestamp for backup filenames: YYYYMMDD-HHMMSS (matches installer convention).
+function backupTimestamp(d = new Date()) {
+  const p = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+}
+
+// B2: always back up an existing settings file before we write over it (add AND
+// remove). Returns the backup path, or null if there was nothing to back up. If
+// a backup with this second-granular name already exists, disambiguate so we
+// never clobber a prior backup.
+function backupExisting(settingsPath) {
+  if (!fs.existsSync(settingsPath)) return null;
+  let bak = `${settingsPath}.bak-${backupTimestamp()}`;
+  if (fs.existsSync(bak)) {
+    let i = 1;
+    while (fs.existsSync(`${bak}-${i}`)) i += 1;
+    bak = `${bak}-${i}`;
+  }
+  fs.copyFileSync(settingsPath, bak);
+  return bak;
+}
+
+// Atomic write: write to a temp file in the same directory, then rename onto the
+// target. rename is atomic on the same filesystem, so a crash or full disk can
+// never leave a half-written / truncated settings.json.
+function atomicWrite(settingsPath, content) {
+  const dir = path.dirname(settingsPath);
+  const tmp = path.join(dir, `.${path.basename(settingsPath)}.tmp-${process.pid}-${Date.now()}`);
+  fs.writeFileSync(tmp, content, "utf8");
+  try {
+    fs.renameSync(tmp, settingsPath);
+  } catch (error) {
+    try { fs.unlinkSync(tmp); } catch { /* best effort cleanup */ }
+    throw error;
+  }
+}
+
 function main() {
   const args = parseArgs(process.argv.slice(2));
   if (!args.settings) {
@@ -171,7 +248,16 @@ function main() {
     return;
   }
 
-  const { settings, command } = merge(existing, args);
+  let settings;
+  let command;
+  try {
+    ({ settings, command } = merge(existing, args));
+  } catch (error) {
+    // B1 validation failure (or any merge failure) — refuse, do not rewrite.
+    process.stderr.write(`register-hook: ${error.message}\n`);
+    process.exit(1);
+    return;
+  }
   const serialized = `${JSON.stringify(settings, null, 2)}\n`;
 
   const summaryTarget = settings.hooks && settings.hooks.UserPromptSubmit
@@ -188,7 +274,10 @@ function main() {
   }
 
   fs.mkdirSync(path.dirname(args.settings), { recursive: true });
-  fs.writeFileSync(args.settings, serialized, "utf8");
+  // B2: back up any existing file before the write (add AND remove).
+  const bak = backupExisting(args.settings);
+  if (bak) process.stdout.write(`register-hook: backed up ${args.settings} -> ${bak}\n`);
+  atomicWrite(args.settings, serialized);
   process.stdout.write(
     args.remove
       ? `register-hook: removed MyOS Dispatch hook from ${args.settings}\n`
@@ -200,4 +289,13 @@ if (require.main === module) {
   main();
 }
 
-module.exports = { merge, readSettings, buildCommand, MARKER, HOME_ENV_KEY };
+module.exports = {
+  merge,
+  readSettings,
+  buildCommand,
+  validateHooksShape,
+  isOurHookEntry,
+  MARKER,
+  MARKER_RE,
+  HOME_ENV_KEY,
+};
