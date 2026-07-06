@@ -12,3 +12,4 @@ graphify-out/
 # ship generic model catalogs (reference data, not runtime state)
 !data/models/
 !data/models/*.json
+package-lock.json
