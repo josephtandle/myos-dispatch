@@ -1,0 +1,138 @@
+{
+  "version": "2026-04-05",
+  "provider": "openrouter",
+  "purpose": "OpenRouter-only model routing catalog for selective context loading.",
+  "principles": {
+    "api_first_for_automation": true
+  },
+  "selection_dimensions": [
+    "cost",
+    "latency",
+    "reasoning_depth",
+    "writing_quality",
+    "structured_extraction",
+    "agentic_tool_use",
+    "long_context_synthesis"
+  ],
+  "models": [
+    {
+      "id": "openrouter.openai-gpt-5-mini",
+      "family": "openai-via-openrouter",
+      "model": "openai/gpt-5-mini",
+      "tier": "bot-default",
+      "status": "active",
+      "context_window": 400000,
+      "max_output_tokens": 128000,
+      "supports_text": true,
+      "supports_tools": true,
+      "supports_vision": true,
+      "supports_streaming": true,
+      "pricing_per_1m_tokens": {
+        "input_usd": null,
+        "output_usd": null
+      },
+      "strengths": [
+        "provider fallback for OpenAI-compatible chat",
+        "good general-purpose assistant quality"
+      ],
+      "best_for": [
+        "OpenRouter bot default",
+        "backup routing"
+      ],
+      "avoid_for": [
+        "strict direct-provider cost accounting"
+      ],
+      "notes": "Pricing depends on current OpenRouter passthrough and markup."
+    },
+    {
+      "id": "openrouter.openai-gpt-5.4-mini",
+      "family": "openai-via-openrouter",
+      "model": "openai/gpt-5.4-mini",
+      "tier": "smart",
+      "status": "active",
+      "context_window": 400000,
+      "max_output_tokens": 128000,
+      "supports_text": true,
+      "supports_tools": true,
+      "supports_vision": true,
+      "supports_streaming": true,
+      "pricing_per_1m_tokens": {
+        "input_usd": null,
+        "output_usd": null
+      },
+      "strengths": [
+        "strong fallback reasoning",
+        "provider portability"
+      ],
+      "best_for": [
+        "OpenRouter smart profile",
+        "fallback when direct OpenAI is unavailable"
+      ],
+      "avoid_for": [
+        "strict cost-sensitive jobs without current pricing checks"
+      ],
+      "notes": "Pricing depends on current OpenRouter passthrough and markup."
+    },
+    {
+      "id": "openrouter.anthropic-claude-sonnet-4.6",
+      "family": "anthropic-via-openrouter",
+      "model": "anthropic/claude-sonnet-4.6",
+      "tier": "premium",
+      "status": "active",
+      "context_window": 1000000,
+      "max_output_tokens": 64000,
+      "supports_text": true,
+      "supports_tools": true,
+      "supports_vision": true,
+      "supports_streaming": true,
+      "pricing_per_1m_tokens": {
+        "input_usd": null,
+        "output_usd": null
+      },
+      "strengths": [
+        "premium writing quality",
+        "Anthropic fallback through OpenRouter"
+      ],
+      "best_for": [
+        "OpenRouter premium fallback",
+        "high-quality writing"
+      ],
+      "avoid_for": [
+        "strict direct-provider cost accounting",
+        "lowest-cost routing"
+      ],
+      "notes": "Pricing depends on current OpenRouter passthrough and markup."
+    }
+  ],
+  "routing_profiles": [
+    {
+      "id": "bot_default",
+      "preferred": [
+        "openrouter.openai-gpt-5-mini"
+      ],
+      "fallback": [
+        "openrouter.openai-gpt-5.4-mini",
+        "openrouter.anthropic-claude-sonnet-4.6"
+      ],
+      "use_for": [
+        "telegram bot default",
+        "general chat",
+        "backup provider routing"
+      ]
+    },
+    {
+      "id": "bot_smart",
+      "preferred": [
+        "openrouter.openai-gpt-5.4-mini"
+      ],
+      "fallback": [
+        "openrouter.anthropic-claude-sonnet-4.6",
+        "openrouter.openai-gpt-5-mini"
+      ],
+      "use_for": [
+        "harder bot reasoning",
+        "quality-sensitive drafting"
+      ]
+    }
+  ]
+}

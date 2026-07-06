@@ -1,0 +1,449 @@
+{
+  "version": "2026-04-29",
+  "provider": "google",
+  "purpose": "Google Gemini model routing catalog for MyOS automation and bot work.",
+  "principles": {
+    "api_first_for_automation": true,
+    "consumer_sessions_for_unattended_jobs": false
+  },
+  "governing_terms": {
+    "api_terms_url": "https://ai.google.dev/gemini-api/terms",
+    "usage_policy_url": "https://policies.google.com/terms/generative-ai/use-policy",
+    "api_endpoint": "https://generativelanguage.googleapis.com/v1beta/models",
+    "auth_method": "api_key_query_param",
+    "note": "Google AI Gemini API is governed by the Gemini API Additional Terms of Service. Use GEMINI_API_KEY. Consumer-only surfaces (AI Studio free tier) must not be used for unattended automation."
+  },
+  "selection_dimensions": [
+    "cost",
+    "latency",
+    "reasoning_depth",
+    "writing_quality",
+    "structured_extraction",
+    "agentic_tool_use",
+    "long_context_synthesis",
+    "multimodal"
+  ],
+  "rate_limits": {
+    "source": "https://ai.google.dev/gemini-api/docs/rate-limits",
+    "note": "Limits are per-project. Paid tier requires billing enabled on the GCP project. Free tier limits will exhaust quickly under any real automation load.",
+    "free_tier": {
+      "gemini-2.5-pro": { "rpm": 5, "tpm": 250000, "requests_per_day": 25 },
+      "gemini-2.5-flash-lite": { "rpm": 15, "tpm": 250000, "requests_per_day": 1000 },
+      "gemini-2.5-flash": { "rpm": 10, "tpm": 250000, "requests_per_day": 500 },
+      "gemini-2.0-flash": { "rpm": 15, "tpm": 1000000, "requests_per_day": 1500 },
+      "gemini-2.0-flash-lite": { "rpm": 30, "tpm": 1000000, "requests_per_day": 1500 }
+    },
+    "paid_tier": {
+      "gemini-2.5-pro": { "rpm": 150, "tpm": 2000000, "requests_per_day": "unlimited", "note": "Preview model; limits will increase at GA" },
+      "gemini-2.5-flash-lite": { "rpm": 4000, "tpm": 4000000, "requests_per_day": "unlimited" },
+      "gemini-2.5-flash": { "rpm": 1000, "tpm": 4000000, "requests_per_day": "unlimited" },
+      "gemini-2.0-flash": { "rpm": 2000, "tpm": 4000000, "requests_per_day": "unlimited" },
+      "gemini-2.0-flash-lite": { "rpm": 4000, "tpm": 4000000, "requests_per_day": "unlimited" }
+    }
+  },
+  "models": [
+    {
+      "id": "google.gemini-2.5-pro",
+      "family": "gemini-2.5",
+      "model": "gemini-2.5-pro",
+      "tier": "top",
+      "status": "active",
+      "context_window": 1048576,
+      "max_output_tokens": 65536,
+      "supports_text": true,
+      "supports_tools": true,
+      "supports_vision": true,
+      "supports_streaming": true,
+      "supports_thinking": true,
+      "supports_search_grounding": true,
+      "supports_code_execution": true,
+      "pricing_per_1m_tokens": {
+        "input_usd": 1.25,
+        "output_usd": 10.0,
+        "note": "Pricing for prompts <=200k tokens. >200k context: $2.50 input / $15.00 output."
+      },
+      "strengths": [
+        "deep multi-step reasoning",
+        "very long context synthesis",
+        "coding and architecture",
+        "multimodal analysis",
+        "native thinking mode"
+      ],
+      "best_for": [
+        "hardest reasoning tasks",
+        "long document synthesis over 100k tokens",
+        "complex code review and architecture",
+        "high-stakes analysis"
+      ],
+      "avoid_for": [
+        "cheap high-volume jobs",
+        "simple extraction",
+        "routine short summaries"
+      ],
+      "notes": "Google flagship. Comparable to Claude Opus / GPT-5. Use when deep reasoning or very long context is needed."
+    },
+    {
+      "id": "google.gemini-2.5-flash",
+      "family": "gemini-2.5",
+      "model": "gemini-2.5-flash",
+      "tier": "premium-default",
+      "status": "active",
+      "context_window": 1048576,
+      "max_output_tokens": 65536,
+      "supports_text": true,
+      "supports_tools": true,
+      "supports_vision": true,
+      "supports_streaming": true,
+      "supports_thinking": true,
+      "supports_search_grounding": true,
+      "supports_code_execution": true,
+      "pricing_per_1m_tokens": {
+        "input_usd": 0.15,
+        "output_usd": 0.60,
+        "thinking_output_usd": 3.50,
+        "note": "Non-thinking output: $0.60/1M. Thinking output: $3.50/1M."
+      },
+      "strengths": [
+        "excellent speed-to-quality ratio",
+        "strong reasoning for cost",
+        "1M context at low price",
+        "good structured output"
+      ],
+      "best_for": [
+        "default Google automation lane",
+        "bot responses",
+        "document analysis",
+        "coding assistance",
+        "general synthesis"
+      ],
+      "avoid_for": [
+        "highest-stakes reasoning where Pro is needed",
+        "ultra-cheap bulk tagging when Flash Lite is enough"
+      ],
+      "notes": "Primary Google default. Best price-to-capability ratio in the Google lineup."
+    },
+    {
+      "id": "google.gemini-2.5-flash-lite",
+      "family": "gemini-2.5",
+      "model": "gemini-2.5-flash-lite",
+      "tier": "cheapest",
+      "status": "active",
+      "context_window": 1048576,
+      "max_output_tokens": 65536,
+      "supports_text": true,
+      "supports_tools": true,
+      "supports_vision": true,
+      "supports_streaming": true,
+      "supports_thinking": true,
+      "supports_search_grounding": true,
+      "supports_code_execution": true,
+      "pricing_per_1m_tokens": {
+        "input_usd": 0.10,
+        "output_usd": 0.40
+      },
+      "strengths": [
+        "lowest cost in the current Google lineup",
+        "high-volume utility tasks",
+        "fast basic classification",
+        "large context at low price"
+      ],
+      "best_for": [
+        "bulk triage",
+        "simple classification and tagging",
+        "short extractions at scale",
+        "cheap summarization"
+      ],
+      "avoid_for": [
+        "nuanced writing",
+        "complex planning",
+        "deep reasoning"
+      ],
+      "notes": "Primary Google cheap lane. Replaces Gemini 2.0 Flash Lite, which returns NOT_FOUND for this key/project."
+    },
+    {
+      "id": "google.gemini-2.0-flash",
+      "family": "gemini-2.0",
+      "model": "gemini-2.0-flash",
+      "tier": "fast",
+      "status": "active",
+      "context_window": 1048576,
+      "max_output_tokens": 8192,
+      "supports_text": true,
+      "supports_tools": true,
+      "supports_vision": true,
+      "supports_streaming": true,
+      "supports_thinking": false,
+      "pricing_per_1m_tokens": {
+        "input_usd": 0.10,
+        "output_usd": 0.40
+      },
+      "strengths": [
+        "fast responses",
+        "low cost",
+        "good tool use",
+        "broad capability baseline"
+      ],
+      "best_for": [
+        "fast bot responses",
+        "moderate complexity tasks at low cost",
+        "lightweight summarization",
+        "simple extraction"
+      ],
+      "avoid_for": [
+        "complex multi-step reasoning",
+        "highest-quality writing"
+      ],
+      "notes": "Reliable fast lane. Good fallback when Flash is overkill but Flash Lite is too weak."
+    },
+    {
+      "id": "google.gemini-2.0-flash-lite",
+      "family": "gemini-2.0",
+      "model": "gemini-2.0-flash-lite",
+      "tier": "cheapest",
+      "status": "active",
+      "context_window": 1048576,
+      "max_output_tokens": 8192,
+      "supports_text": true,
+      "supports_tools": false,
+      "supports_vision": true,
+      "supports_streaming": true,
+      "supports_thinking": false,
+      "pricing_per_1m_tokens": {
+        "input_usd": 0.075,
+        "output_usd": 0.30
+      },
+      "strengths": [
+        "lowest cost in Google lineup",
+        "high-volume utility tasks",
+        "fast basic classification"
+      ],
+      "best_for": [
+        "bulk triage",
+        "simple classification and tagging",
+        "short extractions at scale",
+        "cheap summarization"
+      ],
+      "avoid_for": [
+        "tool use",
+        "nuanced reasoning",
+        "quality writing",
+        "complex planning"
+      ],
+      "notes": "Cheapest Google lane. No native tool use support."
+    },
+    {
+      "id": "google.gemini-3-flash",
+      "family": "gemini-3",
+      "model": "gemini-3-flash-preview",
+      "tier": "preview",
+      "status": "preview",
+      "context_window": 1048576,
+      "max_output_tokens": 65536,
+      "supports_text": true,
+      "supports_tools": true,
+      "supports_vision": true,
+      "supports_streaming": true,
+      "supports_thinking": true,
+      "supports_search_grounding": true,
+      "pricing_per_1m_tokens": {
+        "input_usd": null,
+        "output_usd": null,
+        "note": "Preview model; pricing not yet published. Assume Gemini 2.5 Flash pricing as baseline."
+      },
+      "strengths": [
+        "latest Google generation",
+        "fast reasoning",
+        "multimodal",
+        "search grounding"
+      ],
+      "best_for": [
+        "testing next-gen capabilities",
+        "agentic workflows",
+        "search grounded tasks"
+      ],
+      "avoid_for": [
+        "production billing-sensitive workloads (pricing unknown)"
+      ],
+      "notes": "Preview model. Confirmed working via API as of 2026-04-08. Upgrade path from gemini-2.5-flash."
+    },
+    {
+      "id": "google.gemini-3-pro",
+      "family": "gemini-3",
+      "model": "gemini-3-pro-preview",
+      "tier": "preview",
+      "status": "preview",
+      "context_window": 1048576,
+      "max_output_tokens": 65536,
+      "supports_text": true,
+      "supports_tools": true,
+      "supports_vision": true,
+      "supports_streaming": true,
+      "supports_thinking": true,
+      "supports_search_grounding": true,
+      "pricing_per_1m_tokens": {
+        "input_usd": null,
+        "output_usd": null,
+        "note": "Preview model; pricing not yet published."
+      },
+      "strengths": [
+        "latest Google Pro generation",
+        "deep reasoning",
+        "multimodal",
+        "search grounding"
+      ],
+      "best_for": [
+        "hardest reasoning tasks (preview tier)",
+        "complex research",
+        "high-stakes analysis"
+      ],
+      "avoid_for": [
+        "production billing-sensitive workloads (pricing unknown)"
+      ],
+      "notes": "Preview model. Confirmed available via API. May hit quota limits on free tier."
+    },
+    {
+      "id": "google.deep-research-pro",
+      "family": "deep-research",
+      "model": "deep-research-pro-preview-12-2025",
+      "tier": "preview",
+      "status": "blocked_interactions_api",
+      "context_window": 131072,
+      "max_output_tokens": 65536,
+      "supports_text": true,
+      "supports_tools": false,
+      "supports_vision": false,
+      "supports_streaming": false,
+      "supports_thinking": true,
+      "supports_search_grounding": false,
+      "pricing_per_1m_tokens": {
+        "input_usd": null,
+        "output_usd": null,
+        "note": "Preview model; pricing unknown."
+      },
+      "strengths": [
+        "multi-step web research",
+        "synthesized research reports",
+        "cited conclusions"
+      ],
+      "best_for": [
+        "deep due diligence",
+        "structured research reports",
+        "multi-source synthesis"
+      ],
+      "avoid_for": [
+        "standard generateContent calls (unsupported)",
+        "any workflow not using the Interactions API"
+      ],
+      "notes": "Requires the Interactions API (not generateContent). Consumer UI version available in Gemini Advanced. API preview exists but requires specialized endpoint not yet publicly documented. Use gemini-search deepResearchStub as workaround."
+    }
+  ],
+  "routing_profiles": [
+    {
+      "id": "bot_default",
+      "preferred": [
+        "google.gemini-2.5-flash"
+      ],
+      "fallback": [
+        "google.gemini-2.5-flash-lite"
+      ],
+      "use_for": [
+        "telegram bot default",
+        "general chat",
+        "interactive assistants"
+      ]
+    },
+    {
+      "id": "bot_smart",
+      "preferred": [
+        "google.gemini-2.5-pro"
+      ],
+      "fallback": [
+        "google.gemini-2.5-flash"
+      ],
+      "use_for": [
+        "harder bot reasoning",
+        "most quality-sensitive writing",
+        "careful synthesis"
+      ]
+    },
+    {
+      "id": "google_heavy_reasoning",
+      "preferred": [
+        "google.gemini-2.5-pro"
+      ],
+      "fallback": [
+        "google.gemini-2.5-flash"
+      ],
+      "use_for": [
+        "complex planning",
+        "architecture",
+        "high-stakes writing",
+        "deep analysis",
+        "long document synthesis"
+      ]
+    },
+    {
+      "id": "google_premium_default",
+      "preferred": [
+        "google.gemini-2.5-flash"
+      ],
+      "fallback": [
+        "google.gemini-2.5-flash-lite"
+      ],
+      "use_for": [
+        "general Google bot calls",
+        "business writing",
+        "coding help",
+        "synthesis"
+      ]
+    },
+    {
+      "id": "google_cheap_extraction",
+      "preferred": [
+        "google.gemini-2.5-flash-lite"
+      ],
+      "fallback": [
+        "google.gemini-2.5-flash"
+      ],
+      "use_for": [
+        "bulk extraction",
+        "classification",
+        "simple tagging",
+        "cheap utility jobs"
+      ]
+    },
+    {
+      "id": "google_search_grounded",
+      "preferred": [
+        "google.gemini-2.5-flash"
+      ],
+      "fallback": [
+        "google.gemini-2.5-pro"
+      ],
+      "use_for": [
+        "web search grounded responses",
+        "current-events questions",
+        "fact-checking against live web",
+        "research with citations",
+        "any query requiring up-to-date information"
+      ],
+      "notes": "LIVE as of 2026-04-08. In llm-call.js: pass searchGrounding: true to llmCallAsync/geminiCallAsync. In direct API: pass tools: [{google_search: {}}]. Supported on gemini-2.5-flash, gemini-2.5-pro, gemini-3-flash-preview, gemini-3-pro-preview. NOT supported on gemini-2.0-flash or gemini-2.0-flash-lite. Response includes groundingSources and searchQueries. No equivalent native path exists on OpenAI or Anthropic."
+    },
+    {
+      "id": "google_long_context",
+      "preferred": [
+        "google.gemini-2.5-flash"
+      ],
+      "fallback": [
+        "google.gemini-2.5-pro"
+      ],
+      "use_for": [
+        "document analysis over 100k tokens",
+        "full codebase review",
+        "long transcript synthesis",
+        "multi-document comparison"
+      ],
+      "notes": "Use gemini-2.5-flash for <200k input (cheaper). Escalate to gemini-2.5-pro for highest quality or when output synthesis needs more depth. Note: >200k input triggers higher pricing on gemini-2.5-pro ($2.50/$15.00 instead of $1.25/$10.00)."
+    }
+  ]
+}

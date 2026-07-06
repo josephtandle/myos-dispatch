@@ -1,0 +1,529 @@
+{
+  "version": "2026-04-29",
+  "provider": "openai",
+  "purpose": "OpenAI-only model routing catalog for selective context loading.",
+  "principles": {
+    "api_first_for_automation": true
+  },
+  "selection_dimensions": [
+    "cost",
+    "latency",
+    "reasoning_depth",
+    "writing_quality",
+    "structured_extraction",
+    "agentic_tool_use",
+    "long_context_synthesis",
+    "audio_transcription_quality",
+    "speaker_diarization",
+    "realtime_voice"
+  ],
+  "catalog_note": "Model strings in this catalog (gpt-5.4, gpt-5.4-mini, etc.) are internal routing aliases. Verify against https://platform.openai.com/docs/models before use. Update model strings if they differ from the published API identifiers.",
+  "rate_limits": {
+    "source": "https://platform.openai.com/docs/guides/rate-limits",
+    "note": "Limits are tier-based (Tier 1-5). Tier 5 requires $1000+ spending history. Lower tiers see significantly lower RPM/TPM. Batch API available at 50% cost for async processing.",
+    "tier_5_paid": {
+      "gpt-5.4": { "rpm": 10000, "tpm": 30000000 },
+      "gpt-5.4-mini": { "rpm": 10000, "tpm": 50000000 },
+      "gpt-5-mini": { "rpm": 30000, "tpm": 150000000 },
+      "gpt-5.4-nano": { "rpm": 30000, "tpm": 150000000 }
+    },
+    "tier_1_entry": {
+      "note": "Entry tier is much more restricted",
+      "gpt-5.4": { "rpm": 500, "tpm": 30000 },
+      "gpt-5.4-mini": { "rpm": 500, "tpm": 200000 }
+    },
+    "batch_api": {
+      "discount": "50% off standard pricing",
+      "latency": "Results within 24 hours",
+      "best_for": "Offline bulk jobs, extraction at scale, async classification"
+    }
+  },
+  "models": [
+    {
+      "id": "openai.gpt-5-nano",
+      "family": "gpt-5",
+      "model": "gpt-5-nano",
+      "tier": "cheapest",
+      "status": "active",
+      "context_window": 400000,
+      "max_output_tokens": 128000,
+      "supports_text": true,
+      "supports_tools": true,
+      "supports_vision": true,
+      "supports_streaming": true,
+      "pricing_per_1m_tokens": {
+        "input_usd": 0.05,
+        "cached_input_usd": 0.005,
+        "output_usd": 0.40
+      },
+      "strengths": [
+        "lowest OpenAI cost",
+        "high-volume utility jobs",
+        "cheap classification and tagging"
+      ],
+      "best_for": [
+        "triage",
+        "simple labels",
+        "bulk extraction",
+        "short summaries at scale"
+      ],
+      "avoid_for": [
+        "nuanced writing",
+        "complex planning",
+        "deep reasoning"
+      ],
+      "notes": "Primary OpenAI fallback for the cheap routing lane."
+    },
+    {
+      "id": "openai.gpt-5-mini",
+      "family": "gpt-5",
+      "model": "gpt-5-mini",
+      "tier": "bot-default",
+      "status": "active",
+      "context_window": 400000,
+      "max_output_tokens": 128000,
+      "supports_text": true,
+      "supports_tools": true,
+      "supports_vision": true,
+      "supports_streaming": true,
+      "pricing_per_1m_tokens": {
+        "input_usd": 0.25,
+        "output_usd": 2.0
+      },
+      "strengths": [
+        "strong cost-to-quality balance",
+        "good conversational quality",
+        "capable everyday assistant work",
+        "practical coding and writing"
+      ],
+      "best_for": [
+        "telegram bot default",
+        "interactive assistants",
+        "general chat",
+        "smart low-cost automation"
+      ],
+      "avoid_for": [
+        "hardest reasoning",
+        "ultra-cheap bulk tagging"
+      ],
+      "notes": "Primary OpenAI default for MyOS bots."
+    },
+    {
+      "id": "openai.gpt-5.4",
+      "family": "gpt-5",
+      "model": "gpt-5.4",
+      "tier": "top",
+      "status": "active",
+      "context_window": 400000,
+      "max_output_tokens": 128000,
+      "supports_text": true,
+      "supports_tools": true,
+      "supports_vision": true,
+      "supports_streaming": true,
+      "pricing_per_1m_tokens": {
+        "input_usd": 2.5,
+        "output_usd": 15.0
+      },
+      "strengths": [
+        "strong general reasoning",
+        "good coding",
+        "broad versatility",
+        "cost-to-capability balance"
+      ],
+      "best_for": [
+        "flagship default routing",
+        "serious internal automation",
+        "premium writing",
+        "coding and editing"
+      ],
+      "avoid_for": [
+        "lowest-cost bulk jobs"
+      ],
+      "notes": "Main OpenAI flagship and primary benchmark line."
+    },
+    {
+      "id": "openai.gpt-5.4-mini",
+      "family": "gpt-5",
+      "model": "gpt-5.4-mini",
+      "tier": "small-capable",
+      "status": "active",
+      "context_window": 400000,
+      "max_output_tokens": 128000,
+      "supports_text": true,
+      "supports_tools": true,
+      "supports_vision": true,
+      "supports_streaming": true,
+      "pricing_per_1m_tokens": {
+        "input_usd": 0.75,
+        "output_usd": 4.5
+      },
+      "strengths": [
+        "good value",
+        "capable everyday automation",
+        "cheap drafting and extraction"
+      ],
+      "best_for": [
+        "value-sensitive default workflows",
+        "email drafting",
+        "routine formatting",
+        "interactive internal assistants"
+      ],
+      "avoid_for": [
+        "hardest reasoning",
+        "most quality-sensitive writing"
+      ],
+      "notes": "Strong value default when flagship quality is not required."
+    },
+    {
+      "id": "openai.gpt-5.4-nano",
+      "family": "gpt-5",
+      "model": "gpt-5.4-nano",
+      "tier": "cheapest",
+      "status": "active",
+      "context_window": 400000,
+      "max_output_tokens": 128000,
+      "supports_text": true,
+      "supports_tools": true,
+      "supports_vision": true,
+      "supports_streaming": true,
+      "pricing_per_1m_tokens": {
+        "input_usd": 0.2,
+        "output_usd": 1.25
+      },
+      "strengths": [
+        "lowest cost",
+        "high-volume utility jobs",
+        "cheap classification and tagging"
+      ],
+      "best_for": [
+        "triage",
+        "simple labels",
+        "bulk extraction",
+        "short summaries at scale"
+      ],
+      "avoid_for": [
+        "nuanced writing",
+        "complex planning",
+        "deep reasoning"
+      ],
+      "notes": "Primary cheap lane."
+    },
+    {
+      "id": "openai.gpt-4o-mini-transcribe",
+      "family": "gpt-4o",
+      "model": "gpt-4o-mini-transcribe",
+      "tier": "audio-cheap",
+      "status": "active",
+      "context_window": 16000,
+      "max_output_tokens": 2000,
+      "supports_text": true,
+      "supports_tools": false,
+      "supports_vision": false,
+      "supports_streaming": true,
+      "pricing_per_1m_tokens": {
+        "input_usd": 3.0,
+        "output_usd": 12.0
+      },
+      "strengths": [
+        "cheap transcription",
+        "good baseline accuracy",
+        "high-volume audio intake"
+      ],
+      "best_for": [
+        "audio transcription",
+        "meeting notes intake",
+        "bulk speech-to-text"
+      ],
+      "avoid_for": [
+        "speaker diarization",
+        "highest-accuracy edge cases"
+      ],
+      "notes": "Default low-cost transcription lane."
+    },
+    {
+      "id": "openai.gpt-4o-transcribe",
+      "family": "gpt-4o",
+      "model": "gpt-4o-transcribe",
+      "tier": "audio-accurate",
+      "status": "active",
+      "context_window": 16000,
+      "max_output_tokens": 2000,
+      "supports_text": true,
+      "supports_tools": false,
+      "supports_vision": false,
+      "supports_streaming": true,
+      "pricing_per_1m_tokens": {
+        "input_usd": 6.0,
+        "output_usd": 10.0
+      },
+      "strengths": [
+        "better transcription accuracy",
+        "stronger multilingual recognition"
+      ],
+      "best_for": [
+        "higher-accuracy transcription",
+        "difficult audio"
+      ],
+      "avoid_for": [
+        "speaker diarization"
+      ],
+      "notes": "Use when accuracy matters more than cost."
+    },
+    {
+      "id": "openai.gpt-4o-transcribe-diarize",
+      "family": "gpt-4o",
+      "model": "gpt-4o-transcribe-diarize",
+      "tier": "audio-diarize",
+      "status": "active",
+      "context_window": 16000,
+      "max_output_tokens": 2000,
+      "supports_text": true,
+      "supports_tools": false,
+      "supports_vision": false,
+      "supports_streaming": false,
+      "pricing_per_1m_tokens": {
+        "input_usd": 6.0,
+        "output_usd": 10.0
+      },
+      "strengths": [
+        "speaker diarization",
+        "time-aligned speaker-separated transcripts"
+      ],
+      "best_for": [
+        "multi-speaker meetings",
+        "calls with speaker attribution"
+      ],
+      "avoid_for": [
+        "lowest-cost transcription",
+        "realtime sessions"
+      ],
+      "notes": "Diarization lane. OpenAI docs note this is transcription API only, not Realtime."
+    },
+    {
+      "id": "openai.gpt-realtime-mini",
+      "family": "gpt-realtime",
+      "model": "gpt-realtime-mini",
+      "tier": "realtime-cheap",
+      "status": "active",
+      "context_window": 128000,
+      "max_output_tokens": 4096,
+      "supports_text": true,
+      "supports_tools": true,
+      "supports_vision": false,
+      "supports_streaming": true,
+      "pricing_per_1m_tokens": {
+        "input_usd": 0.0,
+        "output_usd": 0.0
+      },
+      "strengths": [
+        "low-cost live audio interactions",
+        "fast voice response"
+      ],
+      "best_for": [
+        "realtime audio",
+        "voice agent prototypes"
+      ],
+      "avoid_for": [
+        "batch transcription",
+        "deep synthesis"
+      ],
+      "notes": "Use only when live voice is required."
+    },
+    {
+      "id": "openai.gpt-realtime",
+      "family": "gpt-realtime",
+      "model": "gpt-realtime",
+      "tier": "realtime",
+      "status": "active",
+      "context_window": 128000,
+      "max_output_tokens": 4096,
+      "supports_text": true,
+      "supports_tools": true,
+      "supports_vision": false,
+      "supports_streaming": true,
+      "pricing_per_1m_tokens": {
+        "input_usd": 0.0,
+        "output_usd": 0.0
+      },
+      "strengths": [
+        "best realtime voice quality",
+        "stronger live multimodal behavior"
+      ],
+      "best_for": [
+        "premium realtime audio",
+        "voice-heavy interactive systems"
+      ],
+      "avoid_for": [
+        "offline transcription",
+        "cheap background jobs"
+      ],
+      "notes": "Premium realtime lane."
+    }
+  ],
+  "routing_profiles": [
+    {
+      "id": "cheap_routing",
+      "preferred": [
+        "openai.gpt-5-mini"
+      ],
+      "fallback": [
+        "openai.gpt-5.4-mini",
+        "openai.gpt-5-nano",
+        "openai.gpt-5.4-nano"
+      ],
+      "use_for": [
+        "triage",
+        "classification",
+        "light extraction",
+        "routing decisions"
+      ]
+    },
+    {
+      "id": "default_automation",
+      "preferred": [
+        "openai.gpt-5.4-mini"
+      ],
+      "fallback": [
+        "openai.gpt-5-mini",
+        "openai.gpt-5.4"
+      ],
+      "use_for": [
+        "default unattended jobs",
+        "drafting",
+        "normal automation",
+        "routine analysis"
+      ]
+    },
+    {
+      "id": "heavy_synthesis",
+      "preferred": [
+        "openai.gpt-5.4"
+      ],
+      "fallback": [
+        "openai.gpt-5.4-mini"
+      ],
+      "use_for": [
+        "cross-system synthesis",
+        "architecture",
+        "high-ambiguity reasoning",
+        "final reports"
+      ]
+    },
+    {
+      "id": "audio_transcription",
+      "preferred": [
+        "openai.gpt-4o-mini-transcribe"
+      ],
+      "fallback": [
+        "openai.gpt-4o-transcribe"
+      ],
+      "use_for": [
+        "speech to text",
+        "bulk transcript generation"
+      ]
+    },
+    {
+      "id": "audio_diarization",
+      "preferred": [
+        "openai.gpt-4o-transcribe-diarize"
+      ],
+      "fallback": [
+        "openai.gpt-4o-transcribe"
+      ],
+      "use_for": [
+        "multi-speaker transcription",
+        "speaker-labeled meeting transcripts"
+      ]
+    },
+    {
+      "id": "realtime_audio",
+      "preferred": [
+        "openai.gpt-realtime-mini"
+      ],
+      "fallback": [
+        "openai.gpt-realtime"
+      ],
+      "use_for": [
+        "live voice interaction",
+        "realtime speech systems"
+      ]
+    },
+    {
+      "id": "bot_default",
+      "preferred": [
+        "openai.gpt-5.4-mini"
+      ],
+      "fallback": [
+        "openai.gpt-5-mini",
+        "openai.gpt-5.4"
+      ],
+      "use_for": [
+        "telegram bot default",
+        "interactive assistants",
+        "general chat"
+      ]
+    },
+    {
+      "id": "bot_smart",
+      "preferred": [
+        "openai.gpt-5.4-mini"
+      ],
+      "fallback": [
+        "openai.gpt-5.4",
+        "openai.gpt-5-mini"
+      ],
+      "use_for": [
+        "harder bot reasoning",
+        "more careful drafting",
+        "difficult follow-up tasks"
+      ]
+    },
+    {
+      "id": "openai_heavy_reasoning",
+      "preferred": [
+        "openai.gpt-5.4"
+      ],
+      "fallback": [
+        "openai.gpt-5.4-mini"
+      ],
+      "use_for": [
+        "complex planning",
+        "architecture",
+        "high-stakes writing",
+        "deep analysis"
+      ]
+    },
+    {
+      "id": "openai_premium_default",
+      "preferred": [
+        "openai.gpt-5.4-mini"
+      ],
+      "fallback": [
+        "openai.gpt-5-mini",
+        "openai.gpt-5.4"
+      ],
+      "use_for": [
+        "general OpenAI bot calls",
+        "business writing",
+        "coding help",
+        "synthesis"
+      ]
+    },
+    {
+      "id": "openai_cheap_extraction",
+      "preferred": [
+        "openai.gpt-5.4-nano",
+        "openai.gpt-5.4-mini"
+      ],
+      "fallback": [
+        "openai.gpt-5.4"
+      ],
+      "use_for": [
+        "bulk extraction",
+        "classification",
+        "simple tagging",
+        "cheap utility jobs"
+      ]
+    }
+  ]
+}
