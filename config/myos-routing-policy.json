@@ -1,0 +1,247 @@
+{
+  "taskClasses": {
+    "cheap_routing": {
+      "interactive_oauth": {
+        "deterministicOptions": [],
+        "llmTargets": [
+          { "type": "llm", "provider": "openai", "profile": "cheap_routing", "authMode": "oauth" }
+        ]
+      },
+      "unattended_api": {
+        "deterministicOptions": [],
+        "llmTargets": [
+          { "type": "llm", "provider": "google", "profile": "google_cheap_extraction", "authMode": "api" },
+          { "type": "llm", "provider": "openai", "profile": "cheap_routing", "model": "gpt-5-mini", "authMode": "api" },
+          { "type": "llm", "provider": "openai", "profile": "cheap_routing", "model": "gpt-5.4-mini", "authMode": "api" }
+        ]
+      },
+      "unattended_local": {
+        "deterministicOptions": [],
+        "llmTargets": []
+      }
+    },
+    "default_automation": {
+      "interactive_oauth": {
+        "deterministicOptions": [],
+        "llmTargets": [
+          { "type": "llm", "provider": "openai", "profile": "default_automation", "authMode": "oauth" }
+        ]
+      },
+      "unattended_api": {
+        "deterministicOptions": [],
+        "llmTargets": [
+          { "type": "llm", "provider": "google", "profile": "google_premium_default", "authMode": "api" },
+          { "type": "llm", "provider": "openai", "profile": "default_automation", "model": "gpt-5-mini", "authMode": "api" }
+        ]
+      },
+      "unattended_local": {
+        "deterministicOptions": [],
+        "llmTargets": []
+      }
+    },
+    "heavy_synthesis": {
+      "interactive_oauth": {
+        "deterministicOptions": [],
+        "llmTargets": [
+          { "type": "llm", "provider": "openai", "profile": "heavy_synthesis", "authMode": "oauth" }
+        ]
+      },
+      "unattended_api": {
+        "deterministicOptions": [],
+        "llmTargets": [
+          { "type": "llm", "provider": "openai", "profile": "heavy_synthesis", "authMode": "api" },
+          { "type": "llm", "provider": "google", "profile": "google_heavy_reasoning", "authMode": "api" },
+          { "type": "llm", "provider": "google", "profile": "google_premium_default", "authMode": "api" }
+        ]
+      },
+      "unattended_local": {
+        "deterministicOptions": [],
+        "llmTargets": []
+      }
+    },
+    "task_class_is_elite": {
+      "interactive_oauth": {
+        "deterministicOptions": [],
+        "llmTargets": [
+          { "type": "llm", "provider": "openai", "profile": "heavy_synthesis", "authMode": "oauth" }
+        ]
+      },
+      "unattended_api": {
+        "deterministicOptions": [],
+        "llmTargets": [
+          { "type": "llm", "provider": "google", "profile": "google_heavy_reasoning", "authMode": "api" },
+          { "type": "llm", "provider": "openai", "profile": "heavy_synthesis", "authMode": "api" },
+          { "type": "llm", "provider": "google", "profile": "google_premium_default", "authMode": "api" }
+        ]
+      },
+      "unattended_local": {
+        "deterministicOptions": [],
+        "llmTargets": []
+      }
+    },
+    "planning": {
+      "interactive_oauth": {
+        "deterministicOptions": [],
+        "llmTargets": [
+          { "type": "llm", "provider": "openai", "profile": "heavy_synthesis", "authMode": "oauth" }
+        ]
+      },
+      "unattended_api": {
+        "deterministicOptions": [],
+        "llmTargets": [
+          { "type": "llm", "provider": "google", "profile": "google_heavy_reasoning", "authMode": "api" },
+          { "type": "llm", "provider": "openai", "profile": "heavy_synthesis", "authMode": "api" },
+          { "type": "llm", "provider": "openai", "profile": "default_automation", "model": "gpt-5-mini", "authMode": "api" }
+        ]
+      },
+      "unattended_local": {
+        "deterministicOptions": [],
+        "llmTargets": []
+      }
+    },
+    "audio_transcription": {
+      "interactive_oauth": {
+        "deterministicOptions": [],
+        "llmTargets": []
+      },
+      "unattended_api": {
+        "deterministicOptions": [],
+        "llmTargets": [
+          { "type": "llm", "provider": "openai", "profile": "audio_transcription", "authMode": "api" }
+        ]
+      },
+      "unattended_local": {
+        "deterministicOptions": [
+          { "type": "deterministic", "tool": "mlx_whisper_local" }
+        ],
+        "llmTargets": []
+      }
+    },
+    "audio_diarization": {
+      "interactive_oauth": {
+        "deterministicOptions": [],
+        "llmTargets": []
+      },
+      "unattended_api": {
+        "deterministicOptions": [],
+        "llmTargets": [
+          { "type": "llm", "provider": "openai", "profile": "audio_diarization", "authMode": "api" },
+          { "type": "llm", "provider": "google", "profile": "google_premium_default", "authMode": "api" }
+        ]
+      },
+      "unattended_local": {
+        "deterministicOptions": [],
+        "llmTargets": []
+      }
+    },
+    "realtime_audio": {
+      "interactive_oauth": {
+        "deterministicOptions": [],
+        "llmTargets": [
+          { "type": "llm", "provider": "openai", "profile": "realtime_audio", "authMode": "oauth" }
+        ]
+      },
+      "unattended_api": {
+        "deterministicOptions": [],
+        "llmTargets": []
+      },
+      "unattended_local": {
+        "deterministicOptions": [],
+        "llmTargets": []
+      }
+    }
+  },
+  "intents": {
+    "planning_evaluation": {
+      "interactive_oauth": {
+        "deterministicOptions": [],
+        "llmTargets": [
+          { "type": "llm", "provider": "openai", "profile": "heavy_synthesis", "model": "gpt-5.5", "authMode": "oauth" }
+        ]
+      },
+      "unattended_local": {
+        "deterministicOptions": [],
+        "llmTargets": []
+      }
+    },
+    "advisory_strategy": {
+      "interactive_oauth": {
+        "deterministicOptions": [],
+        "llmTargets": [
+          { "type": "llm", "provider": "anthropic", "profile": "anthropic_advisor", "authMode": "oauth" }
+        ]
+      },
+      "unattended_api": {
+        "deterministicOptions": [],
+        "llmTargets": [
+          { "type": "llm", "provider": "google", "profile": "google_heavy_reasoning", "authMode": "api" },
+          { "type": "llm", "provider": "openai", "profile": "heavy_synthesis", "authMode": "api" }
+        ]
+      },
+      "unattended_local": {
+        "deterministicOptions": [],
+        "llmTargets": []
+      }
+    },
+    "heavy_synthesis_escalated": {
+      "interactive_oauth": {
+        "deterministicOptions": [],
+        "llmTargets": [
+          { "type": "llm", "provider": "openai", "profile": "heavy_synthesis", "model": "gpt-5.4", "authMode": "oauth" },
+          { "type": "llm", "provider": "openai", "profile": "heavy_synthesis", "authMode": "oauth" }
+        ]
+      },
+      "unattended_api": {
+        "deterministicOptions": [],
+        "llmTargets": [
+          { "type": "llm", "provider": "openai", "profile": "heavy_synthesis", "model": "gpt-5.4", "authMode": "api" },
+          { "type": "llm", "provider": "openai", "profile": "heavy_synthesis", "authMode": "api" }
+        ]
+      },
+      "unattended_local": {
+        "deterministicOptions": [],
+        "llmTargets": []
+      }
+    },
+    "testimonial_clip_selection_premium": {
+      "interactive_oauth": {
+        "deterministicOptions": [],
+        "llmTargets": [
+          { "type": "llm", "provider": "openai", "profile": "heavy_synthesis", "authMode": "oauth" }
+        ]
+      },
+      "unattended_api": {
+        "deterministicOptions": [],
+        "llmTargets": [
+          { "type": "llm", "provider": "google", "profile": "google_heavy_reasoning", "authMode": "api" },
+          { "type": "llm", "provider": "openai", "profile": "heavy_synthesis", "authMode": "api" },
+          { "type": "llm", "provider": "google", "profile": "google_premium_default", "authMode": "api" }
+        ]
+      },
+      "unattended_local": {
+        "deterministicOptions": [],
+        "llmTargets": []
+      }
+    },
+    "professor_premium_default": {
+      "interactive_oauth": {
+        "deterministicOptions": [],
+        "llmTargets": [
+          { "type": "llm", "provider": "openai", "profile": "default_automation", "authMode": "oauth" }
+        ]
+      },
+      "unattended_api": {
+        "deterministicOptions": [],
+        "llmTargets": [
+          { "type": "llm", "provider": "google", "profile": "google_premium_default", "authMode": "api" },
+          { "type": "llm", "provider": "openai", "profile": "default_automation", "authMode": "api" },
+          { "type": "llm", "provider": "openai", "profile": "default_automation", "model": "gpt-5-mini", "authMode": "api" }
+        ]
+      },
+      "unattended_local": {
+        "deterministicOptions": [],
+        "llmTargets": []
+      }
+    }
+  }
+}

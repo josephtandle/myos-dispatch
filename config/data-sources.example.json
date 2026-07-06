@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "dataSources": [],
+  "schema": {
+    "dataSources": [
+      {
+        "id": "source_id_used_by_router",
+        "label": "Human readable label",
+        "enabled": true,
+        "mode": "content | sqlite | pointer",
+        "base": "workspace | myos-home | cwd",
+        "path": "relative/path/from/base",
+        "maxChars": 3000,
+        "sqlite": {
+          "query": "optional read-only query for generic sqlite sources"
+        },
+        "fastpath": {
+          "intent": "optional fastpath intent",
+          "matchTerms": ["optional", "terms"],
+          "lookupOrder": ["optional source order labels"],
+          "stopRule": "optional stop rule"
+        }
+      }
+    ]
+  }
+}

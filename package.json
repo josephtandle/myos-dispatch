@@ -1,0 +1,21 @@
+{
+  "name": "myos-dispatch",
+  "version": "0.0.0",
+  "description": "Standalone MyOS Dispatch routing and execution core.",
+  "type": "commonjs",
+  "main": "src/workspace-context.js",
+  "bin": {
+    "myos-dispatch-hook": "bin/myos-dispatch-hook"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "audit": "node --test test/dispatch-fastpaths-audit.test.js",
+    "evaluate-shadow": "node --test test/typed-evidence-shadow-policy.test.js test/typed-evidence-shadow-canary.test.js"
+  },
+  "optionalDependencies": {
+    "better-sqlite3": "^11.10.0"
+  }
+}

@@ -1,0 +1,439 @@
+#!/usr/bin/env node
+"use strict";
+
+const crypto = require("node:crypto");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
+const { spawnSync } = require("node:child_process");
+
+const WORKSPACE_ROOT = path.resolve(__dirname, "..");
+const {
+  resolveDispatchPlan,
+} = require(path.join(WORKSPACE_ROOT, "src/workspace-context"));
+const { resolveLogsRoot } = require(path.join(WORKSPACE_ROOT, "src/myos-compat"));
+
+const EVENT_LABELS = {
+  SessionStart: "session_start",
+  PreToolUse: "pre_tool_use",
+  PostToolUse: "post_tool_use",
+  UserPromptSubmit: "user_prompt_submit",
+  PreCompact: "pre_compact",
+  PostCompact: "post_compact",
+  Stop: "stop",
+};
+
+// Codex emits snake_case hook event names; normalize both spellings.
+const EVENT_ALIASES = Object.fromEntries(
+  Object.entries(EVENT_LABELS).map(([camel, snake]) => [snake, camel])
+);
+
+function safeString(value) {
+  return typeof value === "string" ? value : "";
+}
+
+function readStdin() {
+  return fs.readFileSync(0, "utf8");
+}
+
+function parseJsonInput(raw) {
+  if (!raw.trim()) return {};
+  return JSON.parse(raw);
+}
+
+function readArg(name, fallback = "") {
+  const prefix = `${name}=`;
+  for (const arg of process.argv.slice(2)) {
+    if (arg === name) return "1";
+    if (arg.startsWith(prefix)) return arg.slice(prefix.length);
+  }
+  return fallback;
+}
+
+function readSurface() {
+  return readArg("--surface", process.env.MYOS_DISPATCH_HOOK_SURFACE || "unknown");
+}
+
+function readContextMode() {
+  const mode = readArg("--context", process.env.MYOS_DISPATCH_HOOK_CONTEXT || "full").trim();
+  return mode === "compact" || mode === "none" ? mode : "full";
+}
+
+function readRewriteEnabled() {
+  // RTK rewrite is opt-in per surface (currently Claude only). Codex keeps
+  // its own PreToolUse rewrite ownership, so we never emit updatedInput there.
+  if (readArg("--no-rewrite") === "1") return false;
+  return readArg("--rewrite") === "1";
+}
+
+function readHookEventName(payload) {
+  const raw = safeString(
+    payload.hook_event_name ||
+    payload.hookEventName ||
+    payload.event ||
+    payload.name
+  ).trim();
+  if (EVENT_LABELS[raw]) return raw;
+  if (EVENT_ALIASES[raw]) return EVENT_ALIASES[raw];
+  if (payload.tool_input || payload.toolInput || payload.tool_name || payload.toolName) {
+    return "PreToolUse";
+  }
+  if (payload.prompt || payload.user_prompt || payload.userPrompt) {
+    return "UserPromptSubmit";
+  }
+  return "";
+}
+
+function readPromptText(payload) {
+  const candidates = [
+    payload.prompt,
+    payload.user_prompt,
+    payload.userPrompt,
+    payload.text,
+    payload.input,
+  ];
+  for (const candidate of candidates) {
+    const value = safeString(candidate).trim();
+    if (value) return value;
+  }
+  return "";
+}
+
+function readToolName(payload) {
+  return safeString(payload.tool_name || payload.toolName || payload.tool || "").trim();
+}
+
+function readToolInput(payload) {
+  const input = payload.tool_input || payload.toolInput || {};
+  return input && typeof input === "object" ? input : {};
+}
+
+function readCommand(payload) {
+  return safeString(readToolInput(payload).command || payload.command).trim();
+}
+
+function sha256(value) {
+  return crypto.createHash("sha256").update(String(value || "")).digest("hex");
+}
+
+function compactRoute(plan) {
+  const parallel = plan.parallelizationPlan || {};
+  return {
+    branch: plan.branch || "",
+    intentType: plan.intentType || "",
+    actionType: plan.actionType || "",
+    goalScale: plan.goalScale || null,
+    goalMode: plan.goalMode || "",
+    requiresPlan: Boolean(plan.requiresPlan),
+    requiresApproval: Boolean(plan.requiresApproval),
+    blockedBy: Array.isArray(plan.blockedBy) ? plan.blockedBy : [],
+    stopAfterMatch: Boolean(plan.stopAfterMatch),
+    allowBroadSearch: Boolean(plan.allowBroadSearch),
+    projectSlug: plan.projectSlug || null,
+    searchScope: plan.searchScope || "",
+    dataSources: Array.isArray(plan.dataSources) ? plan.dataSources : [],
+    route: {
+      lane: plan.route?.lane || "",
+      reason: plan.route?.reason || "",
+    },
+    parallelization: {
+      version: parallel.version || "",
+      mode: parallel.mode || "none",
+      aggression: parallel.aggression || "off",
+      depth: parallel.depth ?? 0,
+      criticalPath: parallel.criticalPath || "",
+      taskCount: Array.isArray(parallel.backgroundTasks) ? parallel.backgroundTasks.length : 0,
+      blockedReasons: Array.isArray(parallel.blockedReasons) ? parallel.blockedReasons : [],
+      maxSidecars: parallel.budget?.maxSidecars ?? null,
+      joinPolicy: parallel.joinPolicy || "none",
+      activeStage: parallel.promotion?.activeStage || "",
+    },
+    typedEvidence: {
+      authoritative: Boolean(plan.shadowDispatch?.authoritative),
+      activeStage: plan.shadowDispatch?.activeStage || "",
+    },
+  };
+}
+
+function formatList(values) {
+  return values && values.length ? values.join(", ") : "none";
+}
+
+function surfaceFanoutInstruction(surface, parallel) {
+  if (parallel.mode === "none" || parallel.taskCount === 0) return "";
+  if (surface === "codex") {
+    return "- Codex: you have native multi-agent threads enabled (max_threads=12). Spawn one parallel subagent thread per independent lane above NOW, in the same turn, before serial work. Working the lanes sequentially in the main thread is a routing error.";
+  }
+  if (surface === "claude") {
+    return "- Claude: launch the independent lanes as parallel Agent calls in a single message before serial work on the critical path.";
+  }
+  return "- Launch the independent lanes as parallel background subagents before serial work on the critical path.";
+}
+
+function fanoutMandateLines(surface, parallel) {
+  const lines = [
+    "- Fan out FIRST on non-trivial work: dispatch the parallel lanes above at the start of the turn, then work the critical path while they run.",
+    "- Prefer breadth over depth: many parallel single-purpose subagents, shallow nesting. Never chain subagents deeper than the depth shown; widen instead.",
+  ];
+  const surfaceLine = surfaceFanoutInstruction(surface, parallel);
+  if (surfaceLine) lines.push(surfaceLine);
+  if (parallel.mode !== "none" && parallel.taskCount > 0 && parallel.taskCount < 3) {
+    lines.push("- The plan exposes fewer than 3 lanes; if the task is multi-part, widen the fanout yourself within the same gates.");
+  }
+  return lines;
+}
+
+function formatDispatchContext({ surface, hookEventName, targetKind, text, plan }) {
+  const route = compactRoute(plan);
+  const parallel = route.parallelization;
+  const lines = [
+    "[MyOS Dispatch route]",
+    `Surface: ${surface}`,
+    `Hook event: ${hookEventName}`,
+    `Target: ${targetKind}`,
+    `Input hash: sha256:${sha256(text).slice(0, 16)} length=${text.length}`,
+    `Branch: ${route.branch}`,
+    `Intent/action: ${route.intentType}/${route.actionType}`,
+    `Execution lane: ${route.route.lane || "worker_skill"}`,
+    route.route.reason ? `Lane reason: ${route.route.reason}` : "",
+    `Goal: ${route.goalScale || "n/a"} ${route.goalMode || ""}`.trim(),
+    `Project: ${route.projectSlug || "none"}`,
+    route.searchScope ? `Search scope: ${route.searchScope}` : "",
+    route.dataSources.length ? `Data sources: ${formatList(route.dataSources)}` : "",
+    `Stop after match: ${route.stopAfterMatch ? "yes" : "no"}`,
+    `Allow broad search: ${route.allowBroadSearch ? "yes" : "no"}`,
+    `Requires plan: ${route.requiresPlan ? "yes" : "no"}`,
+    `Requires approval: ${route.requiresApproval ? "yes" : "no"}`,
+    route.blockedBy.length ? `Blocked by: ${formatList(route.blockedBy)}` : "",
+    `Fanout: ${parallel.mode}, aggression=${parallel.aggression}, depth=${parallel.depth}, sidecars=${parallel.taskCount}/${parallel.maxSidecars ?? "?"}, join=${parallel.joinPolicy}`,
+    parallel.blockedReasons.length ? `Fanout blocked by: ${formatList(parallel.blockedReasons)}` : "",
+    parallel.activeStage ? `Fanout stage: ${parallel.activeStage}` : "",
+    route.typedEvidence.authoritative ? `Typed evidence authority: ${route.typedEvidence.activeStage}` : "",
+    "",
+    "Mandatory behavior:",
+    "- Treat this route as the first routing pass for the turn.",
+    "- Follow MyOS Dispatch evaluation order before broad search or provider-specific work.",
+    "- For non-trivial work, use the maximum safe fanout exposed by the plan, while respecting protected-surface, auth, destructive, and user-visible-send gates.",
+    ...fanoutMandateLines(surface, parallel),
+    "- If the route is wrong, correct it explicitly and continue through the next practical verification or fix step.",
+  ];
+  return lines.filter(Boolean).join("\n");
+}
+
+function formatCompactDispatchContext({ surface, plan }) {
+  const route = compactRoute(plan);
+  const parallel = route.parallelization;
+  const lane = route.route.lane || "worker_skill";
+  const fan = `${parallel.mode}/${parallel.aggression} depth=${parallel.depth} sidecars=${parallel.taskCount}/${parallel.maxSidecars ?? "?"} join=${parallel.joinPolicy}`;
+  const lines = [
+    `[MyOS Dispatch] surface=${surface} lane=${lane} intent=${route.intentType || "?"} ` +
+      `project=${route.projectSlug || "none"} fanout=${fan}` +
+      (route.blockedBy.length ? ` blocked=${formatList(route.blockedBy)}` : "") +
+      (parallel.blockedReasons.length ? ` fanout_blocked=${formatList(parallel.blockedReasons)}` : ""),
+    "Route through MyOS Dispatch evaluation order before broad search; respect protected-surface/auth/destructive/send gates.",
+  ];
+  if (parallel.mode !== "none" && parallel.taskCount > 0) {
+    lines.push(
+      surface === "codex"
+        ? `Mandatory fanout: spawn ${parallel.taskCount} parallel subagent threads (native multi-agent, breadth over depth) for the independent lanes now; do not work them sequentially.`
+        : `Mandatory fanout: launch ${parallel.taskCount} parallel subagents (breadth over depth) for the independent lanes now; do not work them sequentially.`
+    );
+  }
+  return lines.join("\n");
+}
+
+function buildContextForMode({ surface, hookEventName, targetKind, text, plan, contextMode }) {
+  if (contextMode === "none") return "";
+  if (contextMode === "compact") return formatCompactDispatchContext({ surface, plan });
+  return formatDispatchContext({ surface, hookEventName, targetKind, text, plan });
+}
+
+function resolveHookPlan(text, options = {}) {
+  const env = {
+    ...process.env,
+    MYOS_BACKGROUND_ORCHESTRATOR: process.env.MYOS_BACKGROUND_ORCHESTRATOR || "myos-dispatch",
+  };
+  return resolveDispatchPlan(text, {
+    ...options,
+    env,
+  });
+}
+
+function buildDispatchContext({ surface, hookEventName, targetKind, text, contextMode = "full" }) {
+  const plan = resolveHookPlan(text, { hookSurface: surface, hookEventName });
+  return {
+    context: buildContextForMode({ surface, hookEventName, targetKind, text, plan, contextMode }),
+    route: compactRoute(plan),
+  };
+}
+
+function appendRouteLog(record) {
+  try {
+    const logDir = process.env.MYOS_DISPATCH_HOOK_LOG_DIR || resolveLogsRoot();
+    fs.mkdirSync(logDir, { recursive: true });
+    const logPath = path.join(logDir, "myos-dispatch-hooks.jsonl");
+    fs.appendFileSync(logPath, `${JSON.stringify(record)}\n`, "utf8");
+  } catch {
+    // Hook logging must never block the agent surface.
+  }
+}
+
+function buildRtkRewrite(payload) {
+  const command = readCommand(payload);
+  if (!command) return null;
+  const input = JSON.stringify({
+    ...payload,
+    tool_input: {
+      ...readToolInput(payload),
+      command,
+    },
+  });
+  const result = spawnSync("rtk", ["hook", "claude"], {
+    input,
+    encoding: "utf8",
+    timeout: 5000,
+    env: process.env,
+  });
+  if (result.status !== 0 || !result.stdout.trim()) return null;
+  try {
+    const parsed = JSON.parse(result.stdout);
+    const updated = parsed?.hookSpecificOutput?.updatedInput;
+    if (updated && typeof updated.command === "string" && updated.command.trim()) {
+      return updated;
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+function outputHookContext(hookEventName, context, extra = {}) {
+  return {
+    hookSpecificOutput: {
+      hookEventName,
+      ...(context ? { additionalContext: context } : {}),
+      ...extra,
+    },
+  };
+}
+
+function handleUserPromptSubmit(payload, surface, options = {}) {
+  const text = readPromptText(payload);
+  if (!text) return null;
+  const route = buildDispatchContext({
+    surface,
+    hookEventName: "UserPromptSubmit",
+    targetKind: "user_prompt",
+    text,
+    contextMode: options.contextMode || "full",
+  });
+  appendRouteLog({
+    at: new Date().toISOString(),
+    surface,
+    hookEventName: "UserPromptSubmit",
+    targetKind: "user_prompt",
+    inputHash: `sha256:${sha256(text)}`,
+    inputLength: text.length,
+    cwd: safeString(payload.cwd || process.cwd()),
+    route: route.route,
+  });
+  return outputHookContext("UserPromptSubmit", route.context);
+}
+
+function handlePreToolUse(payload, surface, options = {}) {
+  const toolName = readToolName(payload);
+  const command = readCommand(payload);
+  if (toolName && toolName !== "Bash") return null;
+  if (!command) return null;
+  const route = buildDispatchContext({
+    surface,
+    hookEventName: "PreToolUse",
+    targetKind: "bash_command",
+    text: command,
+    contextMode: options.contextMode || "full",
+  });
+  appendRouteLog({
+    at: new Date().toISOString(),
+    surface,
+    hookEventName: "PreToolUse",
+    targetKind: "bash_command",
+    inputHash: `sha256:${sha256(command)}`,
+    inputLength: command.length,
+    cwd: safeString(payload.cwd || process.cwd()),
+    route: route.route,
+  });
+  const updatedInput = options.rewrite ? buildRtkRewrite(payload) : null;
+  // Route evidence is already logged above. When there is nothing actionable
+  // (no rewrite and no context to inject), stay a true no-op so the PreToolUse
+  // surface behaves exactly like the bare rewrite hook it replaces.
+  if (!updatedInput && !route.context) return null;
+  return outputHookContext("PreToolUse", route.context, {
+    ...(updatedInput ? { updatedInput } : {}),
+  });
+}
+
+function handleHookPayload(payload, surface = readSurface(), options) {
+  const hookEventName = readHookEventName(payload);
+  const opts = options || { contextMode: readContextMode(), rewrite: readRewriteEnabled() };
+  try {
+    if (hookEventName === "UserPromptSubmit") {
+      return handleUserPromptSubmit(payload, surface, opts);
+    }
+    if (hookEventName === "PreToolUse") {
+      return handlePreToolUse(payload, surface, opts);
+    }
+    return null;
+  } catch (error) {
+    return outputHookContext(hookEventName || "Unknown", [
+      "[MyOS Dispatch route]",
+      `Surface: ${surface}`,
+      `Hook event: ${hookEventName || "unknown"}`,
+      `Dispatch hook error: ${error instanceof Error ? error.message : String(error)}`,
+      "Fail-open behavior: continue the turn, but route manually through MYOS-DISPATCH.md before substantive work.",
+    ].join("\n"));
+  }
+}
+
+function renderRouteFromStdin() {
+  // CLI mode for wrappers (e.g. bin/codex): stdin is raw prompt text, output
+  // is the plain full route block, ready to prepend to an agent prompt.
+  const text = readStdin().trim();
+  if (!text) return;
+  const { context } = buildDispatchContext({
+    surface: readSurface(),
+    hookEventName: "UserPromptSubmit",
+    targetKind: "user_prompt",
+    text,
+    contextMode: "full",
+  });
+  if (context) process.stdout.write(`${context}\n`);
+}
+
+function main() {
+  if (readArg("--render-route") === "1") {
+    try {
+      renderRouteFromStdin();
+    } catch {
+      // Fail open: wrappers must never block on route rendering.
+    }
+    return;
+  }
+  const payload = parseJsonInput(readStdin());
+  const output = handleHookPayload(payload);
+  if (output) {
+    process.stdout.write(`${JSON.stringify(output)}\n`);
+  }
+}
+
+if (require.main === module) {
+  main();
+}
+
+module.exports = {
+  compactRoute,
+  formatDispatchContext,
+  handleHookPayload,
+  readHookEventName,
+  readPromptText,
+  readCommand,
+};

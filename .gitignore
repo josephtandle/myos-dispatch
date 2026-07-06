@@ -1,0 +1,14 @@
+.env
+.env.*
+!.env.example
+node_modules/
+data/
+*-state.json
+capabilities-index.json
+DISPATCH-FASTPATHS.json
+graphify-out/
+.gitnexus/
+
+# ship generic model catalogs (reference data, not runtime state)
+!data/models/
+!data/models/*.json

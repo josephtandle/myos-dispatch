@@ -1,0 +1,75 @@
+{
+  "version": 1,
+  "lanes": {
+    "user_visible": {
+      "port": 9224,
+      "label": "User Visible Browser",
+      "owner": "User",
+      "profilePathEnv": "MYOS_USER_BROWSER_PROFILE_PATH",
+      "launchLabelEnv": "MYOS_USER_BROWSER_LAUNCH_LABEL"
+    },
+    "agent": {
+      "port": 9223,
+      "label": "Agent Browser",
+      "owner": "Automation",
+      "profilePath": "~/.myos/agent-chrome",
+      "launchLabel": "ai.myos.agent-browser"
+    },
+    "headless": {
+      "port": 9222,
+      "label": "Headless Browser",
+      "owner": "Automation",
+      "profilePath": "~/.myos/headless-chrome",
+      "launchLabel": "ai.myos.headless-browser"
+    }
+  },
+  "intents": {
+    "open_in_user_browser": "user_visible",
+    "mailto": "user_visible",
+    "auth_user_visible": "user_visible",
+    "agent_qa": "agent",
+    "agent_research": "agent",
+    "visible_agent_work": "agent",
+    "anonymous_scrape": "headless",
+    "disposable_check": "headless",
+    "ci_browser": "headless",
+    "build_preview": "agent"
+  },
+  "protectedUserIntents": [
+    "open_in_user_browser",
+    "mailto",
+    "auth_user_visible"
+  ],
+  "safeRefresh": {
+    "allowHostnames": [
+      "localhost",
+      "127.0.0.1",
+      "::1"
+    ],
+    "allowPortRanges": [
+      [3000, 3999],
+      [5000, 5999],
+      [8000, 8999]
+    ],
+    "denyPathPatterns": [
+      "/login",
+      "/signin",
+      "/sign-in",
+      "/auth",
+      "/admin",
+      "/checkout",
+      "/cart",
+      "/settings",
+      "/account"
+    ]
+  },
+  "registeredCallers": [
+    "codex",
+    "webfetch",
+    "computer-use",
+    "agent-browser",
+    "skill",
+    "script",
+    "test"
+  ]
+}
