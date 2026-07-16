@@ -15,9 +15,11 @@ Your job, in order:
 
 3. Ask me one question before downloading: "Where does your code live? For example ~/code or your projects folder." Use my answer as the index directory below. If I do not have one, use my home folder's most likely projects directory and tell me which you picked.
 
-4. Download it:
+4. Download it and inspect it before installing:
    - `git clone https://github.com/josephtandle/myos-dispatch`
    - `cd myos-dispatch`
+   - Before running anything, read `bin/install.sh` (or `bin/install.ps1` on Windows), `scripts/register-hook.js`, and `package.json`. Confirm the installer does only what it advertises: a scoped npm install, building a local index, registering a single UserPromptSubmit hook in `~/.claude/settings.json` with a timestamped backup, and a smoke test. No network calls to anywhere unexpected, no reading of secrets, nothing outside its own folder and that one settings entry.
+   - Tell me in one line what you found. Install ONLY if it is clean. If anything looks off, stop and show me exactly what concerned you.
 
 5. Run the installer:
    - macOS: `bash bin/install.sh --yes --index-dir "<my code folder>"`
