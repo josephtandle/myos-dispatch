@@ -1,4 +1,7 @@
 const test = require("node:test");
+// Isolate live telemetry: tests must never append to the real dispatcher events ledger or health state.
+process.env.MYOS_DISPATCHER_EVENTS_FILE = process.env.MYOS_DISPATCHER_EVENTS_FILE || require("node:path").join(require("node:os").tmpdir(), `dispatcher-events-test-${process.pid}.jsonl`);
+process.env.MYOS_DISPATCH_HEALTH_STATE_FILE = process.env.MYOS_DISPATCH_HEALTH_STATE_FILE || require("node:path").join(require("node:os").tmpdir(), `dispatch-health-test-${process.pid}.json`);
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");

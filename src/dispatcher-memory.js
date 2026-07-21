@@ -6,10 +6,15 @@ const DATA_DIR = resolveWorkspacePath("agents", "shared", "data");
 const EVENTS_FILE = path.join(DATA_DIR, "dispatcher-events.jsonl");
 const { recordDispatcherHealthEvent } = require("./promotion/dispatcher-health-policy");
 
+function resolveEventsFile() {
+  return process.env.MYOS_DISPATCHER_EVENTS_FILE || EVENTS_FILE;
+}
+
 function appendDispatcherEvent(event) {
   try {
-    fs.mkdirSync(DATA_DIR, { recursive: true });
-    fs.appendFileSync(EVENTS_FILE, `${JSON.stringify(event)}\n`, "utf8");
+    const eventsFile = resolveEventsFile();
+    fs.mkdirSync(path.dirname(eventsFile), { recursive: true });
+    fs.appendFileSync(eventsFile, `${JSON.stringify(event)}\n`, "utf8");
   } catch (error) {
     console.error(`[dispatcher] Failed to append event log: ${error.message}`);
   }

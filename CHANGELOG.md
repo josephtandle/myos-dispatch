@@ -2,6 +2,17 @@
 
 All notable changes to MyOS Dispatch are documented here.
 
+## v3.2.1 — 2026-07-21
+
+### Fixed
+
+- **Test runs no longer pollute live dispatch telemetry.**
+  `appendDispatcherEvent` honors a new `MYOS_DISPATCHER_EVENTS_FILE`
+  override, and the dispatcher test files pin it (plus the existing
+  `MYOS_DISPATCH_HEALTH_STATE_FILE`) to temp paths. Previously a test run
+  appended fixture events to the real `dispatcher-events.jsonl` and fed
+  them into the dispatcher-health loop.
+
 ## v3.2.0 — 2026-07-21
 
 ### Added
