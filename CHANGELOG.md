@@ -2,6 +2,27 @@
 
 All notable changes to MyOS Dispatch are documented here.
 
+## v3.3.0 — 2026-07-22
+
+### Added
+
+- **Optional shell-title hook (`--with-shell-title`).** Registers two new
+  Claude Code hooks — `SessionStart` and `Stop` — via a new
+  `bin/myos-title-hook` + `scripts/register-title-hook.js`, following the
+  same safety contract as the existing dispatch-hook registration (never
+  overwrites settings.json, idempotent by marker, backed up, atomic write,
+  `--dry-run`/`--remove`). On session start the terminal tab renames to the
+  current project (git repo root basename, or the bare cwd basename); after
+  every turn it updates to `<name>: <recap>`, prefixed with the session's
+  explicit `/rename` name if one was set, else the project name, followed by
+  a short cleaned-up excerpt of Claude's last message. macOS/Linux only
+  (zsh or bash, whichever `$SHELL` reports); the installer appends one
+  marker-wrapped `source` line to `~/.zshrc`/`~/.bashrc` pointing at the new
+  `shell/term-title-hook.{zsh,bash}`, and `--uninstall` reverses it the same
+  way. The `/rename` lookup reads an empirically-observed, undocumented
+  `custom-title` transcript record; on any lookup failure it falls back to
+  the project name rather than erroring.
+
 ## v3.2.1 — 2026-07-21
 
 ### Fixed

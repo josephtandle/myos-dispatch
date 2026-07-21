@@ -83,7 +83,8 @@ Useful flags:
 | `--with-extras` | Build optional deps too (`better-sqlite3` native build). |
 | `--with-graphify` | Install optional graphify (`pipx` preferred, never global `pip`). |
 | `--with-gitnexus` | Verify optional gitnexus via `npx` (ephemeral, no global install). |
-| `--no-hook` | Install everything except the `settings.json` hook. |
+| `--with-shell-title` | Auto-rename your terminal tab to the current project, and to a short recap of what Claude just did after each turn. macOS/Linux, zsh or bash only. See [Shell-title hook](#shell-title-hook-optional). |
+| `--no-hook` | Install everything except the `settings.json` hook(s) — this also skips `--with-shell-title` if both are passed. |
 | `--uninstall` | Reverse the install. |
 
 ### Windows (PowerShell)
@@ -110,16 +111,44 @@ It **never overwrites** `~/.claude/settings.json`. It:
 4. **Prints the planned merge and asks for confirmation** unless you pass
    `--yes`.
 
+### Shell-title hook (optional)
+
+`--with-shell-title` registers two more Claude Code hooks (`SessionStart`, `Stop`)
+that keep your terminal tab title honest without you touching it:
+
+- **On session start:** the tab renames to the current project (the git repo's
+  root directory name, or the bare directory name outside a repo).
+- **After every turn** (whenever Claude finishes responding): the tab updates to
+  `<name>: <recap>` — `<name>` is the session's explicit name if you set one with
+  `/rename`, else the project name; `<recap>` is a short, cleaned-up excerpt of
+  Claude's own last message, so a row of open tabs tells you at a glance what
+  each one just did.
+
+This is macOS/Linux only, and only wired up for **zsh** or **bash** (whichever
+`$SHELL` reports at install time) — there's no Windows terminal-title equivalent
+here. The installer appends exactly one idempotent, marker-wrapped `source` line
+to your `~/.zshrc` or `~/.bashrc` pointing at `shell/term-title-hook.zsh` or
+`shell/term-title-hook.bash`; `--uninstall` strips it the same way it strips the
+hook itself. Open a new terminal tab (or restart your shell) after installing —
+an *already-running* shell has the old precmd function loaded in memory and
+won't pick up the change until it's re-sourced or restarted.
+
+The `/rename` lookup reads a `custom-title` record from the session's own
+transcript file. That isn't an officially documented Claude Code field — it was
+found empirically. If a future Claude Code release changes that internal
+format, the hook doesn't error: it just falls back to the project name.
+
 ### Uninstall
 
 ```sh
 bash bin/install.sh --uninstall           # macOS / Linux
 ```
 
-Surgically removes the MyOS Dispatch hook and its `env` key **by marker**
-(leaving every unrelated setting and any other hooks in place), removes the
-generated index, and leaves your timestamped `settings.json` backups for a full
-manual restore if you want one.
+Surgically removes the MyOS Dispatch hook and its `env` key, and the
+shell-title hooks + their `~/.zshrc`/`~/.bashrc` source line if present, **by
+marker** (leaving every unrelated setting and any other hooks in place),
+removes the generated index, and leaves your timestamped `settings.json` and
+shell rc backups for a full manual restore if you want one.
 
 ### One-liner (optional)
 

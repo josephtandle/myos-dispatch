@@ -1,0 +1,195 @@
+#!/usr/bin/env node
+"use strict";
+
+// myos-title-hook — Claude Code SessionStart + Stop hook that renames the
+// interactive terminal tab. macOS/Linux only (uses `ps` process-ancestry
+// walking and direct tty-device writes; no Windows equivalent is provided).
+//
+// SessionStart: sets the tab to the project name (git repo root basename,
+// or the bare cwd basename for non-git directories).
+//
+// Stop (fires every time the assistant finishes responding): sets the tab
+// to "<name>: <recap>", where <name> is the session's explicit rename (set
+// via the Claude Code `/rename` command or `--name` flag) if one exists,
+// else the project name; and <recap> is a short, cleaned-up excerpt of
+// Claude's own last message.
+//
+// State: writes `$MYOS_HOME_ROOT/state/term-title/<tty>`, the file the
+// paired shell/term-title-hook.zsh|bash precmd integration re-asserts on
+// every prompt (so the title survives past this one write). Also writes
+// the title directly to the resolved tty device for immediate effect,
+// before the next prompt renders.
+//
+// The /rename lookup is NOT an officially documented Claude Code hook
+// field — it is read from a `custom-title` record this tool has observed
+// empirically inside session transcript JSONL files. That internal format
+// could change between Claude Code versions. If the lookup fails for any
+// reason, this falls back to the project name; it never errors out.
+//
+// Always exits 0 — must never block a session.
+
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
+const { execFileSync } = require("node:child_process");
+
+const RECAP_MAX_CHARS = 20;
+
+function readStdin() {
+  try {
+    return fs.readFileSync(0, "utf8");
+  } catch {
+    return "";
+  }
+}
+
+function parseInput(raw) {
+  try {
+    const parsed = JSON.parse(raw || "{}");
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function homeRoot() {
+  return process.env.MYOS_HOME_ROOT || path.join(os.homedir(), ".myos-dispatch");
+}
+
+function stateDir() {
+  return path.join(homeRoot(), "state", "term-title");
+}
+
+function gitRootBasename(cwd) {
+  try {
+    const out = execFileSync("git", ["-C", cwd, "rev-parse", "--show-toplevel"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+    return out ? path.basename(out) : "";
+  } catch {
+    return "";
+  }
+}
+
+function projectName(cwd) {
+  const resolved = cwd && cwd.trim() ? cwd : process.cwd();
+  const fromGit = gitRootBasename(resolved);
+  if (fromGit) return fromGit;
+  const base = path.basename(resolved);
+  return base || "session";
+}
+
+// Read the last explicit /rename name from the session transcript, if any.
+// Best-effort: any failure (missing file, unreadable, unexpected format)
+// yields "" so the caller falls back to the project name.
+function sessionRenameFromTranscript(transcriptPath) {
+  if (!transcriptPath) return "";
+  try {
+    if (!fs.existsSync(transcriptPath)) return "";
+    const raw = fs.readFileSync(transcriptPath, "utf8");
+    let found = "";
+    for (const line of raw.split("\n")) {
+      if (!line || line.indexOf('"type":"custom-title"') === -1) continue;
+      try {
+        const obj = JSON.parse(line);
+        if (obj && obj.type === "custom-title" && typeof obj.customTitle === "string" && obj.customTitle) {
+          found = obj.customTitle;
+        }
+      } catch {
+        // ignore malformed lines
+      }
+    }
+    return found;
+  } catch {
+    return "";
+  }
+}
+
+function cleanRecap(raw) {
+  if (!raw) return "";
+  let text = String(raw)
+    .replace(/[\r\n]+/g, " ")
+    .replace(/\*\*([^*]*)\*\*/g, "$1")
+    .replace(/`([^`]*)`/g, "$1")
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (text.length > RECAP_MAX_CHARS) {
+    text = `${text.slice(0, RECAP_MAX_CHARS)}...`;
+  }
+  return text;
+}
+
+// Walk process ancestry from `pid` until we find one attached to a real
+// tty. Reading $TTY / `tty` directly from THIS process is not reliable —
+// a hook subprocess can be detached from the controlling terminal even
+// though an ancestor (Claude Code itself, or the shell) is attached to it.
+function resolveTty(startPid) {
+  let pid = startPid;
+  for (let depth = 0; depth < 12 && pid && pid !== "0"; depth += 1) {
+    let out;
+    try {
+      out = execFileSync("ps", ["-o", "ppid=,tty=", "-p", String(pid)], {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+      });
+    } catch {
+      return "";
+    }
+    const fields = out.trim().split(/\s+/);
+    const ppid = fields[0] || "";
+    const tty = fields[1] || "";
+    if (tty && tty !== "??" && tty !== "?") return tty;
+    pid = ppid;
+  }
+  return "";
+}
+
+function writeTitle(tty, title) {
+  const dir = stateDir();
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, tty), `${title}\n`);
+  } catch {
+    // best effort — nothing to do if the state dir isn't writable
+  }
+  const dev = `/dev/${tty}`;
+  try {
+    fs.accessSync(dev, fs.constants.W_OK);
+    // OSC 0 sets icon name + window title together in one operation.
+    // Sending OSC 0/1/2 as separate sequences causes some terminals to
+    // render "icon name" and "window title" as two composited fields
+    // (visually duplicating the text) — use OSC 0 alone.
+    fs.writeFileSync(dev, `]0;${title}`);
+  } catch {
+    // no writable tty device — the shell precmd re-assertion will still
+    // pick this up from the state file on the next prompt, if applicable
+  }
+}
+
+function main() {
+  const input = parseInput(readStdin());
+  const cwd = typeof input.cwd === "string" ? input.cwd : process.cwd();
+  const event = typeof input.hook_event_name === "string" ? input.hook_event_name : "";
+
+  const tty = resolveTty(process.pid);
+  if (!tty) process.exit(0);
+
+  if (event === "Stop") {
+    const project = projectName(cwd);
+    const sessionName = sessionRenameFromTranscript(input.transcript_path);
+    const prefix = sessionName || project;
+    const recap = cleanRecap(input.last_assistant_message);
+    const title = recap ? `${prefix}: ${recap}` : prefix;
+    writeTitle(tty, title);
+  } else {
+    // SessionStart (or anything else this hook gets registered against):
+    // always resolve and set the project name baseline.
+    writeTitle(tty, projectName(cwd));
+  }
+
+  process.exit(0);
+}
+
+main();
