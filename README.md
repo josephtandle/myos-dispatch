@@ -84,7 +84,8 @@ Useful flags:
 | `--with-graphify` | Install optional graphify (`pipx` preferred, never global `pip`). |
 | `--with-gitnexus` | Verify optional gitnexus via `npx` (ephemeral, no global install). |
 | `--with-shell-title` | Auto-rename your terminal tab to the current project, and to a short recap of what Claude just did after each turn. macOS/Linux, zsh or bash only. See [Shell-title hook](#shell-title-hook-optional). |
-| `--no-hook` | Install everything except the `settings.json` hook(s) — this also skips `--with-shell-title` if both are passed. |
+| `--with-rabbit-hole` | Quietly nudges the assistant to periodically re-run its own focus/fatigue self-check during long sessions. See [Rabbit-hole self-check hook](#rabbit-hole-self-check-hook-optional). |
+| `--no-hook` | Install everything except the `settings.json` hook(s) — this also skips `--with-shell-title` and `--with-rabbit-hole` if passed alongside them. |
 | `--uninstall` | Reverse the install. |
 
 ### Windows (PowerShell)
@@ -138,17 +139,47 @@ transcript file. That isn't an officially documented Claude Code field — it wa
 found empirically. If a future Claude Code release changes that internal
 format, the hook doesn't error: it just falls back to the project name.
 
+### Rabbit-hole self-check hook (optional)
+
+Rabbit Hole (see the `rabbit-hole` Claude Code skill, if you use one like it) is
+meant to be a lightweight focus/fatigue guard for long human-driven sessions —
+but as advisory-only guidance, nothing ever forces the assistant to actually
+pause and run that check. In practice, across a long session, it can simply
+never come up.
+
+`--with-rabbit-hole` registers a `UserPromptSubmit` hook
+(`bin/myos-rabbithole-hook`) that fixes that gap deterministically, without
+adding any new judgment of its own:
+
+- **It never talks to you directly.** It only injects private
+  `additionalContext` for the assistant's *next* turn — a reminder to go
+  re-run its own self-check and apply its own existing thresholds. Whether
+  anything actually gets said to you stays entirely the assistant's call,
+  exactly as before.
+- **Drift check:** fires at most once every `MYOS_RABBITHOLE_DRIFT_INTERVAL_MIN`
+  (default 45) minutes of elapsed session time, with the same interval as a
+  cooldown — so back-to-back messages can never trigger it twice.
+- **Lateness check:** fires **once per session**, the first prompt that lands
+  during the configured late-hour window (default 23:00–05:00, your machine's
+  own local clock — nothing timezone-specific is hardcoded).
+- Configurable via env vars: `MYOS_RABBITHOLE_DRIFT_INTERVAL_MIN`,
+  `MYOS_RABBITHOLE_LATE_HOUR_START`, `MYOS_RABBITHOLE_LATE_HOUR_END`, or
+  disable entirely with `MYOS_RABBITHOLE_DISABLE=1`.
+- Per-session state lives at `<MYOS_HOME_ROOT>/state/rabbit-hole/<session_id>.json`;
+  `--uninstall` removes it along with the hook registration.
+
 ### Uninstall
 
 ```sh
 bash bin/install.sh --uninstall           # macOS / Linux
 ```
 
-Surgically removes the MyOS Dispatch hook and its `env` key, and the
-shell-title hooks + their `~/.zshrc`/`~/.bashrc` source line if present, **by
-marker** (leaving every unrelated setting and any other hooks in place),
-removes the generated index, and leaves your timestamped `settings.json` and
-shell rc backups for a full manual restore if you want one.
+Surgically removes the MyOS Dispatch hook and its `env` key, the shell-title
+hooks + their `~/.zshrc`/`~/.bashrc` source line if present, and the
+rabbit-hole hook + its session state if present — all **by marker** (leaving
+every unrelated setting and any other hooks in place) — removes the generated
+index, and leaves your timestamped `settings.json` and shell rc backups for a
+full manual restore if you want one.
 
 ### One-liner (optional)
 

@@ -2,6 +2,27 @@
 
 All notable changes to MyOS Dispatch are documented here.
 
+## v3.4.0 — 2026-07-22
+
+### Added
+
+- **Optional rabbit-hole self-check hook (`--with-rabbit-hole`).** Registers
+  a new `UserPromptSubmit` hook (`bin/myos-rabbithole-hook` +
+  `scripts/register-rabbithole-hook.js`, same safety contract as the other
+  two hook registrars — idempotent by marker, backed up, atomic write,
+  `--dry-run`/`--remove`) that closes a real gap: Rabbit Hole-style focus/
+  fatigue guidance is advisory-only, so nothing was ever forcing the
+  assistant to actually pause and run that self-check during a long
+  session — in practice it can simply never come up. The hook never
+  messages the user directly; it only injects private `additionalContext`
+  reminding the assistant to re-run its own judgment, on two independent,
+  cheap, deterministic cooldowns: a drift check (at most once per
+  `MYOS_RABBITHOLE_DRIFT_INTERVAL_MIN`, default 45 minutes) and a lateness
+  check (once per session, first prompt inside the configured late-hour
+  window, default 23:00–05:00 local system time). Coexists cleanly with the
+  dispatch hook on the same `UserPromptSubmit` event. Disable with
+  `MYOS_RABBITHOLE_DISABLE=1`.
+
 ## v3.3.0 — 2026-07-22
 
 ### Added

@@ -1,0 +1,175 @@
+#!/usr/bin/env node
+"use strict";
+
+// myos-rabbithole-hook — UserPromptSubmit hook that periodically forces the
+// assistant to actually run the Rabbit Hole self-check, instead of relying
+// on it to spontaneously remember to during a long, heads-down session.
+//
+// WHY THIS EXISTS: Rabbit Hole (see the `rabbit-hole` Claude Code skill) is
+// advisory-only — nothing was ever forcing the model to pause and ask
+// "does this still serve the mission?" during execution. In practice that
+// means it silently never fires across long sessions. This hook doesn't
+// replace the skill's judgment (only the model can tell whether current
+// work has actually drifted) — it just guarantees the model gets a private
+// nudge to re-run that judgment on a cheap, deterministic cadence.
+//
+// WHAT IT DOES NOT DO: it never talks to the user directly, never blocks a
+// turn, and never decides FOR the assistant whether something is a rabbit
+// hole. It only injects `hookSpecificOutput.additionalContext` — private
+// context for the assistant's next turn — reminding it to run the
+// rabbit-hole skill's own checkpoint and apply its own existing
+// intervention thresholds (medium/high confidence only, no repeat warnings
+// without new evidence). Whether anything gets said to the user stays a
+// model judgment call, exactly as the skill already specifies.
+//
+// Two cheap, deterministic triggers, each independently cooled down so this
+// can never nag every turn:
+//   - drift check: fires at most once per MYOS_RABBITHOLE_DRIFT_INTERVAL_MIN
+//     (default 45) minutes of elapsed session time.
+//   - lateness check: fires at most ONCE per session, the first time a
+//     prompt lands during the configured late-hour window (local system
+//     clock — this naturally matches whatever timezone the machine is in,
+//     nothing hardcoded).
+//
+// Opt out entirely with MYOS_RABBITHOLE_DISABLE=1.
+//
+// Always exits 0 — must never block a turn.
+
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
+
+const DEFAULT_DRIFT_INTERVAL_MIN = 45;
+const DEFAULT_LATE_HOUR_START = 23; // 11pm local
+const DEFAULT_LATE_HOUR_END = 5; // 5am local
+
+function readStdin() {
+  try {
+    return fs.readFileSync(0, "utf8");
+  } catch {
+    return "";
+  }
+}
+
+function parseInput(raw) {
+  try {
+    const parsed = JSON.parse(raw || "{}");
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function homeRoot() {
+  return process.env.MYOS_HOME_ROOT || path.join(os.homedir(), ".myos-dispatch");
+}
+
+function stateDir() {
+  return path.join(homeRoot(), "state", "rabbit-hole");
+}
+
+function stateFile(sessionId) {
+  const safeId = String(sessionId || "unknown").replace(/[^a-zA-Z0-9._-]/g, "_");
+  return path.join(stateDir(), `${safeId}.json`);
+}
+
+function loadState(sessionId, now) {
+  const file = stateFile(sessionId);
+  try {
+    const raw = fs.readFileSync(file, "utf8");
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === "object") return parsed;
+  } catch {
+    // fall through to a fresh state
+  }
+  return { sessionStartTs: now, lastNudgeTs: now, latenessNudged: false };
+}
+
+function saveState(sessionId, state) {
+  const dir = stateDir();
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(stateFile(sessionId), JSON.stringify(state));
+  } catch {
+    // best effort — a failed write just means we might nudge again sooner
+    // than intended next time, never a hard failure
+  }
+}
+
+function envInt(name, fallback) {
+  const raw = process.env[name];
+  if (!raw) return fallback;
+  const n = Number.parseInt(raw, 10);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function isLateHour(hour, start, end) {
+  if (start === end) return false;
+  if (start < end) return hour >= start && hour < end;
+  // window wraps midnight, e.g. 23 -> 5
+  return hour >= start || hour < end;
+}
+
+function buildContext({ driftDue, latenessDue, elapsedMin, hour }) {
+  const lines = [
+    "[Internal session self-check reminder — this note is for you, not the user; do not mention it or quote it directly]",
+  ];
+  if (driftDue) {
+    lines.push(
+      `It has been about ${elapsedMin} minutes since the last self-check. Per the rabbit-hole skill, silently assess whether recent work still serves the user's stated mission, or has drifted into interesting-but-lower-value work.`
+    );
+  }
+  if (latenessDue) {
+    lines.push(
+      `Local time is ${String(hour).padStart(2, "0")}:xx, a late hour. Per the rabbit-hole skill, silently assess fatigue/quality risk and whether a brief late-night check-in is warranted.`
+    );
+  }
+  lines.push(
+    "Only speak up if confidence is medium or high, using the skill's brief checkpoint format with explicit choices. Otherwise proceed normally and say nothing about this reminder."
+  );
+  return lines.join(" ");
+}
+
+function main() {
+  if (process.env.MYOS_RABBITHOLE_DISABLE === "1") process.exit(0);
+
+  const input = parseInput(readStdin());
+  const sessionId = typeof input.session_id === "string" && input.session_id ? input.session_id : "unknown";
+  const now = Date.now();
+
+  const driftIntervalMs = Math.max(1, envInt("MYOS_RABBITHOLE_DRIFT_INTERVAL_MIN", DEFAULT_DRIFT_INTERVAL_MIN)) * 60000;
+  const lateStart = envInt("MYOS_RABBITHOLE_LATE_HOUR_START", DEFAULT_LATE_HOUR_START);
+  const lateEnd = envInt("MYOS_RABBITHOLE_LATE_HOUR_END", DEFAULT_LATE_HOUR_END);
+
+  const state = loadState(sessionId, now);
+  const elapsedSinceStartMs = now - state.sessionStartTs;
+  const elapsedSinceNudgeMs = now - state.lastNudgeTs;
+  const hour = new Date(now).getHours();
+
+  const driftDue = elapsedSinceStartMs >= driftIntervalMs && elapsedSinceNudgeMs >= driftIntervalMs;
+  const latenessDue = isLateHour(hour, lateStart, lateEnd) && !state.latenessNudged;
+
+  if (!driftDue && !latenessDue) {
+    saveState(sessionId, state); // persist sessionStartTs on first sight even if no nudge yet
+    process.exit(0);
+  }
+
+  const elapsedMin = Math.round(elapsedSinceStartMs / 60000);
+  const context = buildContext({ driftDue, latenessDue, elapsedMin, hour });
+
+  state.lastNudgeTs = now;
+  if (latenessDue) state.latenessNudged = true;
+  saveState(sessionId, state);
+
+  process.stdout.write(
+    `${JSON.stringify({
+      hookSpecificOutput: {
+        hookEventName: "UserPromptSubmit",
+        additionalContext: context,
+      },
+    })}\n`
+  );
+  process.exit(0);
+}
+
+main();

@@ -23,6 +23,13 @@
 #                         short recap of what Claude just did after each turn. macOS/Linux
 #                         only (zsh or bash); appends one idempotent `source` line to your
 #                         shell rc file. See shell/term-title-hook.{zsh,bash}.
+#   --with-rabbit-hole    Periodically (and quietly) reminds the assistant to re-run its
+#                         own "am I still on-mission / is it very late" self-check during
+#                         long sessions, instead of relying on it to spontaneously remember.
+#                         Never messages you directly by itself — it only nudges the
+#                         assistant's own judgment, on a cheap cooldown (default: at most
+#                         once per 45 minutes for drift, once per session for lateness).
+#                         See bin/myos-rabbithole-hook.
 #   --index-dir <path>    Directory to scan for the new user's projects (recipes/skills/workflows).
 #   --no-hook             Skip Claude settings.json hook registration entirely.
 #   --uninstall           Reverse the install.
@@ -56,6 +63,7 @@ WITH_EXTRAS=0
 WITH_GRAPHIFY=0
 WITH_GITNEXUS=0
 WITH_SHELL_TITLE=0
+WITH_RABBIT_HOLE=0
 NO_HOOK=0
 DO_UNINSTALL=0
 INDEX_DIR=""
@@ -68,6 +76,7 @@ while [ $# -gt 0 ]; do
     --with-graphify) WITH_GRAPHIFY=1 ;;
     --with-gitnexus) WITH_GITNEXUS=1 ;;
     --with-shell-title) WITH_SHELL_TITLE=1 ;;
+    --with-rabbit-hole) WITH_RABBIT_HOLE=1 ;;
     --no-hook) NO_HOOK=1 ;;
     --uninstall) DO_UNINSTALL=1 ;;
     --index-dir) INDEX_DIR="${2:-}"; shift ;;
@@ -134,6 +143,8 @@ uninstall() {
     ok "Stripped MyOS Dispatch hook + env key from $SETTINGS"
     "$node_bin" "$REPO_DIR/scripts/register-title-hook.js" --settings "$SETTINGS" --remove >/dev/null 2>&1 || true
     ok "Stripped shell-title hook (if present) from $SETTINGS"
+    "$node_bin" "$REPO_DIR/scripts/register-rabbithole-hook.js" --settings "$SETTINGS" --remove >/dev/null 2>&1 || true
+    ok "Stripped rabbit-hole hook (if present) from $SETTINGS"
     local latest_bak
     latest_bak="$(ls -1t "$SETTINGS".bak-* 2>/dev/null | head -n1 || true)"
     [ -n "$latest_bak" ] && info "A timestamped backup remains for full restore: $latest_bak"
@@ -147,6 +158,10 @@ uninstall() {
       remove_shell_title_rc_line "$rc_file"
       ok "Removed the shell-title source line from $rc_file (a timestamped backup was made)"
     fi
+  fi
+  if [ -d "$HOME_ROOT/state/rabbit-hole" ]; then
+    rm -rf "$HOME_ROOT/state/rabbit-hole"
+    ok "Removed rabbit-hole session state"
   fi
   if [ -f "$INDEX_PATH" ]; then
     rm -f "$INDEX_PATH"
@@ -162,7 +177,7 @@ uninstall() {
 # --------------------------------------------------------------------------
 # 1. Preflight
 # --------------------------------------------------------------------------
-step "1/8  Preflight checks"
+step "1/9  Preflight checks"
 
 NODE_BIN="$(resolve_node)"
 [ -n "$NODE_BIN" ] || fail "Node.js >= 20 is required but not found. Install via nvm (https://github.com/nvm-sh/nvm) or 'brew install node'."
@@ -190,7 +205,7 @@ else info "no agent CLI (claude/codex) found (optional)"; fi
 # --------------------------------------------------------------------------
 # 2. Install node dependencies (scoped to repo)
 # --------------------------------------------------------------------------
-step "2/8  Installing node dependencies (scoped to repo, never global)"
+step "2/9  Installing node dependencies (scoped to repo, never global)"
 cd "$REPO_DIR"
 if [ "$WITH_EXTRAS" -eq 1 ]; then
   info "Building optional deps too (better-sqlite3 native build)…"
@@ -203,7 +218,7 @@ ok "Dependencies installed under $REPO_DIR/node_modules"
 # --------------------------------------------------------------------------
 # 3. Optional component bootstrap (opt-in, degrade gracefully)
 # --------------------------------------------------------------------------
-step "3/8  Optional components"
+step "3/9  Optional components"
 if [ "$WITH_GRAPHIFY" -eq 1 ]; then
   if command -v pipx >/dev/null 2>&1; then
     pipx install graphifyy >/dev/null 2>&1 && ok "graphify installed via pipx" || warn "pipx install graphifyy failed; skipping (optional)"
@@ -230,7 +245,7 @@ fi
 # --------------------------------------------------------------------------
 # 4. Build the NEW USER's capability index (never ship anyone else's)
 # --------------------------------------------------------------------------
-step "4/8  Building your capability index"
+step "4/9  Building your capability index"
 mkdir -p "$WORKSPACE_DIR"
 GEN_ARGS=(--out "$INDEX_PATH")
 if [ -n "$INDEX_DIR" ]; then
@@ -247,7 +262,7 @@ ok "Index written to $INDEX_PATH"
 # --------------------------------------------------------------------------
 # 5. Register the Claude Code hook (the careful part)
 # --------------------------------------------------------------------------
-step "5/8  Registering the Claude Code dispatch hook"
+step "5/9  Registering the Claude Code dispatch hook"
 if [ "$NO_HOOK" -eq 1 ]; then
   info "--no-hook set; skipping settings.json registration."
 else
@@ -281,7 +296,7 @@ fi
 # --------------------------------------------------------------------------
 # 6. Optional: shell-title hook (rename the terminal tab per-project + recap)
 # --------------------------------------------------------------------------
-step "6/8  Shell-title hook"
+step "6/9  Shell-title hook"
 SHELL_TITLE_DONE=0
 SHELL_TITLE_RC_DONE=0
 if [ "$WITH_SHELL_TITLE" -eq 1 ]; then
@@ -319,9 +334,28 @@ else
 fi
 
 # --------------------------------------------------------------------------
-# 7. Smoke test
+# 7. Optional: rabbit-hole self-check nudge
 # --------------------------------------------------------------------------
-step "7/8  Smoke test"
+step "7/9  Rabbit-hole self-check hook"
+RABBITHOLE_DONE=0
+if [ "$WITH_RABBIT_HOLE" -eq 1 ]; then
+  if [ "$NO_HOOK" -eq 1 ]; then
+    warn "--no-hook set; skipping rabbit-hole hook registration too."
+  else
+    mkdir -p "$CLAUDE_DIR"
+    RABBITHOLE_HOOK_PATH="$REPO_DIR/bin/myos-rabbithole-hook"
+    "$NODE_BIN" "$REPO_DIR/scripts/register-rabbithole-hook.js" --settings "$SETTINGS" --node "$NODE_BIN" --hook "$RABBITHOLE_HOOK_PATH"
+    ok "Registered the rabbit-hole self-check hook (idempotent; unrelated settings untouched)."
+    RABBITHOLE_DONE=1
+  fi
+else
+  info "rabbit-hole: skipped (pass --with-rabbit-hole to enable the periodic self-check nudge)"
+fi
+
+# --------------------------------------------------------------------------
+# 8. Smoke test
+# --------------------------------------------------------------------------
+step "8/9  Smoke test"
 SMOKE_OUT="$(printf '%s' '{"prompt":"test","hookEventName":"UserPromptSubmit"}' | MYOS_HOME_ROOT="$HOME_ROOT" "$NODE_BIN" "$HOOK_PATH" --surface=claude 2>/dev/null || true)"
 if printf '%s' "$SMOKE_OUT" | grep -q '"additionalContext"'; then
   ok "Hook emitted hookSpecificOutput.additionalContext"
@@ -342,7 +376,7 @@ fi
 # --------------------------------------------------------------------------
 # 7. Local model catalog report
 # --------------------------------------------------------------------------
-step "8/8  Building the local model catalog report"
+step "9/9  Building the local model catalog report"
 if MYOS_HOME_ROOT="$HOME_ROOT" "$NODE_BIN" "$REPO_DIR/scripts/setup-model-catalog.js" --home "$HOME_ROOT" --report; then
   ok "Local model catalog written to $HOME_ROOT/config/model-catalog.local.json"
 else
@@ -358,6 +392,7 @@ cat <<EOF
   Model catalog: $HOME_ROOT/config/model-catalog.local.json
   Claude hook: $([ "$NO_HOOK" -eq 1 ] && echo 'not registered (--no-hook)' || echo "$SETTINGS")
   Shell title: $([ "$SHELL_TITLE_DONE" -eq 1 ] && echo "enabled$([ "$SHELL_TITLE_RC_DONE" -eq 0 ] && echo ' (hooks only — unrecognized $SHELL, no rc integration)')" || echo 'not enabled (pass --with-shell-title, without --no-hook, to enable)')
+  Rabbit hole: $([ "$RABBITHOLE_DONE" -eq 1 ] && echo 'enabled' || echo 'not enabled (pass --with-rabbit-hole, without --no-hook, to enable)')
 
   Next steps:
     • Restart Claude Code so it reloads settings.json.
