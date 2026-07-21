@@ -50,6 +50,12 @@ Your job, in order:
      1. Quit and reopen Claude Code so it reloads `~/.claude/settings.json`. (If you just installed Node in this same window, also close and reopen the terminal first.)
      2. Type any prompt in the fresh Claude Code session and look for the `[MyOS Dispatch route]` line to confirm Dispatch is routing.
 
+Post-install model catalog:
+- Restate in my own language what MyOS Dispatch is, in human terms, not the internals.
+- Present the task-class report exactly as printed by `node scripts/setup-model-catalog.js --report`.
+- Ask whether I want to change any assignment.
+- If I want a change, edit the `overrides` section of `<MYOS_HOME_ROOT>/config/model-catalog.local.json`, then re-run `node scripts/setup-model-catalog.js --report` to confirm.
+
 Hard blockers, the only reasons to stop:
 
 - Node 20+ is not installed and I decline to install it

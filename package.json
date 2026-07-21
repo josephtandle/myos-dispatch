@@ -1,6 +1,6 @@
 {
   "name": "myos-dispatch",
-  "version": "3.1.0",
+  "version": "3.2.0",
   "description": "Standalone MyOS Dispatch routing and execution core.",
   "type": "commonjs",
   "main": "src/workspace-context.js",

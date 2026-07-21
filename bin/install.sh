@@ -118,7 +118,7 @@ uninstall() {
 # --------------------------------------------------------------------------
 # 1. Preflight
 # --------------------------------------------------------------------------
-step "1/6  Preflight checks"
+step "1/7  Preflight checks"
 
 NODE_BIN="$(resolve_node)"
 [ -n "$NODE_BIN" ] || fail "Node.js >= 20 is required but not found. Install via nvm (https://github.com/nvm-sh/nvm) or 'brew install node'."
@@ -146,7 +146,7 @@ else info "no agent CLI (claude/codex) found (optional)"; fi
 # --------------------------------------------------------------------------
 # 2. Install node dependencies (scoped to repo)
 # --------------------------------------------------------------------------
-step "2/6  Installing node dependencies (scoped to repo, never global)"
+step "2/7  Installing node dependencies (scoped to repo, never global)"
 cd "$REPO_DIR"
 if [ "$WITH_EXTRAS" -eq 1 ]; then
   info "Building optional deps too (better-sqlite3 native build)…"
@@ -159,7 +159,7 @@ ok "Dependencies installed under $REPO_DIR/node_modules"
 # --------------------------------------------------------------------------
 # 3. Optional component bootstrap (opt-in, degrade gracefully)
 # --------------------------------------------------------------------------
-step "3/6  Optional components"
+step "3/7  Optional components"
 if [ "$WITH_GRAPHIFY" -eq 1 ]; then
   if command -v pipx >/dev/null 2>&1; then
     pipx install graphifyy >/dev/null 2>&1 && ok "graphify installed via pipx" || warn "pipx install graphifyy failed; skipping (optional)"
@@ -186,7 +186,7 @@ fi
 # --------------------------------------------------------------------------
 # 4. Build the NEW USER's capability index (never ship anyone else's)
 # --------------------------------------------------------------------------
-step "4/6  Building your capability index"
+step "4/7  Building your capability index"
 mkdir -p "$WORKSPACE_DIR"
 GEN_ARGS=(--out "$INDEX_PATH")
 if [ -n "$INDEX_DIR" ]; then
@@ -203,7 +203,7 @@ ok "Index written to $INDEX_PATH"
 # --------------------------------------------------------------------------
 # 5. Register the Claude Code hook (the careful part)
 # --------------------------------------------------------------------------
-step "5/6  Registering the Claude Code dispatch hook"
+step "5/7  Registering the Claude Code dispatch hook"
 if [ "$NO_HOOK" -eq 1 ]; then
   info "--no-hook set; skipping settings.json registration."
 else
@@ -237,7 +237,7 @@ fi
 # --------------------------------------------------------------------------
 # 6. Smoke test
 # --------------------------------------------------------------------------
-step "6/6  Smoke test"
+step "6/7  Smoke test"
 SMOKE_OUT="$(printf '%s' '{"prompt":"test","hookEventName":"UserPromptSubmit"}' | MYOS_HOME_ROOT="$HOME_ROOT" "$NODE_BIN" "$HOOK_PATH" --surface=claude 2>/dev/null || true)"
 if printf '%s' "$SMOKE_OUT" | grep -q '"additionalContext"'; then
   ok "Hook emitted hookSpecificOutput.additionalContext"
@@ -255,12 +255,23 @@ else
   fail "Smoke test failed — hook did not emit additionalContext. Output was: $SMOKE_OUT"
 fi
 
+# --------------------------------------------------------------------------
+# 7. Local model catalog report
+# --------------------------------------------------------------------------
+step "7/7  Building the local model catalog report"
+if MYOS_HOME_ROOT="$HOME_ROOT" "$NODE_BIN" "$REPO_DIR/scripts/setup-model-catalog.js" --home "$HOME_ROOT" --report; then
+  ok "Local model catalog written to $HOME_ROOT/config/model-catalog.local.json"
+else
+  warn "Model catalog report failed; continuing without blocking install."
+fi
+
 step "MyOS Dispatch installed."
 cat <<EOF
 
   Repo:        $REPO_DIR
   Data home:   $HOME_ROOT  (MYOS_HOME_ROOT)
   Index:       $INDEX_PATH
+  Model catalog: $HOME_ROOT/config/model-catalog.local.json
   Claude hook: $([ "$NO_HOOK" -eq 1 ] && echo 'not registered (--no-hook)' || echo "$SETTINGS")
 
   Next steps:

@@ -181,7 +181,7 @@ if ($NoHook) {
 }
 
 # --- 6. Smoke test ---------------------------------------------------------
-Step "6/6  Smoke test"
+Step "6/7  Smoke test"
 $env:MYOS_HOME_ROOT = $HomeRoot
 $smoke = '{"prompt":"test","hookEventName":"UserPromptSubmit"}' | & $NodeBin $HookPath --surface=claude
 if ($smoke -match '"additionalContext"') {
@@ -201,12 +201,22 @@ if ($smoke -match '"additionalContext"') {
   Die "Smoke test failed — hook did not emit additionalContext. Output: $smoke"
 }
 
+# --- 7. Local model catalog report ----------------------------------------
+Step "7/7  Building the local model catalog report"
+try {
+  & $NodeBin (Join-Path $RepoDir "scripts\setup-model-catalog.js") --home $HomeRoot --report
+  Ok "Local model catalog written to $(Join-Path $HomeRoot 'config\model-catalog.local.json')"
+} catch {
+  Warn "Model catalog report failed; continuing without blocking install."
+}
+
 Step "MyOS Dispatch installed."
 Write-Host @"
 
   Repo:        $RepoDir
   Data home:   $HomeRoot  (MYOS_HOME_ROOT)
   Index:       $IndexPath
+  Model catalog: $(Join-Path $HomeRoot 'config\model-catalog.local.json')
   Claude hook: $(if ($NoHook) { 'not registered (-NoHook)' } else { $Settings })
 
   Next steps:

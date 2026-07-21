@@ -55,6 +55,10 @@ function resolveStateRoot(...segments) {
   return resolveHomePath("state", ...segments);
 }
 
+function resolveModelCatalogLocalPath(homeRoot = preferredHomeRoot()) {
+  return path.join(homeRoot, "config", "model-catalog.local.json");
+}
+
 function primaryServiceNamespace() {
   return process.env.MYOS_SERVICE_NAMESPACE || "myos";
 }
@@ -100,6 +104,7 @@ module.exports = {
   resolveHomePath,
   resolveLogsRoot,
   resolveStateRoot,
+  resolveModelCatalogLocalPath,
   resolveWorkspacePath,
   resolveWorkspaceRoot,
   rootCandidates,

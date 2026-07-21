@@ -4,9 +4,9 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
-const { normalizeProvider } = require("./model-catalog");
+const { loadCatalog, normalizeProvider, resolveProfileModel } = require("./model-catalog");
 const { readLaneState } = require("./myos-lane");
-const { resolveWorkspacePath } = require("./myos-compat");
+const { resolveModelCatalogLocalPath, resolveWorkspacePath } = require("./myos-compat");
 
 const CANONICAL_TASK_CLASSES = Object.freeze([
   "cheap_routing",
@@ -51,6 +51,9 @@ function loadRoutingPolicy() {
 }
 
 const ROUTING_POLICY = loadRoutingPolicy();
+
+let localAssignmentsCache = null;
+let localAssignmentsCachePath = null;
 
 const DETERMINISTIC_TOOLS = Object.freeze({
   mlx_whisper_local: {
@@ -105,6 +108,204 @@ function cloneRoute(route = {}) {
   };
 }
 
+function clearLocalAssignmentsCache() {
+  localAssignmentsCache = null;
+  localAssignmentsCachePath = null;
+}
+
+function getLocalAssignmentsPath() {
+  return process.env.MYOS_MODEL_CATALOG_LOCAL || resolveModelCatalogLocalPath();
+}
+
+function readLocalAssignmentsFile() {
+  const target = getLocalAssignmentsPath();
+  if (localAssignmentsCachePath === target) {
+    return localAssignmentsCache;
+  }
+
+  localAssignmentsCachePath = target;
+  try {
+    if (!fs.existsSync(target)) {
+      localAssignmentsCache = null;
+      return null;
+    }
+    const parsed = JSON.parse(fs.readFileSync(target, "utf8"));
+    localAssignmentsCache = parsed && typeof parsed === "object" ? parsed : null;
+    return localAssignmentsCache;
+  } catch {
+    localAssignmentsCache = null;
+    return null;
+  }
+}
+
+function candidateKey(candidate = {}) {
+  return [
+    candidate.type || "",
+    candidate.tool || "",
+    candidate.provider || "",
+    candidate.profile || "",
+    candidate.model || "",
+    candidate.authMode || "",
+  ].join("|");
+}
+
+function dedupeCandidates(candidates = []) {
+  const seen = new Set();
+  const output = [];
+  for (const candidate of candidates) {
+    const key = candidateKey(candidate);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    output.push(candidate);
+  }
+  return output;
+}
+
+function expectedAuthModeForLane(lane) {
+  return lane === "interactive_oauth" ? "oauth" : "api";
+}
+
+function resolveProfileOrModelTarget(provider, profile, model) {
+  const normalizedProvider = normalizeProvider(provider);
+  const catalog = loadCatalog(normalizedProvider);
+  const profileId = profile ? String(profile).trim() : "";
+
+  if (model) {
+    const resolvedModel = catalog.models.find(
+      (entry) => entry.id === model || entry.model === model
+    );
+    if (!resolvedModel) return null;
+    if (profileId) {
+      const resolvedProfile = catalog.routing_profiles.find((entry) => entry.id === profileId);
+      if (!resolvedProfile) return null;
+    }
+    return {
+      provider: normalizedProvider,
+      profile: profileId || null,
+      model: resolvedModel.id,
+    };
+  }
+
+  if (!profileId) return null;
+  try {
+    const resolved = resolveProfileModel(catalog, profileId);
+    return {
+      provider: normalizedProvider,
+      profile: resolved.profile.id,
+      model: resolved.model.id,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function normalizeRouteTarget(target, { allowMissingAuthMode = false, expectedAuthMode = null } = {}) {
+  try {
+    if (!target || typeof target !== "object") return null;
+    if (target.type && target.type !== "llm" && target.type !== "deterministic") return null;
+    if (target.type === "deterministic") {
+      const tool = DETERMINISTIC_TOOLS[target.tool];
+      return tool ? { type: "deterministic", tool: target.tool } : null;
+    }
+
+    const provider = String(target.provider || "").trim().toLowerCase();
+    if (!provider) return null;
+    const resolved = resolveProfileOrModelTarget(provider, target.profile, target.model);
+    if (!resolved) return null;
+    const authMode = String(target.authMode || "").trim().toLowerCase();
+    if (!authMode && !allowMissingAuthMode) return null;
+    if (authMode && authMode !== "oauth" && authMode !== "api") return null;
+    if (expectedAuthMode && authMode && authMode !== expectedAuthMode) return null;
+
+    return {
+      type: "llm",
+      provider: resolved.provider,
+      profile: resolved.profile,
+      model: resolved.model,
+      authMode: authMode || null,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function buildRouteFromEntry(entry, { allowMissingAuthMode = false, expectedAuthMode = null } = {}) {
+  if (!entry || typeof entry !== "object") return null;
+  const route = {
+    deterministicOptions: [],
+    llmTargets: [],
+  };
+
+  if (Array.isArray(entry.deterministicOptions)) {
+    for (const option of entry.deterministicOptions) {
+      const normalized = normalizeRouteTarget(option, { allowMissingAuthMode, expectedAuthMode });
+      if (!normalized) continue;
+      route.deterministicOptions.push(normalized);
+    }
+  }
+
+  if (Array.isArray(entry.llmTargets)) {
+    for (const target of entry.llmTargets) {
+      const normalized = normalizeRouteTarget(target, { allowMissingAuthMode, expectedAuthMode });
+      if (!normalized) continue;
+      route.llmTargets.push(normalized);
+    }
+  } else if (entry.provider && (entry.profile || entry.model)) {
+    const normalized = normalizeRouteTarget(entry, { allowMissingAuthMode, expectedAuthMode });
+    if (normalized) route.llmTargets.push(normalized);
+  }
+
+  if (!route.deterministicOptions.length && !route.llmTargets.length) return null;
+  return route;
+}
+
+function resolveLocalRoutePreference(taskClass, lane) {
+  const localState = readLocalAssignmentsFile();
+  if (!localState) return null;
+  const expectedAuthMode = expectedAuthModeForLane(lane);
+
+  const overrides = localState.overrides && typeof localState.overrides === "object"
+    ? localState.overrides[taskClass]
+    : null;
+  const overrideRoute = buildRouteFromEntry(overrides, {
+    allowMissingAuthMode: true,
+    expectedAuthMode,
+  });
+  if (overrideRoute) {
+    return { route: overrideRoute, source: "local_override" };
+  }
+
+  const assignment = localState.assignments && typeof localState.assignments === "object"
+    ? localState.assignments[taskClass]
+    : null;
+  if (!assignment || assignment.unassigned || assignment.source !== "auto") {
+    return null;
+  }
+  if (assignment.lane !== lane) {
+    return null;
+  }
+
+  const normalized = normalizeRouteTarget({
+    type: "llm",
+    provider: assignment.provider,
+    profile: assignment.profile,
+    model: assignment.model,
+    authMode: assignment.authMode,
+  }, {
+    allowMissingAuthMode: false,
+    expectedAuthMode,
+  });
+  if (!normalized) return null;
+
+  return {
+    route: {
+      deterministicOptions: [],
+      llmTargets: [normalized],
+    },
+    source: "local_assignment",
+  };
+}
+
 function mergeRouteOverrides(baseRoute, overrideRoute) {
   if (!overrideRoute || typeof overrideRoute !== "object") return baseRoute;
   const merged = cloneRoute(baseRoute);
@@ -123,15 +324,30 @@ function mergeRouteOverrides(baseRoute, overrideRoute) {
 function resolveRouteEntry({ taskClass, intent, complianceLane }) {
   const lane = normalizeComplianceLane(complianceLane);
   const normalizedTaskClass = normalizeTaskClass(taskClass);
+  const localPreference = resolveLocalRoutePreference(normalizedTaskClass, lane);
   const routeOverrides = readLaneState().routeOverrides || {};
   const normalizedIntent = intent ? String(intent).trim() : "";
 
+  if (localPreference?.source === "local_override") {
+    return {
+      routeKey: normalizedIntent || normalizedTaskClass,
+      routingSource: "local_override",
+      route: localPreference.route,
+    };
+  }
+
   if (normalizedIntent && ROUTING_POLICY.intents[normalizedIntent]?.[lane]) {
     const baseRoute = ROUTING_POLICY.intents[normalizedIntent][lane];
+    const merged = mergeRouteOverrides(baseRoute, routeOverrides?.[normalizedIntent]?.[lane]);
     return {
       routeKey: normalizedIntent,
       routingSource: "intent",
-      route: mergeRouteOverrides(baseRoute, routeOverrides?.[normalizedIntent]?.[lane]),
+      route: localPreference?.source === "local_assignment"
+        ? {
+            ...merged,
+            llmTargets: dedupeCandidates([...localPreference.route.llmTargets, ...merged.llmTargets]),
+          }
+        : merged,
     };
   }
 
@@ -143,7 +359,14 @@ function resolveRouteEntry({ taskClass, intent, complianceLane }) {
   return {
     routeKey: normalizedTaskClass,
     routingSource: normalizedIntent ? "taskClass_fallback" : "taskClass",
-    route: mergeRouteOverrides(baseRoute, routeOverrides?.[normalizedTaskClass]?.[lane]),
+    route: (() => {
+      const merged = mergeRouteOverrides(baseRoute, routeOverrides?.[normalizedTaskClass]?.[lane]);
+      if (localPreference?.source !== "local_assignment") return merged;
+      return {
+        ...merged,
+        llmTargets: dedupeCandidates([...localPreference.route.llmTargets, ...merged.llmTargets]),
+      };
+    })(),
   };
 }
 
@@ -376,6 +599,7 @@ module.exports = {
   COMPLIANCE_LANES,
   DETERMINISTIC_TOOLS,
   ROUTING_POLICY,
+  clearLocalAssignmentsCache,
   deriveComplianceLane,
   executeDeterministicCandidate,
   isCanonicalTaskClass,

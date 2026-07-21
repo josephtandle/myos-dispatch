@@ -4,6 +4,7 @@ const path = require("node:path");
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
+process.env.MYOS_MODEL_CATALOG_LOCAL = process.env.MYOS_MODEL_CATALOG_LOCAL || "/nonexistent/model-catalog.local.json";
 const {
   readLaneState,
   writeLaneState,
@@ -201,6 +202,15 @@ test("explicit Fable model IDs are blocked from API auth outside the advisory pr
 });
 
 test("myosRun preserves GPT 5.5 for foreground planning evaluation OAuth calls", async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "myos-lane-ledgers-"));
+  const previousEnv = {
+    MYOS_USAGE_LEDGER_DIR: process.env.MYOS_USAGE_LEDGER_DIR,
+    MYOS_ACTIVITY_LEDGER_DIR: process.env.MYOS_ACTIVITY_LEDGER_DIR,
+    MYOS_DISPATCH_HEALTH_STATE_FILE: process.env.MYOS_DISPATCH_HEALTH_STATE_FILE,
+  };
+  process.env.MYOS_USAGE_LEDGER_DIR = path.join(tempRoot, "usage");
+  process.env.MYOS_ACTIVITY_LEDGER_DIR = path.join(tempRoot, "activity");
+  process.env.MYOS_DISPATCH_HEALTH_STATE_FILE = path.join(tempRoot, "health.json");
   setCodexExecRunnerForTest(({ model, allowGpt55 }) => {
     assert.equal(model, "gpt-5.5");
     assert.equal(allowGpt55, true);
@@ -228,5 +238,12 @@ test("myosRun preserves GPT 5.5 for foreground planning evaluation OAuth calls",
     assert.equal(result.goalMode, "ralph");
   } finally {
     resetCodexExecRunnerForTest();
+    for (const [key, value] of Object.entries(previousEnv)) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
   }
 });

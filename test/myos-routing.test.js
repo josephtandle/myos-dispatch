@@ -6,6 +6,7 @@ const path = require("node:path");
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
+process.env.MYOS_MODEL_CATALOG_LOCAL = process.env.MYOS_MODEL_CATALOG_LOCAL || "/nonexistent/model-catalog.local.json";
 const routing = require("../src/myos-routing");
 
 function tempLaneStatePath() {

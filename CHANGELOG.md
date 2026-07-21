@@ -2,6 +2,39 @@
 
 All notable changes to MyOS Dispatch are documented here.
 
+## v3.2.0 — 2026-07-21
+
+### Added
+
+- **Install-time model detection, local catalog, and task-class assignment.**
+  A new step at the end of `install.sh` / `install.ps1` runs
+  `scripts/setup-model-catalog.js`, which detects what you actually have
+  (provider CLIs such as `codex`, `claude`, and `gemini`; API keys in your
+  environment, recorded as booleans only, never values; local runtimes such
+  as `ollama` and `mlx_whisper`), writes
+  `<MYOS_HOME_ROOT>/config/model-catalog.local.json`, and makes a best-guess
+  assignment of the eight canonical task classes to the cheapest suitable
+  model you have, preferring signed-in CLIs over API keys.
+- **Post-install report.** The installer explains in plain language what
+  MyOS Dispatch is, lists the models it identified as available on the
+  machine, shows the best-guess task-class assignments with a one-line
+  reason each, and closes with an invitation to change any of them. The
+  unified install prompt instructs the installing agent to present this
+  report and apply requested changes to the `overrides` section.
+- **Runtime honoring.** `resolveExecutionPlan()` consults the local catalog:
+  `overrides` win outright, auto assignments are preferred ahead of the
+  shipped policy, and invalid, unassigned, missing, or corrupt entries fall
+  back silently to previous behavior. Re-running the setup script refreshes
+  assignments without touching overrides.
+
+### Notes
+
+- Detection stores availability booleans only; no secret values are read
+  into the catalog or printed.
+- The privacy-trimmed install from v3.1.0 still works, including the new
+  setup script, with `src/runtime`, `src/background`, and
+  `bin/myos-sidecar.js` deleted.
+
 ## v3.1.0 — 2026-07-21
 
 ### Fixed
