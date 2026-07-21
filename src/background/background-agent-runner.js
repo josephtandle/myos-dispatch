@@ -115,6 +115,10 @@ function isSidecarProcess(env = process.env) {
     String(env?.MYOS_SIDECAR_ORCHESTRATED || "") === "1";
 }
 
+function backgroundAgentsDisabled(env = process.env) {
+  return String(env?.MYOS_BACKGROUND_AGENTS_ENABLED ?? "").trim() === "0";
+}
+
 function createOrchestratorContext(options = {}) {
   const existing = options.orchestratorContext || {};
   return {
@@ -655,6 +659,11 @@ function effectiveModeForTask(task = {}, options = {}) {
 }
 
 async function runBackgroundTask(task, options = {}) {
+  if (backgroundAgentsDisabled(options.env || process.env)) {
+    return skippedResult(task, "Skipped: background agents disabled by MYOS_BACKGROUND_AGENTS_ENABLED=0.", {
+      runner: normalizeWorkerKind(options.command || "codex"),
+    });
+  }
   assertOrchestratedTask(options);
   const effectiveMode = effectiveModeForTask(task, options);
   const normalizedTask = { ...task, effectiveMode };
@@ -822,6 +831,11 @@ function startBackgroundTasks(plan = {}, options = {}) {
     return { requiredPromise: empty, allPromise: empty, selectedTasks: [] };
   }
 
+  if (backgroundAgentsDisabled(options.env || process.env)) {
+    const results = tasks.map((task) => plannedResult(task, "Background execution disabled by MYOS_BACKGROUND_AGENTS_ENABLED=0."));
+    const resolved = Promise.resolve(results);
+    return { requiredPromise: resolved, allPromise: resolved, selectedTasks: tasks };
+  }
   const enabled = Boolean(options.enabled);
   if (!enabled) {
     const results = tasks.map((task) => plannedResult(task, "Background execution disabled by runtime configuration."));

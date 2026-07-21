@@ -171,6 +171,9 @@ function surfaceFanoutInstruction(surface, parallel) {
 }
 
 function fanoutMandateLines(surface, parallel) {
+  if ((parallel.blockedReasons || []).includes("background_agents_disabled")) {
+    return ["- Background fan-out is disabled on this machine (MYOS_BACKGROUND_AGENTS_ENABLED=0). Work the critical path in this session and do not spawn background subagents."];
+  }
   const lines = [
     "- Fan out FIRST on non-trivial work: dispatch the parallel lanes above at the start of the turn, then work the critical path while they run.",
     "- Prefer breadth over depth: many parallel single-purpose subagents, shallow nesting. Never chain subagents deeper than the depth shown; widen instead.",

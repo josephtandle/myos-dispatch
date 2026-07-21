@@ -112,6 +112,10 @@ function resolveMaxSidecars(env = process.env) {
   return clampInt(raw, DEFAULT_MAX_SIDECARS, 0, MAX_SIDECAR_CAP);
 }
 
+function backgroundAgentsDisabled(env = process.env) {
+  return String(env?.MYOS_BACKGROUND_AGENTS_ENABLED ?? "").trim() === "0";
+}
+
 function resolveWritableLaneCap(env = process.env, maxSidecars = DEFAULT_MAX_SIDECARS) {
   return clampInt(env?.MYOS_PARALLELIZATION_MAX_WRITABLE_SIDECARS, Math.min(DEFAULT_WRITABLE_LANE_CAP, maxSidecars), 0, Math.min(DEFAULT_WRITABLE_LANE_CAP, maxSidecars));
 }
@@ -418,7 +422,9 @@ function buildParallelizationPlan(input, basePlan = {}, signals = {}) {
     env: signals.env,
   });
   const env = signals.env || process.env;
+  const backgroundDisabled = backgroundAgentsDisabled(env);
   const blockedReasons = detectBlockedReasons(text, basePlan);
+  if (backgroundDisabled) blockedReasons.push("background_agents_disabled");
   const criticalPath = getCriticalPath(basePlan);
   const aggression = inferAggression(text, basePlan, env);
   const maxSidecars = resolveMaxSidecars(env);
@@ -430,7 +436,7 @@ function buildParallelizationPlan(input, basePlan = {}, signals = {}) {
     criticalPath === "recipe_dispatcher" &&
     COMMAND_HANDLING_RE.test(text)
   );
-  const candidateTasks = blockedReasons.length > 0 || aggression === "off" || deterministicRouteBlocksFanout
+  const candidateTasks = backgroundDisabled || blockedReasons.length > 0 || aggression === "off" || deterministicRouteBlocksFanout
     ? []
     : buildLaneSpecs(text, basePlan, {
         writableEligible,
@@ -450,7 +456,9 @@ function buildParallelizationPlan(input, basePlan = {}, signals = {}) {
   return {
     version: stage.planVersion || PLAN_VERSION,
     mode,
-    reason: blockedReasons.length > 0
+    reason: backgroundDisabled
+      ? "background_agents_disabled_by_env"
+      : blockedReasons.length > 0
       ? "blocked_by_hard_or_user_visible_gate"
       : deterministicRouteBlocksFanout
         ? "deterministic_route_no_consumer"
@@ -511,7 +519,7 @@ function buildParallelizationPlan(input, basePlan = {}, signals = {}) {
       openRepairActions: [],
     },
     execution: {
-      enabledByDefault: true,
+      enabledByDefault: !backgroundDisabled,
       disableEnv: "MYOS_BACKGROUND_AGENTS_ENABLED=0",
       defaultRunner: "caller_provider_sidecars",
       autoPromotionDisableEnv: "MYOS_PARALLELIZATION_AUTO_PROMOTE=0",
@@ -606,6 +614,7 @@ function compactParallelizationPlan(plan = {}) {
 
 module.exports = {
   PLAN_VERSION,
+  backgroundAgentsDisabled,
   buildLaneSpecs,
   buildParallelizationPlan,
   compactParallelizationPlan,

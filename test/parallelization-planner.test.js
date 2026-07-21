@@ -858,3 +858,48 @@ test("parallelization budget is decoupled from goal scale", () => {
 
   assert.equal(scale3.backgroundTasks.length, scale4.backgroundTasks.length);
 });
+
+test("MYOS_BACKGROUND_AGENTS_ENABLED=0 disables planner fan-out entirely", () => {
+  const plan = buildParallelizationPlan("Fix the dispatch runtime, verify the tests, and review the rollout risk", {
+    branch: "fallback",
+    actionType: "write",
+    route: { lane: "worker_skill" },
+  }, {
+    parallelizationStage: cleanStage(),
+    env: { MYOS_BACKGROUND_AGENTS_ENABLED: "0" },
+  });
+
+  assert.equal(plan.mode, "none");
+  assert.equal(plan.reason, "background_agents_disabled_by_env");
+  assert.equal(plan.backgroundTasks.length, 0);
+  assert.ok(plan.blockedReasons.includes("background_agents_disabled"));
+  assert.equal(plan.execution.enabledByDefault, false);
+  assert.equal(compactParallelizationPlan(plan).execution.enabledByDefault, false);
+});
+
+test("background runner enforces MYOS_BACKGROUND_AGENTS_ENABLED=0 even when caller passes enabled=true", async () => {
+  const plan = buildParallelizationPlan("Fix the dispatch runtime, verify the tests, and review the rollout risk", {
+    branch: "fallback",
+    actionType: "write",
+    route: { lane: "worker_skill" },
+  }, {
+    parallelizationStage: cleanStage({ MYOS_PARALLELIZATION_VERSION: "v2" }),
+  });
+
+  assert.ok(plan.backgroundTasks.length > 0);
+  let spawned = 0;
+  const results = await runBackgroundTasks(plan, {
+    enabled: true,
+    command: "codex",
+    env: { MYOS_BACKGROUND_AGENTS_ENABLED: "0" },
+    async runCommand() {
+      spawned += 1;
+      return { code: 0, signal: null, stdout: "", stderr: "" };
+    },
+  });
+
+  assert.equal(spawned, 0);
+  assert.equal(results.length, plan.backgroundTasks.length);
+  assert.equal(results.every((result) => result.status === "planned"), true);
+  assert.match(results[0].summary, /MYOS_BACKGROUND_AGENTS_ENABLED=0/);
+});
