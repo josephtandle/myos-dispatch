@@ -58,10 +58,7 @@ function findGeminiApiKeyEnv(env = process.env) {
     .filter((key) => Boolean(env?.[key]));
 }
 
-function isUnattendedContext(env = process.env) {
-  if (String(env?.MYOS_INITIATOR_OAUTH_DISABLED || "") === "1") return true;
-  return String(env?.MYOS_INITIATOR || "").trim().toLowerCase() === "unattended";
-}
+const { backgroundAgentsDisabled, isUnattendedContext } = require("../env-context");
 
 function stripAnthropicKeys(childEnv) {
   for (const key of ANTHROPIC_ENV_KEYS) delete childEnv[key];
@@ -113,10 +110,6 @@ function randomToken(prefix) {
 function isSidecarProcess(env = process.env) {
   return String(env?.MYOS_BACKGROUND_IS_SIDECAR || "") === "1" ||
     String(env?.MYOS_SIDECAR_ORCHESTRATED || "") === "1";
-}
-
-function backgroundAgentsDisabled(env = process.env) {
-  return String(env?.MYOS_BACKGROUND_AGENTS_ENABLED ?? "").trim() === "0";
 }
 
 function createOrchestratorContext(options = {}) {

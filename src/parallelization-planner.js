@@ -3,7 +3,7 @@
 const path = require("node:path");
 
 const { getParallelizationStage } = require("./promotion/parallelization-version-policy");
-const { isUnattendedContext } = require("./background/background-agent-runner");
+const { backgroundAgentsDisabled, isUnattendedContext } = require("./env-context");
 
 const PLAN_VERSION = "myos-parallelization-writable-v1";
 const DEFAULT_MAX_SIDECARS = 12;
@@ -110,10 +110,6 @@ function clampInt(value, fallback, min, max) {
 function resolveMaxSidecars(env = process.env) {
   const raw = env?.MYOS_PARALLELIZATION_MAX_SIDECARS ?? env?.MYOS_PARALLELIZATION_MAX_AGENTS;
   return clampInt(raw, DEFAULT_MAX_SIDECARS, 0, MAX_SIDECAR_CAP);
-}
-
-function backgroundAgentsDisabled(env = process.env) {
-  return String(env?.MYOS_BACKGROUND_AGENTS_ENABLED ?? "").trim() === "0";
 }
 
 function resolveWritableLaneCap(env = process.env, maxSidecars = DEFAULT_MAX_SIDECARS) {

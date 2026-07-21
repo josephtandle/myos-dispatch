@@ -239,6 +239,24 @@ This installer is built to be safe on a machine that is not yours:
 - **Ships no operator data** — the capability index, fastpaths, and project
   routing are generated for *you*; only empty example schemas are in the repo.
 
+### Privacy-trimmed install
+
+The repo ships more than the router: `src/runtime/` can call LLM provider
+APIs and read named keychain entries when *you* configure keys, and
+`src/background/` plus `bin/myos-sidecar.js` implement the optional sidecar
+runner. None of that is loaded or executed by the installed hook, and
+`MYOS_BACKGROUND_AGENTS_ENABLED=0` hard-disables background fan-out at the
+planner, hook, and runner layers. If "off by default" is not a strong enough
+promise for your machine (confidential client data, regulated work), delete
+the capability code entirely — the router does not need it:
+
+```bash
+rm -rf src/runtime src/background bin/myos-sidecar.js
+```
+
+The hook, routing, capability index, and fastpaths all keep working. Verify
+with the smoke test above.
+
 ---
 
 ## License
