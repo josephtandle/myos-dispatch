@@ -4,6 +4,16 @@ const path = require("node:path");
 
 const { getParallelizationStage } = require("./promotion/parallelization-version-policy");
 const { backgroundAgentsDisabled, isUnattendedContext } = require("./env-context");
+const {
+  buildExecutionEnvelope,
+  buildTaskExecutionEnvelope,
+  compactExecutionEnvelope,
+  roleProfileForTask,
+} = require("./orchestration/execution-envelope");
+const {
+  compactRepositoryRouting,
+  resolveRepositoryTarget,
+} = require("./repository-targets");
 
 const PLAN_VERSION = "myos-parallelization-writable-v1";
 const DEFAULT_MAX_SIDECARS = 12;
@@ -155,10 +165,13 @@ function normalizeOwnershipRoot(scope = "", cwd = process.cwd()) {
   return path.resolve(base);
 }
 
-function repoEligibleForWritable(plan = {}, blockedReasons = [], env = process.env) {
+function repoEligibleForWritable(plan = {}, blockedReasons = [], env = process.env, repositoryRouting = {}) {
   if (blockedReasons.length > 0) return false;
   if (isUnattendedContext(env)) return false;
+  if (String(env?.MYOS_ORCHESTRATION_GOLD_ENABLED ?? "1") === "0") return false;
+  if (String(env?.MYOS_WRITABLE_SIDECARS_ENABLED ?? "1") === "0") return false;
   if (String(plan.actionType || "").toLowerCase() !== "write") return false;
+  if (repositoryRouting.writableSafe === false) return false;
   const lane = plan.route?.lane || plan.executionLane || "";
   if (lane === "data_lookup" || lane === "workflow") return false;
   return true;
@@ -179,11 +192,17 @@ function buildTask({
   generation = 1,
   providerAffinity = "caller_provider",
   timeoutMs,
+  executionEnvelope,
 }) {
+  const taskShape = { id, kind, role, mode };
+  const agentProfile = roleProfileForTask(taskShape);
   return {
     id,
     kind,
     role,
+    agentProfile: agentProfile.id,
+    fallbackAgentProfile: agentProfile.fallback,
+    roleContract: agentProfile.contract,
     prompt,
     scope: scope || "",
     ownershipPaths: Array.isArray(ownershipPaths) ? ownershipPaths : [],
@@ -198,6 +217,7 @@ function buildTask({
     joinPolicy: joinPolicy || (required ? "require_before_final" : "optional_before_final"),
     risk,
     capabilityEvidence: mode === "workspace_write" ? "writablePatchWorktree" : "readOnlySidecars",
+    executionEnvelope: buildTaskExecutionEnvelope(executionEnvelope, taskShape),
   };
 }
 
@@ -262,7 +282,7 @@ function splitClauses(text) {
 }
 
 function buildLaneSpecs(text, plan = {}, options = {}) {
-  const scope = plan.searchScope || "";
+  const scope = options.taskScope || plan.searchScope || "";
   const ownershipRoot = normalizeOwnershipRoot(scope);
   const env = options.env;
   const scopeLabel = scope || "resolved scoped repository area";
@@ -282,6 +302,7 @@ function buildLaneSpecs(text, plan = {}, options = {}) {
     mode: "read_only",
     risk: "low",
     timeoutMs: resolveTaskTimeoutMs("read_only", env),
+    executionEnvelope: options.executionEnvelope,
     ...overrides,
   });
 
@@ -298,19 +319,7 @@ function buildLaneSpecs(text, plan = {}, options = {}) {
       mode: "workspace_write",
       risk: "medium",
       timeoutMs: resolveTaskTimeoutMs("workspace_write", env),
-    }));
-    push(buildTask({
-      id: "verify-1",
-      kind: "verify",
-      role: "verify",
-      prompt: buildWritablePrompt("verify", text, scope),
-      scope,
-      ownershipPaths: [ownershipRoot],
-      writeScope: [ownershipRoot],
-      required: true,
-      mode: "workspace_write",
-      risk: "medium",
-      timeoutMs: resolveTaskTimeoutMs("workspace_write", env),
+      executionEnvelope: options.executionEnvelope,
     }));
   }
 
@@ -375,15 +384,16 @@ function buildLaneSpecs(text, plan = {}, options = {}) {
     }));
   });
 
-  if (!options.writableEligible) {
-    push(readOnlyLane({
-      id: "verify-1",
-      kind: "verify",
-      role: "verify",
-      risk: "medium",
-      prompt: buildReadOnlyPrompt("verify", text, scope),
-    }));
-  }
+  // Verification remains an independent read-only lane. A second parallel
+  // writer with the same ownership path cannot verify the implementer's
+  // isolated patch and can create a conflicting patch of its own.
+  push(readOnlyLane({
+    id: "verify-1",
+    kind: "verify",
+    role: "verify",
+    risk: "medium",
+    prompt: buildReadOnlyPrompt("verify", text, scope),
+  }));
 
   push(readOnlyLane({
     id: "acceptance-1",
@@ -426,7 +436,17 @@ function buildParallelizationPlan(input, basePlan = {}, signals = {}) {
   const maxSidecars = resolveMaxSidecars(env);
   const depth = resolveDepth(aggression, env);
   const writableLaneCap = resolveWritableLaneCap(env, maxSidecars);
-  const writableEligible = Boolean(stage.capabilities?.writableGitWorktrees) && repoEligibleForWritable(basePlan, blockedReasons, env);
+  const repositoryRouting = resolveRepositoryTarget(text, basePlan, {
+    workspaceRoot: signals.workspaceRoot,
+    projectIndexPath: signals.projectIndexPath,
+    cwd: signals.cwd,
+  });
+  const executionEnvelope = buildExecutionEnvelope(text, basePlan, {
+    env,
+    blockedReasons,
+  });
+  const writableEligible = Boolean(stage.capabilities?.writableGitWorktrees) &&
+    repoEligibleForWritable(basePlan, blockedReasons, env, repositoryRouting);
   const deterministicRoute = ["recipe_dispatcher", "workflow", "deterministic_data_lookup", "data_lookup"].includes(criticalPath);
   const deterministicRouteBlocksFanout = deterministicRoute && !(
     criticalPath === "recipe_dispatcher" &&
@@ -437,6 +457,8 @@ function buildParallelizationPlan(input, basePlan = {}, signals = {}) {
     : buildLaneSpecs(text, basePlan, {
         writableEligible,
         writableLaneCap,
+        taskScope: repositoryRouting.taskScope,
+        executionEnvelope,
         env,
       });
   const backgroundTasks = candidateTasks
@@ -468,6 +490,8 @@ function buildParallelizationPlan(input, basePlan = {}, signals = {}) {
     depth,
     backgroundTasks,
     blockedReasons,
+    repositoryRouting: compactRepositoryRouting(repositoryRouting),
+    executionEnvelope,
     budget: {
       maxAgents: backgroundTasks.length,
       maxSidecars,
@@ -520,6 +544,7 @@ function buildParallelizationPlan(input, basePlan = {}, signals = {}) {
       defaultRunner: "caller_provider_sidecars",
       autoPromotionDisableEnv: "MYOS_PARALLELIZATION_AUTO_PROMOTE=0",
       versionOverrideEnv: "MYOS_PARALLELIZATION_VERSION=writable_sidecars_v1|v2|v3|v4",
+      orchestrationKillSwitch: "MYOS_ORCHESTRATION_GOLD_ENABLED=0",
     },
     requiredTaskCount: requiredTasks.length,
   };
@@ -542,14 +567,35 @@ function compactParallelizationPlan(plan = {}) {
           id: task.id,
           kind: task.kind,
           role: task.role || task.kind,
+          agentProfile: task.agentProfile || null,
+          fallbackAgentProfile: task.fallbackAgentProfile || null,
           mode: task.mode || "read_only",
           required: Boolean(task.required),
           scope: task.scope || "",
           modelProfile: task.modelProfile || "cheap_routing",
           joinPolicy: task.joinPolicy || "optional_before_final",
           risk: task.risk || "low",
+          executionEnvelope: task.executionEnvelope
+            ? {
+                trustClass: task.executionEnvelope.trustClass,
+                filesystemProfile: task.executionEnvelope.filesystemProfile,
+                sideEffectClass: task.executionEnvelope.sideEffectClass,
+                agentProfile: task.executionEnvelope.agentProfile,
+              }
+            : null,
         }))
       : [],
+    repositoryRouting: plan.repositoryRouting || {
+      authoritative: false,
+      confidence: "low",
+      reason: "",
+      writableSafe: false,
+      taskScope: "",
+      primaryTarget: null,
+      candidateCount: 0,
+      nestedRepositoryCount: 0,
+    },
+    executionEnvelope: compactExecutionEnvelope(plan.executionEnvelope),
     budget: {
       maxAgents: Number(plan.budget?.maxAgents || 0),
       maxSidecars: Number(plan.budget?.maxSidecars || 0),
@@ -604,6 +650,7 @@ function compactParallelizationPlan(plan = {}) {
       defaultRunner: plan.execution?.defaultRunner || "caller_provider_sidecars",
       autoPromotionDisableEnv: plan.execution?.autoPromotionDisableEnv || "MYOS_PARALLELIZATION_AUTO_PROMOTE=0",
       versionOverrideEnv: plan.execution?.versionOverrideEnv || "MYOS_PARALLELIZATION_VERSION=writable_sidecars_v1|v2|v3|v4",
+      orchestrationKillSwitch: plan.execution?.orchestrationKillSwitch || "MYOS_ORCHESTRATION_GOLD_ENABLED=0",
     },
   };
 }

@@ -12,6 +12,9 @@ const {
   resolveDispatchPlan,
 } = require(path.join(WORKSPACE_ROOT, "src/workspace-context"));
 const { resolveLogsRoot } = require(path.join(WORKSPACE_ROOT, "src/myos-compat"));
+const {
+  buildGoalPolicy,
+} = require(path.join(WORKSPACE_ROOT, "src/orchestration/execution-envelope"));
 
 const EVENT_LABELS = {
   SessionStart: "session_start",
@@ -118,6 +121,26 @@ function sha256(value) {
 
 function compactRoute(plan) {
   const parallel = plan.parallelizationPlan || {};
+  const tasks = Array.isArray(parallel.backgroundTasks)
+    ? parallel.backgroundTasks.map((task) => ({
+        id: task.id || "",
+        role: task.role || task.kind || "",
+        agentProfile: task.agentProfile || "",
+        fallbackAgentProfile: task.fallbackAgentProfile || "",
+        mode: task.mode || "read_only",
+        required: Boolean(task.required),
+        joinPolicy: task.joinPolicy || "optional_before_final",
+        scope: task.scope || "",
+      }))
+    : [];
+  const nativeTasks = tasks.filter((task) => task.mode !== "workspace_write");
+  const runnerOwnedWritableTasks = tasks.filter((task) => task.mode === "workspace_write");
+  const orchestrationEnabled = parallel.executionEnvelope?.enabled !== false;
+  for (const task of nativeTasks) {
+    if (!orchestrationEnabled && task.fallbackAgentProfile) {
+      task.agentProfile = task.fallbackAgentProfile;
+    }
+  }
   return {
     branch: plan.branch || "",
     intentType: plan.intentType || "",
@@ -142,11 +165,17 @@ function compactRoute(plan) {
       aggression: parallel.aggression || "off",
       depth: parallel.depth ?? 0,
       criticalPath: parallel.criticalPath || "",
-      taskCount: Array.isArray(parallel.backgroundTasks) ? parallel.backgroundTasks.length : 0,
+      taskCount: tasks.length,
+      nativeTaskCount: nativeTasks.length,
+      runnerOwnedWritableTaskCount: runnerOwnedWritableTasks.length,
+      tasks,
       blockedReasons: Array.isArray(parallel.blockedReasons) ? parallel.blockedReasons : [],
       maxSidecars: parallel.budget?.maxSidecars ?? null,
       joinPolicy: parallel.joinPolicy || "none",
       activeStage: parallel.promotion?.activeStage || "",
+      repositoryRouting: parallel.repositoryRouting || null,
+      orchestrationLevel: parallel.executionEnvelope?.level || "",
+      orchestrationEnabled,
     },
     typedEvidence: {
       authoritative: Boolean(plan.shadowDispatch?.authoritative),
@@ -160,9 +189,9 @@ function formatList(values) {
 }
 
 function surfaceFanoutInstruction(surface, parallel) {
-  if (parallel.mode === "none" || parallel.taskCount === 0) return "";
+  if (parallel.mode === "none" || parallel.nativeTaskCount === 0) return "";
   if (surface === "codex") {
-    return "- Codex: you have native multi-agent threads enabled (max_threads=12). Spawn one parallel subagent thread per independent lane above NOW, in the same turn, before serial work. Working the lanes sequentially in the main thread is a routing error.";
+    return `- Codex: spawn the ${parallel.nativeTaskCount} read-only lane(s) listed above as native multi-agent threads now. Use the preferred custom agent when available, otherwise its fallback. Never run a runner-owned writable lane in a shared-workspace native thread.`;
   }
   if (surface === "claude") {
     return "- Claude: launch the independent lanes as parallel Agent calls in a single message before serial work on the critical path.";
@@ -180,8 +209,26 @@ function fanoutMandateLines(surface, parallel) {
   ];
   const surfaceLine = surfaceFanoutInstruction(surface, parallel);
   if (surfaceLine) lines.push(surfaceLine);
-  if (parallel.mode !== "none" && parallel.taskCount > 0 && parallel.taskCount < 3) {
+  if (parallel.mode !== "none" && parallel.nativeTaskCount > 0 && parallel.nativeTaskCount < 3) {
     lines.push("- The plan exposes fewer than 3 lanes; if the task is multi-part, widen the fanout yourself within the same gates.");
+  }
+  return lines;
+}
+
+function formatLaneAssignments(surface, parallel) {
+  if (!Array.isArray(parallel.tasks) || parallel.tasks.length === 0) return [];
+  const lines = ["Lane assignments:"];
+  for (const task of parallel.tasks) {
+    const owner = task.mode === "workspace_write"
+      ? "runner-owned isolated worktree"
+      : surface === "codex"
+        ? `native:${task.agentProfile || task.fallbackAgentProfile || "explorer"}`
+        : "provider-affine read-only sidecar";
+    lines.push(
+      `- ${task.id} role=${task.role || "context"} mode=${task.mode} owner=${owner} ` +
+      `join=${task.joinPolicy}${task.required ? " required" : ""}` +
+      (task.scope ? ` scope=${task.scope}` : "")
+    );
   }
   return lines;
 }
@@ -189,6 +236,7 @@ function fanoutMandateLines(surface, parallel) {
 function formatDispatchContext({ surface, hookEventName, targetKind, text, plan }) {
   const route = compactRoute(plan);
   const parallel = route.parallelization;
+  const goalPolicy = buildGoalPolicy(text, plan);
   const lines = [
     "[MyOS Dispatch route]",
     `Surface: ${surface}`,
@@ -209,9 +257,16 @@ function formatDispatchContext({ surface, hookEventName, targetKind, text, plan 
     `Requires approval: ${route.requiresApproval ? "yes" : "no"}`,
     route.blockedBy.length ? `Blocked by: ${formatList(route.blockedBy)}` : "",
     `Fanout: ${parallel.mode}, aggression=${parallel.aggression}, depth=${parallel.depth}, sidecars=${parallel.taskCount}/${parallel.maxSidecars ?? "?"}, join=${parallel.joinPolicy}`,
+    `Native read-only lanes: ${parallel.nativeTaskCount}; runner-owned writable lanes: ${parallel.runnerOwnedWritableTaskCount}`,
     parallel.blockedReasons.length ? `Fanout blocked by: ${formatList(parallel.blockedReasons)}` : "",
     parallel.activeStage ? `Fanout stage: ${parallel.activeStage}` : "",
+    parallel.orchestrationLevel ? `Orchestration level: ${parallel.orchestrationLevel}` : "",
+    parallel.repositoryRouting?.reason
+      ? `Repository routing: ${parallel.repositoryRouting.reason}, writableSafe=${parallel.repositoryRouting.writableSafe ? "yes" : "no"}`
+      : "",
+    `Goal persistence: ${goalPolicy.persistedGoalMutation}; continuation owner: ${goalPolicy.continuationOwner}`,
     route.typedEvidence.authoritative ? `Typed evidence authority: ${route.typedEvidence.activeStage}` : "",
+    ...formatLaneAssignments(surface, parallel),
     "",
     "Mandatory behavior:",
     "- Treat this route as the first routing pass for the turn.",
@@ -227,22 +282,27 @@ function formatCompactDispatchContext({ surface, plan }) {
   const route = compactRoute(plan);
   const parallel = route.parallelization;
   const lane = route.route.lane || "worker_skill";
-  const fan = `${parallel.mode}/${parallel.aggression} depth=${parallel.depth} sidecars=${parallel.taskCount}/${parallel.maxSidecars ?? "?"} join=${parallel.joinPolicy}`;
+  const fan = `${parallel.mode}/${parallel.aggression} depth=${parallel.depth} lanes=${parallel.nativeTaskCount}native+${parallel.runnerOwnedWritableTaskCount}runner/${parallel.maxSidecars ?? "?"} join=${parallel.joinPolicy}`;
+  const roles = parallel.tasks
+    .filter((task) => task.mode !== "workspace_write")
+    .map((task) => `${task.id}:${task.agentProfile || task.role}`)
+    .join(",");
   const lines = [
     `[MyOS Dispatch] surface=${surface} lane=${lane} intent=${route.intentType || "?"} ` +
       `project=${route.projectSlug || "none"} fanout=${fan}` +
       (route.blockedBy.length ? ` blocked=${formatList(route.blockedBy)}` : "") +
       (parallel.blockedReasons.length ? ` fanout_blocked=${formatList(parallel.blockedReasons)}` : ""),
     "Route through MyOS Dispatch evaluation order before broad search; respect protected-surface/auth/destructive/send gates.",
+    roles ? `Read-only lanes: ${roles}` : "",
   ];
-  if (parallel.mode !== "none" && parallel.taskCount > 0) {
+  if (parallel.mode !== "none" && parallel.nativeTaskCount > 0) {
     lines.push(
       surface === "codex"
-        ? `Mandatory fanout: spawn ${parallel.taskCount} parallel subagent threads (native multi-agent, breadth over depth) for the independent lanes now; do not work them sequentially.`
-        : `Mandatory fanout: launch ${parallel.taskCount} parallel subagents (breadth over depth) for the independent lanes now; do not work them sequentially.`
+        ? `Mandatory fanout: spawn ${parallel.nativeTaskCount} read-only native subagent threads for the listed lanes now; keep writable lanes runner-owned.`
+        : `Mandatory fanout: launch ${parallel.nativeTaskCount} read-only parallel subagents for the listed lanes now.`
     );
   }
-  return lines.join("\n");
+  return lines.filter(Boolean).join("\n");
 }
 
 function buildContextForMode({ surface, hookEventName, targetKind, text, plan, contextMode }) {

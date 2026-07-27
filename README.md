@@ -262,6 +262,14 @@ Copy `.env.example` to your own local `.env`. Common toggles:
 Keep real secrets in your local environment only; `.env.example` ships
 placeholders.
 
+> **Before you push this (or any) project to a git remote:** make sure `.env`
+> is git-ignored so you never commit real secrets. This repo already ships a
+> `.gitignore` that ignores `.env` and `.env.*` (while keeping `.env.example`).
+> If you start your own repo from this setup, create a `.gitignore` containing
+> `.env` **before your first `git add` / `git push`** — once a secret lands in
+> git history, removing it requires a history rewrite and a force-push, and
+> everyone with a clone has to re-clone.
+
 ---
 
 ## Smoke test

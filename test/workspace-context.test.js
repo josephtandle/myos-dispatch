@@ -896,7 +896,8 @@ test("dispatch plans expose automatic scale 4 metadata for durable multi-system 
   assert.equal(plan.goalScale, 4);
   assert.equal(plan.goalMode, "ultragoal");
   assert.equal(plan.requiresPlan, true);
-  assert.equal(plan.parallelizationPlan.mode, "provider_affine_git_worktrees");
+  assert.equal(plan.parallelizationPlan.mode, "read_only");
+  assert.equal(plan.parallelizationPlan.repositoryRouting.writableSafe, false);
   assert.ok(plan.parallelizationPlan.backgroundTasks.length >= 2);
   assert.match(bundle, /Goal scale: 4 \(ultragoal\)/);
   assert.match(bundle, /Parallelization: myos-parallelization-(writable-v1|v\d) (provider_affine_git_worktrees|read_only)/);

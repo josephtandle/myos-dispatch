@@ -35,6 +35,10 @@ test("UserPromptSubmit (Codex surface) emits full route with fanout mandate and 
   assert.match(context, /Fan out FIRST/);
   assert.match(context, /breadth over depth/i);
   assert.match(context, /native multi-agent threads/);
+  assert.match(context, /Lane assignments:/);
+  assert.match(context, /myos_code_mapper|myos_lane_lead/);
+  assert.match(context, /read-only lane\(s\) listed above/i);
+  assert.match(context, /runner-owned writable lane/i);
 });
 
 test("UserPromptSubmit emits compact MyOS Dispatch route context", () => {

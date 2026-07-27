@@ -355,8 +355,9 @@ test("background runner builds read-only Codex invocation and scrubs API-key env
     model: "gpt-5.5",
   }, { command: "codex", provider: "openai", cwd: "/tmp" });
 
-  assert.deepEqual(codex.args.slice(0, 2), ["exec", "--json"]);
+  assert.deepEqual(codex.args.slice(0, 4), ["-a", "never", "exec", "--json"]);
   assert.ok(codex.args.includes("--ephemeral"));
+  assert.ok(codex.args.includes("--ignore-user-config"));
   assert.ok(codex.args.includes("read-only"));
   assert.equal(codex.model, "gpt-5.4");
 
@@ -875,6 +876,26 @@ test("MYOS_BACKGROUND_AGENTS_ENABLED=0 disables planner fan-out entirely", () =>
   assert.ok(plan.blockedReasons.includes("background_agents_disabled"));
   assert.equal(plan.execution.enabledByDefault, false);
   assert.equal(compactParallelizationPlan(plan).execution.enabledByDefault, false);
+});
+
+test("global and writable rollback switches prevent writable lane planning", () => {
+  const basePlan = {
+    branch: "fallback",
+    actionType: "write",
+    route: { lane: "worker_skill" },
+    searchScope: process.cwd(),
+  };
+  for (const env of [
+    { MYOS_ORCHESTRATION_GOLD_ENABLED: "0" },
+    { MYOS_WRITABLE_SIDECARS_ENABLED: "0" },
+  ]) {
+    const plan = buildParallelizationPlan("Implement the bounded fix and verify it", basePlan, {
+      env,
+      parallelizationStage: cleanStage(env),
+    });
+    assert.equal(plan.backgroundTasks.some((task) => task.mode === "workspace_write"), false);
+    assert.notEqual(plan.mode, "provider_affine_git_worktrees");
+  }
 });
 
 test("background runner enforces MYOS_BACKGROUND_AGENTS_ENABLED=0 even when caller passes enabled=true", async () => {

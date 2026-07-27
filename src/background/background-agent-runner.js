@@ -45,6 +45,29 @@ const ANTHROPIC_ENV_KEYS = Object.freeze([
   "CLAUDE_CODE_OAUTH_TOKEN",
 ]);
 const ANTHROPIC_KEY_PATTERN = /^ANTHROPIC_/;
+const SECRET_LIKE_ENV_PATTERN = /(API[_-]?KEY|(?:^|[_-])KEY(?:[_-]|$)|TOKEN|SECRET|PASSWORD|PASSWD|COOKIE|CREDENTIAL|PRIVATE[_-]?KEY|AUTH[_-]?TOKEN|SESSION[_-]?(?:ID|KEY|TOKEN)|(?:^|[_-])PAT(?:[_-]|$)|BEARER)/i;
+const SAFE_AUTH_METADATA_KEYS = new Set([
+  "MYOS_AUTH_MODE",
+  "MYOS_BACKGROUND_AUTH_MODE",
+  "MYOS_BACKGROUND_AUTH_LABEL",
+]);
+const SAFE_SIDECAR_ENV_KEYS = new Set([
+  "PATH",
+  "HOME",
+  "SHELL",
+  "USER",
+  "LOGNAME",
+  "TMPDIR",
+  "TMP",
+  "TEMP",
+  "LANG",
+  "TERM",
+  "COLORTERM",
+  "NO_COLOR",
+  "FORCE_COLOR",
+  "CODEX_HOME",
+  "CI",
+]);
 
 function normalizeWorkerKind(command = "") {
   const base = path.basename(String(command || "codex").trim()).toLowerCase();
@@ -98,6 +121,21 @@ function assertNoAnthropicKeysInChildEnv(env, taskId = "") {
       throw new Error(`Security: potential Anthropic credential ${key} must not appear in Codex sidecar env${suffix}`);
     }
   }
+}
+
+function sanitizeSidecarEnv(env = process.env, options = {}) {
+  const unattendedCodex = options.kind === "codex" && options.unattended === true;
+  const allowedCredentialKeys = unattendedCodex ? new Set(CODEX_API_KEY_ENV_KEYS) : new Set();
+  const sanitized = {};
+  for (const [key, value] of Object.entries(env || {})) {
+    const safeMetadata = SAFE_AUTH_METADATA_KEYS.has(key);
+    const allowedCredential = allowedCredentialKeys.has(key);
+    const allowedRuntime = SAFE_SIDECAR_ENV_KEYS.has(key) || key.startsWith("LC_");
+    const allowedMyosPolicy = key.startsWith("MYOS_") && !SECRET_LIKE_ENV_PATTERN.test(key);
+    if (!safeMetadata && !allowedCredential && !allowedRuntime && !allowedMyosPolicy) continue;
+    sanitized[key] = value;
+  }
+  return sanitized;
 }
 
 function randomToken(prefix) {
@@ -243,6 +281,8 @@ function resolveTaskModel(task = {}, options = {}) {
 function buildReadOnlyPrompt(task = {}) {
   return [
     "You are a disposable MyOS Dispatch background agent.",
+    `Agent profile: ${task.agentProfile || "myos_code_mapper"}.`,
+    `Role contract: ${task.roleContract || "Inspect only the assigned bounded scope and report evidence."}`,
     "Mode: READ ONLY.",
     "Hard rules:",
     "- Do not edit, create, delete, move, or modify files.",
@@ -252,6 +292,7 @@ function buildReadOnlyPrompt(task = {}) {
     "- Do not spawn background agents, sidecars, myos-sidecar.js, Codex/Claude/Gemini subagents, or nested workers.",
     "- All fan-out is owned by the parent MyOS Dispatch orchestrator; if more lanes are needed, report that as a finding.",
     "- Return concise findings, confidence, and any blockers.",
+    `Execution envelope: ${JSON.stringify(task.executionEnvelope || {})}.`,
     STRUCTURED_RESULT_CONTRACT,
     "Your context will be discarded after this subtask.",
     "",
@@ -266,6 +307,8 @@ function buildWritablePrompt(task = {}) {
     : "assigned ownership scope";
   return [
     "You are a disposable MyOS Dispatch background agent.",
+    `Agent profile: ${task.agentProfile || "worker"}.`,
+    `Role contract: ${task.roleContract || "Implement only the assigned bounded scope."}`,
     "Mode: WRITABLE ISOLATED GIT WORKTREE.",
     "Hard rules:",
     "- You are operating inside an isolated ephemeral git worktree, never the shared workspace.",
@@ -275,6 +318,7 @@ function buildWritablePrompt(task = {}) {
     "- All fan-out is owned by the parent MyOS Dispatch orchestrator; if more lanes are needed, report that as a finding.",
     "- Keep edits narrow and produce a clean patch artifact.",
     "- Return concise findings, changed files, verification result, and blockers.",
+    `Execution envelope: ${JSON.stringify(task.executionEnvelope || {})}.`,
     STRUCTURED_RESULT_CONTRACT,
     "Your context will be discarded after this subtask.",
     "",
@@ -286,7 +330,7 @@ function buildWritablePrompt(task = {}) {
 function buildBackgroundWorkerInvocation(task = {}, options = {}) {
   const command = options.command || "codex";
   const kind = normalizeWorkerKind(command);
-  const cwd = options.cwd || process.env.HOME || os.homedir();
+  const cwd = options.cwd || task.scope || process.cwd();
   const model = resolveTaskModel(task, options);
   const readOnly = task.effectiveMode !== EXECUTION_MODES.WRITE;
   const prompt = readOnly ? buildReadOnlyPrompt(task) : buildWritablePrompt(task);
@@ -332,10 +376,13 @@ function buildBackgroundWorkerInvocation(task = {}, options = {}) {
   }
 
   const args = [
+    "-a",
+    "never",
     "exec",
     "--json",
     "--skip-git-repo-check",
     "--ephemeral",
+    "--ignore-user-config",
     "-s",
     readOnly ? "read-only" : "workspace-write",
   ];
@@ -591,6 +638,14 @@ function gitExec(args, cwd) {
   }).trim();
 }
 
+function gitExecRaw(args, cwd) {
+  return execFileSync("git", args, {
+    cwd,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+}
+
 function resolveWritableWorktree(task = {}, options = {}) {
   const scope = task.scope || options.cwd || process.cwd();
   let repoRoot;
@@ -600,10 +655,28 @@ function resolveWritableWorktree(task = {}, options = {}) {
     return null;
   }
   cleanupOrphanSidecarWorktrees(repoRoot);
+  if (gitExec(["status", "--porcelain"], repoRoot)) return null;
   const baseSha = gitExec(["rev-parse", "HEAD"], repoRoot);
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), `myos-sidecar-${task.id}-`));
-  gitExec(["worktree", "add", "--detach", tempRoot, baseSha], repoRoot);
-  return { repoRoot, baseSha, worktreePath: tempRoot };
+  try {
+    gitExec(["worktree", "add", "--detach", tempRoot, baseSha], repoRoot);
+  } catch {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+    return null;
+  }
+  const runId = options.orchestratorContext?.runId || "unscoped-run";
+  const defaultArtifactRoot = path.join(
+    process.env.MYOS_HOME_ROOT || path.join(os.homedir(), ".myos"),
+    "state",
+    "myos-dispatch",
+    "sidecar-artifacts",
+    runId,
+    task.id || "task",
+  );
+  const artifactRoot = path.resolve(
+    options.artifactRoot || process.env.MYOS_SIDECAR_ARTIFACT_ROOT || defaultArtifactRoot,
+  );
+  return { repoRoot, baseSha, worktreePath: tempRoot, artifactRoot };
 }
 
 function cleanupWritableWorktree(context = null) {
@@ -617,34 +690,64 @@ function cleanupWritableWorktree(context = null) {
 }
 
 function collectWorktreeArtifacts(context, task = {}) {
-  if (!context?.worktreePath || !context?.baseSha) return { changedFiles: [], patchArtifact: null, verificationResult: null };
-  const changedOutput = gitExec(["status", "--short"], context.worktreePath);
-  // gitExec trims the whole output, so column offsets are unreliable on the
-  // first line; strip the status token ("M", "??", " M", ...) by pattern.
-  const changedFiles = changedOutput
-    .split("\n")
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .map((line) => line.replace(/^\S{1,2}\s+/, "").trim())
-    .filter(Boolean);
-  const patchText = gitExec(["diff", "--binary", context.baseSha, "--"], context.worktreePath);
-  const patchArtifact = path.join(context.worktreePath, `${task.id}.patch`);
-  fs.writeFileSync(patchArtifact, patchText, "utf8");
+  if (!context?.worktreePath || !context?.baseSha) {
+    return { changedFiles: [], patchArtifact: null, patchSha256: null, verificationResult: null };
+  }
+  gitExec(["add", "-A"], context.worktreePath);
+  const changedOutput = gitExec(["diff", "--cached", "--name-only", "-z", context.baseSha, "--"], context.worktreePath);
+  const changedFiles = changedOutput.split("\0").filter(Boolean);
+  const ownershipPaths = Array.isArray(task.ownershipPaths) && task.ownershipPaths.length > 0
+    ? task.ownershipPaths
+    : Array.isArray(task.writeScope)
+      ? task.writeScope
+      : [];
+  const canonicalRepoRoot = fs.realpathSync(context.repoRoot);
+  const allowedRoots = ownershipPaths.map((ownershipPath) => {
+    const absolute = path.resolve(context.repoRoot, ownershipPath);
+    const canonicalAbsolute = fs.existsSync(absolute) ? fs.realpathSync(absolute) : absolute;
+    const relative = path.relative(canonicalRepoRoot, canonicalAbsolute);
+    if (relative === "" || relative === ".") return "";
+    if (relative === ".." || relative.startsWith(`..${path.sep}`)) {
+      throw new Error(`ownership_scope_outside_repository:${ownershipPath}`);
+    }
+    return relative.split(path.sep).join("/");
+  });
+  const ownershipViolations = changedFiles.filter((changedFile) => !allowedRoots.some((allowedRoot) => (
+    allowedRoot === "" ||
+    changedFile === allowedRoot ||
+    changedFile.startsWith(`${allowedRoot}/`)
+  )));
+  if (ownershipViolations.length > 0) {
+    throw new Error(`ownership_violation:${ownershipViolations.join(",")}`);
+  }
+  const patchText = gitExecRaw(["diff", "--cached", "--binary", context.baseSha, "--"], context.worktreePath);
+  let patchArtifact = null;
+  let patchSha256 = null;
+  if (changedFiles.length > 0) {
+    fs.mkdirSync(context.artifactRoot, { recursive: true });
+    patchArtifact = path.join(context.artifactRoot, `${task.id}.patch`);
+    fs.writeFileSync(patchArtifact, patchText, "utf8");
+    gitExec(["apply", "--check", "--cached", "--reverse", patchArtifact], context.worktreePath);
+    patchSha256 = crypto.createHash("sha256").update(patchText).digest("hex");
+  }
   return {
     changedFiles,
     patchArtifact,
-    verificationResult: changedFiles.length > 0 ? "changes_detected" : "no_changes",
+    patchSha256,
+    verificationResult: changedFiles.length > 0 ? "patch_reverse_check_passed" : "no_changes",
   };
 }
 
 function effectiveModeForTask(task = {}, options = {}) {
   const requested = task.mode || EXECUTION_MODES.READ_ONLY;
   if (requested !== EXECUTION_MODES.WRITE) return EXECUTION_MODES.READ_ONLY;
+  const env = options.env || process.env;
+  if (String(env?.MYOS_ORCHESTRATION_GOLD_ENABLED ?? "1") === "0") return EXECUTION_MODES.READ_ONLY;
+  if (String(env?.MYOS_WRITABLE_SIDECARS_ENABLED ?? "1") === "0") return EXECUTION_MODES.READ_ONLY;
   if (isUnattendedContext(options.env || process.env)) return EXECUTION_MODES.READ_ONLY;
   const runner = normalizeWorkerKind(options.command || "codex");
   const capabilities = resolveProviderCapabilities(runner, options);
   if (!capabilities.supportsWritablePatchWorktree) return EXECUTION_MODES.READ_ONLY;
-  const env = options.env || process.env;
   const minFreeGib = clampNumber(env?.MYOS_BACKGROUND_MIN_FREE_DISK_GIB, DEFAULT_MIN_FREE_DISK_GIB_FOR_WRITABLE, 0, 1024);
   const freeGib = freeDiskGib(task.scope || options.cwd);
   if (freeGib != null && freeGib < minFreeGib) return EXECUTION_MODES.READ_ONLY;
@@ -662,12 +765,28 @@ async function runBackgroundTask(task, options = {}) {
   const normalizedTask = { ...task, effectiveMode };
   const orchestratorContext = createOrchestratorContext(options);
   const started = Date.now();
+  if (task.mode === EXECUTION_MODES.WRITE && effectiveMode !== EXECUTION_MODES.WRITE) {
+    return skippedResult(normalizedTask, "Writable task refused: execution is disabled or unsafe in this context.", {
+      status: task.required ? "failed" : "skipped",
+      confidence: task.required ? "failed" : "not_run",
+      runner: normalizeWorkerKind(options.command || "codex"),
+      capabilityEvidence: "writablePatchWorktreeUnavailable",
+    });
+  }
 
   let worktree = null;
   if (effectiveMode === EXECUTION_MODES.WRITE) {
-    worktree = resolveWritableWorktree(normalizedTask, options);
+    worktree = resolveWritableWorktree(normalizedTask, {
+      ...options,
+      orchestratorContext,
+    });
     if (!worktree) {
-      normalizedTask.effectiveMode = EXECUTION_MODES.READ_ONLY;
+      return skippedResult(normalizedTask, "Writable task refused: repository is dirty, unavailable, or cannot create an isolated worktree.", {
+        status: normalizedTask.required ? "failed" : "skipped",
+        confidence: normalizedTask.required ? "failed" : "not_run",
+        runner: normalizeWorkerKind(options.command || "codex"),
+        capabilityEvidence: "writablePatchWorktreeUnavailable",
+      });
     }
   }
 
@@ -675,7 +794,7 @@ async function runBackgroundTask(task, options = {}) {
   try {
     invocation = buildBackgroundWorkerInvocation(normalizedTask, {
       ...options,
-      cwd: worktree?.worktreePath || options.cwd,
+      cwd: worktree?.worktreePath || normalizedTask.scope || options.cwd,
     });
   } catch (error) {
     cleanupWritableWorktree(worktree);
@@ -685,11 +804,16 @@ async function runBackgroundTask(task, options = {}) {
   }
 
   const runCommandImpl = options.runCommand || runCommand;
-  const childEnv = invocation.kind === "codex"
+  const unattended = isUnattendedContext(options.env || process.env);
+  const authEnv = invocation.kind === "codex"
     ? (isUnattendedContext(options.env || process.env)
         ? buildCodexApiKeyEnv(options.env || process.env)
         : buildCodexOauthEnv(options.env || process.env))
     : { ...(options.env || process.env) };
+  const childEnv = sanitizeSidecarEnv(authEnv, {
+    kind: invocation.kind,
+    unattended,
+  });
   childEnv.MYOS_BACKGROUND_PROVIDER = invocation.kind;
   childEnv.MYOS_BACKGROUND_EXECUTION_MODE = normalizedTask.effectiveMode;
   childEnv.MYOS_BACKGROUND_IS_SIDECAR = "1";
@@ -707,26 +831,36 @@ async function runBackgroundTask(task, options = {}) {
   await acquireSidecarSlot(options.env || process.env);
   let result;
   try {
-    result = await runCommandImpl({
-      command: invocation.command,
-      args: invocation.args,
-      cwd: invocation.cwd,
-      input: invocation.input,
-      env: childEnv,
-      timeoutMs: Number(task.timeoutMs || options.timeoutMs || DEFAULT_TIMEOUT_MS),
-      invocation,
-      task: normalizedTask,
-      worktree,
-    });
+    try {
+      result = await runCommandImpl({
+        command: invocation.command,
+        args: invocation.args,
+        cwd: invocation.cwd,
+        input: invocation.input,
+        env: childEnv,
+        timeoutMs: Number(task.timeoutMs || options.timeoutMs || DEFAULT_TIMEOUT_MS),
+        invocation,
+        task: normalizedTask,
+        worktree,
+      });
+    } catch (error) {
+      result = {
+        code: null,
+        signal: null,
+        stdout: "",
+        stderr: error?.message || String(error),
+      };
+    }
   } finally {
     releaseSidecarSlot();
   }
   const summary = extractBackgroundSummary(result.stdout, invocation.kind);
   const structured = parseStructuredFindings(summary);
-  const ok = result.code === 0 && !result.signal;
+  let ok = result.code === 0 && !result.signal;
   const artifacts = [];
   let changedFiles = [];
   let patchArtifact = null;
+  let patchSha256 = null;
   let verificationResult = null;
 
   if (normalizedTask.effectiveMode === EXECUTION_MODES.WRITE && worktree) {
@@ -734,9 +868,11 @@ async function runBackgroundTask(task, options = {}) {
       const collected = collectWorktreeArtifacts(worktree, normalizedTask);
       changedFiles = collected.changedFiles;
       patchArtifact = collected.patchArtifact;
+      patchSha256 = collected.patchSha256;
       verificationResult = collected.verificationResult;
-      if (patchArtifact) artifacts.push({ kind: "patch", path: patchArtifact });
+      if (patchArtifact) artifacts.push({ kind: "patch", path: patchArtifact, sha256: patchSha256 });
     } catch (error) {
+      ok = false;
       changedFiles = [];
       verificationResult = `artifact_error:${error.message}`;
     }
@@ -746,6 +882,7 @@ async function runBackgroundTask(task, options = {}) {
     taskId: normalizedTask.id,
     taskKind: normalizedTask.kind || null,
     role: normalizedTask.role || normalizedTask.kind || null,
+    agentProfile: normalizedTask.agentProfile || null,
     required: Boolean(normalizedTask.required),
     mode: normalizedTask.mode || EXECUTION_MODES.READ_ONLY,
     effectiveMode: normalizedTask.effectiveMode || EXECUTION_MODES.READ_ONLY,
@@ -769,8 +906,10 @@ async function runBackgroundTask(task, options = {}) {
     baseSha: worktree?.baseSha || null,
     worktreePath: worktree?.worktreePath || null,
     patchArtifact,
+    patchSha256,
     changedFiles,
     verificationResult,
+    executionEnvelope: normalizedTask.executionEnvelope || null,
     capabilityEvidence: normalizedTask.effectiveMode === EXECUTION_MODES.WRITE ? "writablePatchWorktree" : "readOnlySidecars",
   };
 
@@ -920,6 +1059,7 @@ module.exports = {
   assertProviderAffinity,
   buildBackgroundDigest,
   cleanupOrphanSidecarWorktrees,
+  collectWorktreeArtifacts,
   detectHostBackpressure,
   parseStructuredFindings,
   persistSidecarResults,
@@ -935,6 +1075,7 @@ module.exports = {
   isUnattendedContext,
   isSidecarProcess,
   normalizeWorkerKind,
+  sanitizeSidecarEnv,
   resolveBackgroundModel,
   resolveOptionalSidecarGraceMs,
   resolveProviderCapabilities,

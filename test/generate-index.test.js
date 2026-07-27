@@ -25,6 +25,7 @@ test("builds an index from a fixture recipe", () => {
       phrases: ["check demo status", "demo health"],
       tags: ["status"],
       handler: "check-status.js",
+      command: "node check-status.js",
       layer: "agent",
     }),
     "utf8"
@@ -37,7 +38,39 @@ test("builds an index from a fixture recipe", () => {
   assert.strictEqual(cap.id, "recipe:demo/check-status");
   assert.strictEqual(cap.execution_lane, "recipe_dispatcher");
   assert.ok(cap.use_when.includes("check demo status"));
+  assert.strictEqual(cap.runtime_requirements.command, "node check-status.js");
   assert.ok(Array.isArray(index.capabilities));
+  fs.rmSync(scanDir, { recursive: true, force: true });
+});
+
+test("exports complete agent commands and relationship metadata", () => {
+  const scanDir = tmpDir("mdx-agents-");
+  const registryDir = path.join(scanDir, "agents");
+  fs.mkdirSync(registryDir, { recursive: true });
+  const commands = Array.from({ length: 12 }, (_, index) => `command-${index + 1}`);
+  fs.writeFileSync(
+    path.join(registryDir, "agent-registry.json"),
+    JSON.stringify([{
+      id: "gtm-manager",
+      name: "GTM Manager",
+      commands,
+      reports_to: [],
+      manages: ["marketing-pm", "outreach-director"],
+      coordinates_with: ["revenue-manager"],
+      serves: ["product-pm"],
+    }]),
+    "utf8"
+  );
+
+  const { index } = buildIndex(scanDir);
+  const capability = index.capabilities.find((item) => item.id === "agent:gtm-manager");
+  assert.deepStrictEqual(capability.runtime_requirements.commands, commands);
+  assert.deepStrictEqual(capability.relationships, {
+    reports_to: [],
+    manages: ["marketing-pm", "outreach-director"],
+    coordinates_with: ["revenue-manager"],
+    serves: ["product-pm"],
+  });
   fs.rmSync(scanDir, { recursive: true, force: true });
 });
 
@@ -63,6 +96,30 @@ test("scans skills and workflows too", () => {
   const ids = index.capabilities.map((c) => c.id);
   assert.ok(ids.includes("skill:my-skill"));
   assert.ok(ids.includes("workflow:council"));
+  fs.rmSync(scanDir, { recursive: true, force: true });
+});
+
+test("adds enabled Codex plugins as advisory worker capabilities", () => {
+  const scanDir = tmpDir("mdx-plugin-");
+  const plugin = {
+    pluginId: "github@openai-curated",
+    name: "github",
+    description: "GitHub integration",
+    manifestPath: "/tmp/github/.codex-plugin/plugin.json",
+    sourcePath: "/tmp/github",
+    keywords: ["pull requests"],
+    defaultPrompts: ["Review a pull request"],
+    components: { skills: true, apps: true, mcpServers: false, hooks: false, commands: false },
+    routingPolicy: { authority: "myos", route: "connector_or_cli", mutation: "approval_gated" },
+  };
+
+  const { index, counts } = buildIndex(scanDir, { plugins: [plugin] });
+  assert.strictEqual(counts.plugins, 1);
+  const capability = index.capabilities.find((item) => item.id === "plugin:github@openai-curated");
+  assert.ok(capability);
+  assert.strictEqual(capability.priority, 35);
+  assert.strictEqual(capability.runtime_requirements.advisory_only, true);
+  assert.strictEqual(capability.runtime_requirements.routing_policy.authority, "myos");
   fs.rmSync(scanDir, { recursive: true, force: true });
 });
 

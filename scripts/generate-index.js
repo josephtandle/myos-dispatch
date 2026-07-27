@@ -20,7 +20,7 @@
 // example schema instead so a fresh install always has a valid index.
 //
 // Usage:
-//   node scripts/generate-index.js [--dir <scanDir>] [--out <indexPath>] [--quiet]
+//   node scripts/generate-index.js [--dir <scanDir>] [--out <indexPath>] [--include-codex-plugins] [--quiet]
 //
 // Defaults:
 //   --dir : $MYOS_HOME_ROOT/workspace, else $MYOS_HOME_ROOT, else cwd
@@ -29,6 +29,10 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const os = require("node:os");
+const {
+  inspectCodexPlugins,
+  pluginsToCapabilityRecords,
+} = require("../src/integrations/codex-plugin-inventory");
 
 const REPO_ROOT = path.resolve(__dirname, "..");
 const GENERATOR_VERSION = 1;
@@ -44,10 +48,11 @@ const SKIP_DIRS = new Set([
 ]);
 
 function parseArgs(argv) {
-  const args = { dir: "", out: "", quiet: false };
+  const args = { dir: "", out: "", quiet: false, includeCodexPlugins: false };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === "--quiet") args.quiet = true;
+    else if (arg === "--include-codex-plugins") args.includeCodexPlugins = true;
     else if (arg === "--dir") args.dir = argv[++i] || "";
     else if (arg.startsWith("--dir=")) args.dir = arg.slice("--dir=".length);
     else if (arg === "--out") args.out = argv[++i] || "";
@@ -182,6 +187,7 @@ function buildCapabilities(scanDir, found, warnings) {
       avoid_when: normalizeList(m.avoid_when || [], 6),
       runtime_requirements: {
         handler: m.handler ? relTo(scanDir, path.resolve(path.dirname(filePath), m.handler)) : null,
+        command: m.command || null,
         layer: m.layer || null,
         owner: m.owner || null,
       },
@@ -267,7 +273,18 @@ function buildCapabilities(scanDir, found, warnings) {
         avoid_when: [],
         runtime_requirements: {
           api_keys_required: Boolean(agent.requiresApiKeys),
-          commands: normalizeList(agent.commands || [], 8),
+          commands: normalizeList(agent.commands || [], 32),
+        },
+        relationships: {
+          reports_to: normalizeList(
+            Array.isArray(agent.reports_to)
+              ? agent.reports_to
+              : agent.reports_to ? [agent.reports_to] : [],
+            32
+          ),
+          manages: normalizeList(agent.manages || [], 32),
+          coordinates_with: normalizeList(agent.coordinates_with || [], 32),
+          serves: normalizeList(agent.serves || [], 32),
         },
         priority: 50,
         version: 1,
@@ -278,10 +295,16 @@ function buildCapabilities(scanDir, found, warnings) {
   return capabilities.sort((a, b) => a.id.localeCompare(b.id));
 }
 
-function buildIndex(scanDir) {
+function buildIndex(scanDir, options = {}) {
   const warnings = [];
   const found = walk(scanDir);
   const capabilities = buildCapabilities(scanDir, found, warnings);
+  const plugins = Array.isArray(options.plugins) ? options.plugins : [];
+  const seenIds = new Set(capabilities.map((capability) => capability.id));
+  for (const record of pluginsToCapabilityRecords(plugins)) {
+    if (!seenIds.has(record.id)) capabilities.push(record);
+  }
+  capabilities.sort((a, b) => a.id.localeCompare(b.id));
   return {
     index: {
       schema_version: 1,
@@ -308,6 +331,7 @@ function buildIndex(scanDir) {
       skills: found.skills.length,
       workflows: found.workflows.length,
       registries: found.registries.length,
+      plugins: plugins.length,
       capabilities: capabilities.length,
     },
   };
@@ -321,7 +345,21 @@ function writeIndex(outPath, index) {
 function run(options = {}) {
   const scanDir = options.dir ? path.resolve(options.dir) : defaultScanDir();
   const outPath = options.out ? path.resolve(options.out) : defaultOutPath();
-  const { index, warnings, counts } = buildIndex(scanDir);
+  let plugins = [];
+  const pluginWarnings = [];
+  const pluginEnv = options.pluginOptions?.env || process.env;
+  const pluginRoutingEnabled =
+    String(pluginEnv.MYOS_ORCHESTRATION_GOLD_ENABLED ?? "1") !== "0" &&
+    String(pluginEnv.MYOS_CODEX_PLUGIN_ROUTING_ENABLED ?? "1") !== "0";
+  if (options.includeCodexPlugins && pluginRoutingEnabled) {
+    const inventory = inspectCodexPlugins(options.pluginOptions || {});
+    plugins = inventory.plugins || [];
+    if (inventory.status !== "ok") {
+      pluginWarnings.push(`Codex plugin inventory unavailable: ${inventory.error}`);
+    }
+  }
+  const { index, warnings, counts } = buildIndex(scanDir, { plugins });
+  warnings.push(...pluginWarnings);
   writeIndex(outPath, index);
   return { scanDir, outPath, warnings, counts, index };
 }
@@ -330,7 +368,11 @@ function main() {
   const args = parseArgs(process.argv.slice(2));
   let result;
   try {
-    result = run({ dir: args.dir, out: args.out });
+    result = run({
+      dir: args.dir,
+      out: args.out,
+      includeCodexPlugins: args.includeCodexPlugins,
+    });
   } catch (error) {
     process.stderr.write(`[generate-index] failed: ${error.message}\n`);
     process.exit(1);
@@ -340,7 +382,7 @@ function main() {
     const c = result.counts;
     process.stdout.write(
       `[generate-index] ${c.capabilities} capabilities ` +
-      `(${c.recipes} recipes, ${c.skills} skills, ${c.workflows} workflows, ${c.registries} registries)\n` +
+      `(${c.recipes} recipes, ${c.skills} skills, ${c.workflows} workflows, ${c.registries} registries, ${c.plugins} plugins)\n` +
       `[generate-index] scanned: ${result.scanDir}\n` +
       `[generate-index] wrote:   ${result.outPath}\n`
     );
