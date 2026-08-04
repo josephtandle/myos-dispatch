@@ -221,6 +221,43 @@ test("(k) --remove creates a backup file first", () => {
   assert.ok(baks.length >= 1, "a backup file must exist after remove");
 });
 
+// (l) Regression for the 2026-08-03 incident: install.sh derives the hook path
+// from its own location, so running it out of a throwaway clone wrote a
+// /var/folders/.../tmp.XXXX path into the real settings.json. The OS reaped the
+// directory and every session silently lost dispatch routing — a missing hook
+// binary fails open with no error. Ephemeral hook paths must be refused.
+test("(l) hook path inside a temp dir -> REFUSES exit1, file UNCHANGED", () => {
+  const { settings } = sandbox();
+  // Establish a good, known-permanent registration first.
+  add(settings);
+  const before = read(settings);
+
+  const tmpHook = path.join(os.tmpdir(), "tmp.FAKE1234", "h", "bin", "myos-dispatch-hook");
+  const res = spawnSync(
+    NODE,
+    [SCRIPT, "--settings", settings, "--node", NODE, "--hook", tmpHook,
+     "--home", "/home/testroot", "--surface", "claude"],
+    { encoding: "utf8" }
+  );
+
+  assert.strictEqual(res.status, 1, "must exit 1 on an ephemeral hook path");
+  assert.match(res.stderr, /temporary directory/i);
+  assert.strictEqual(read(settings), before, "settings.json must be untouched");
+});
+
+test("(l2) --allow-ephemeral-hook is the documented escape hatch", () => {
+  const { settings } = sandbox();
+  const tmpHook = path.join(os.tmpdir(), "tmp.FAKE1234", "h", "bin", "myos-dispatch-hook");
+  const res = spawnSync(
+    NODE,
+    [SCRIPT, "--settings", settings, "--node", NODE, "--hook", tmpHook,
+     "--home", "/home/testroot", "--surface", "claude", "--allow-ephemeral-hook"],
+    { encoding: "utf8" }
+  );
+  assert.strictEqual(res.status, 0, "override must permit the write");
+  assert.strictEqual(countOurHooks(JSON.parse(read(settings))), 1);
+});
+
 test("tighter marker: our real command matches, logging-wrapper does not", () => {
   const { isOurHookEntry, buildCommand } = require("../scripts/register-hook.js");
   const ours = buildCommand(NODE, HOOK, "claude");

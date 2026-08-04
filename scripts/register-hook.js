@@ -22,6 +22,7 @@
 
 const fs = require("node:fs");
 const path = require("node:path");
+const os = require("node:os");
 
 const MARKER = "myos-dispatch-hook"; // stable substring present in our command
 // Precise match for OUR hook only: the hook binary (optionally .js) immediately
@@ -43,6 +44,7 @@ function parseArgs(argv) {
     withPretool: false,
     dryRun: false,
     remove: false,
+    allowEphemeralHook: false,
   };
   for (let i = 0; i < argv.length; i += 1) {
     const a = argv[i];
@@ -55,6 +57,7 @@ function parseArgs(argv) {
     else if (a === "--with-pretool") args.withPretool = true;
     else if (a === "--dry-run") args.dryRun = true;
     else if (a === "--remove") args.remove = true;
+    else if (a === "--allow-ephemeral-hook") args.allowEphemeralHook = true;
   }
   return args;
 }
@@ -237,6 +240,49 @@ function main() {
   if (!args.remove && (!args.hook || !args.node)) {
     process.stderr.write("register-hook: --hook and --node are required when adding\n");
     process.exit(2);
+  }
+
+  // B2: refuse to register a hook binary that lives in an ephemeral directory.
+  //
+  // install.sh computes the hook path from its own location
+  // (REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"). Run the installer from a
+  // throwaway clone -- `curl | bash`, an agent testing an upgrade, a CI
+  // scratch dir -- and it happily writes that mktemp path into settings.json.
+  // The OS reaps the directory, and from then on EVERY session silently loses
+  // dispatch routing, because a missing hook binary fails open with no error.
+  //
+  // Real incident 2026-08-03 16:06: hook pointed at
+  // /var/folders/.../T/tmp.ELbp1SciY0/h/bin/myos-dispatch-hook. Undetected
+  // until the 08:15 guard run the next morning. Fail closed here instead.
+  //
+  // Deliberately NOT an existence check: install.sh legitimately registers
+  // before the binary is in place, and the test suite uses a plausible-but-
+  // absent path. Only ephemerality is disqualifying.
+  if (!args.remove && !args.allowEphemeralHook) {
+    const resolvedHook = path.resolve(args.hook);
+    const ephemeralRoots = [
+      os.tmpdir(),
+      "/tmp",
+      "/private/tmp",
+      "/var/folders",
+      "/private/var/folders",
+    ];
+    const underRoot = (root) => {
+      const r = path.resolve(root);
+      return resolvedHook === r || resolvedHook.startsWith(r + path.sep);
+    };
+    if (ephemeralRoots.some(underRoot)) {
+      process.stderr.write(
+        `register-hook: refusing to register a hook inside a temporary directory:\n` +
+        `  ${resolvedHook}\n` +
+        `This path will be reaped by the OS and dispatch routing would fail open\n` +
+        `silently. Install from a permanent checkout (e.g. ~/myos-dispatch) and\n` +
+        `re-run. Override only if you know the directory is durable:\n` +
+        `  --allow-ephemeral-hook\n`
+      );
+      process.exit(1);
+      return;
+    }
   }
 
   let existing;
