@@ -258,6 +258,80 @@ test("(l2) --allow-ephemeral-hook is the documented escape hatch", () => {
   assert.strictEqual(countOurHooks(JSON.parse(read(settings))), 1);
 });
 
+// (l3) The 2026-08-05 incident: an install rehearsal in a fake HOME pointed the
+// operator's REAL ~/.claude/settings.json at its own mktemp clone, seven times.
+// A durable settings.json must never receive an ephemeral hook path, and unlike
+// (l1) this case has NO escape hatch -- (l2)'s override must not reopen it.
+function durableSettings() {
+  // Durable by the guard's definition (not under any ephemeral root) while
+  // still being a throwaway this suite owns and removes in a finally.
+  const dir = fs.mkdtempSync(path.join(__dirname, ".rh-durable-"));
+  return { dir, settings: path.join(dir, "settings.json") };
+}
+
+test("(l3) ephemeral hook into a DURABLE settings.json is refused", () => {
+  const { dir, settings } = durableSettings();
+  try {
+    fs.writeFileSync(settings, "{}\n", "utf8");
+    const before = read(settings);
+    const tmpHook = path.join(os.tmpdir(), "tmp.FAKE1234", "h", "bin", "myos-dispatch-hook");
+    const res = spawnSync(
+      NODE,
+      [SCRIPT, "--settings", settings, "--node", NODE, "--hook", tmpHook,
+       "--home", "/home/testroot", "--surface", "claude"],
+      { encoding: "utf8" }
+    );
+    assert.strictEqual(res.status, 1, "must exit 1 on ephemeral hook + durable settings");
+    assert.match(res.stderr, /durable settings\.json/i);
+    assert.strictEqual(read(settings), before, "settings.json must be untouched");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("(l3) --allow-ephemeral-hook does NOT reopen the durable-settings case", () => {
+  const { dir, settings } = durableSettings();
+  try {
+    fs.writeFileSync(settings, "{}\n", "utf8");
+    const before = read(settings);
+    const tmpHook = path.join(os.tmpdir(), "tmp.FAKE1234", "h", "bin", "myos-dispatch-hook");
+    const res = spawnSync(
+      NODE,
+      [SCRIPT, "--settings", settings, "--node", NODE, "--hook", tmpHook,
+       "--home", "/home/testroot", "--surface", "claude", "--allow-ephemeral-hook"],
+      { encoding: "utf8" }
+    );
+    assert.strictEqual(res.status, 1, "the override must not apply to this case");
+    assert.match(res.stderr, /no\s*\n?\s*override/i);
+    assert.strictEqual(read(settings), before, "settings.json must be untouched");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("(l3) a fake HOME does not smuggle an ephemeral hook into live settings", () => {
+  // The harness that caused the incident exported its own HOME. Keying the
+  // guard off os.homedir() would have let exactly that slip through.
+  const { dir, settings } = durableSettings();
+  try {
+    fs.writeFileSync(settings, "{}\n", "utf8");
+    const before = read(settings);
+    const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), "rh-fakehome-"));
+    const tmpHook = path.join(fakeHome, "h", "bin", "myos-dispatch-hook");
+    const res = spawnSync(
+      NODE,
+      [SCRIPT, "--settings", settings, "--node", NODE, "--hook", tmpHook,
+       "--home", "/home/testroot", "--surface", "claude"],
+      { encoding: "utf8", env: { ...process.env, HOME: fakeHome } }
+    );
+    assert.strictEqual(res.status, 1, "must refuse regardless of $HOME");
+    assert.strictEqual(read(settings), before, "settings.json must be untouched");
+    fs.rmSync(fakeHome, { recursive: true, force: true });
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("tighter marker: our real command matches, logging-wrapper does not", () => {
   const { isOurHookEntry, buildCommand } = require("../scripts/register-hook.js");
   const ours = buildCommand(NODE, HOOK, "claude");

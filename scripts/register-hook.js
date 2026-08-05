@@ -24,6 +24,24 @@ const fs = require("node:fs");
 const path = require("node:path");
 const os = require("node:os");
 
+// Directories the OS may reap out from under us. A hook binary here dies
+// silently; a settings.json here is a throwaway sandbox.
+const EPHEMERAL_ROOTS = [
+  os.tmpdir(),
+  "/tmp",
+  "/private/tmp",
+  "/var/folders",
+  "/private/var/folders",
+];
+
+function isEphemeralPath(candidate) {
+  const resolved = path.resolve(candidate);
+  return EPHEMERAL_ROOTS.some((root) => {
+    const r = path.resolve(root);
+    return resolved === r || resolved.startsWith(r + path.sep);
+  });
+}
+
 const MARKER = "myos-dispatch-hook"; // stable substring present in our command
 // Precise match for OUR hook only: the hook binary (optionally .js) immediately
 // followed by our --surface flag. This avoids false-positive matches against a
@@ -242,36 +260,60 @@ function main() {
     process.exit(2);
   }
 
-  // B2: refuse to register a hook binary that lives in an ephemeral directory.
-  //
-  // install.sh computes the hook path from its own location
-  // (REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"). Run the installer from a
-  // throwaway clone -- `curl | bash`, an agent testing an upgrade, a CI
-  // scratch dir -- and it happily writes that mktemp path into settings.json.
-  // The OS reaps the directory, and from then on EVERY session silently loses
-  // dispatch routing, because a missing hook binary fails open with no error.
-  //
-  // Real incident 2026-08-03 16:06: hook pointed at
-  // /var/folders/.../T/tmp.ELbp1SciY0/h/bin/myos-dispatch-hook. Undetected
-  // until the 08:15 guard run the next morning. Fail closed here instead.
-  //
-  // Deliberately NOT an existence check: install.sh legitimately registers
-  // before the binary is in place, and the test suite uses a plausible-but-
-  // absent path. Only ephemerality is disqualifying.
-  if (!args.remove && !args.allowEphemeralHook) {
+  // Ephemeral-path guards. Both keyed off the hook living somewhere the OS
+  // will reap; B3 (fatal) is checked before B2 (overridable).
+  if (!args.remove && isEphemeralPath(args.hook)) {
     const resolvedHook = path.resolve(args.hook);
-    const ephemeralRoots = [
-      os.tmpdir(),
-      "/tmp",
-      "/private/tmp",
-      "/var/folders",
-      "/private/var/folders",
-    ];
-    const underRoot = (root) => {
-      const r = path.resolve(root);
-      return resolvedHook === r || resolvedHook.startsWith(r + path.sep);
-    };
-    if (ephemeralRoots.some(underRoot)) {
+
+    // B3: an ephemeral hook may ONLY ever be written into an ephemeral
+    // settings.json. --allow-ephemeral-hook does not excuse this case.
+    //
+    // Rehearsing an install inside a fake HOME is legitimate, and such a
+    // rehearsal genuinely needs an ephemeral hook path -- so B2 below is
+    // overridable. What is never legitimate is a sandboxed rehearsal writing
+    // that throwaway path into the operator's REAL settings.json. That
+    // combination is always a mistake, so it fails closed with no escape hatch.
+    //
+    // Real incident 2026-08-05 13:47-15:15: an install-rehearsal harness ran
+    // seven times from fresh mktemp dirs, each run pointing the live
+    // ~/.claude/settings.json at its own soon-to-be-reaped clone (and dropping
+    // the PreToolUse hook on the way). Dispatch routing was dead for ~2h and
+    // would have stayed dead until the 08:15 guard the next morning.
+    //
+    // Deliberately NOT keyed off os.homedir(): a harness that exports a fake
+    // HOME would slip straight past that. "Is the settings target durable?" is
+    // the property that actually matters, and it holds whatever HOME says.
+    if (!isEphemeralPath(args.settings)) {
+      process.stderr.write(
+        `register-hook: refusing to point a durable settings.json at an ephemeral hook:\n` +
+        `  settings: ${path.resolve(args.settings)}\n` +
+        `  hook:     ${resolvedHook}\n` +
+        `The hook path will be reaped by the OS, silently killing dispatch routing\n` +
+        `for every session using these settings. If this is an install rehearsal,\n` +
+        `point --settings at your sandbox instead of the live file. There is no\n` +
+        `override for this case.\n`
+      );
+      process.exit(1);
+      return;
+    }
+
+    // B2: refuse to register a hook binary that lives in an ephemeral directory.
+    //
+    // install.sh computes the hook path from its own location
+    // (REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"). Run the installer from a
+    // throwaway clone -- `curl | bash`, an agent testing an upgrade, a CI
+    // scratch dir -- and it happily writes that mktemp path into settings.json.
+    // The OS reaps the directory, and from then on EVERY session silently loses
+    // dispatch routing, because a missing hook binary fails open with no error.
+    //
+    // Real incident 2026-08-03 16:06: hook pointed at
+    // /var/folders/.../T/tmp.ELbp1SciY0/h/bin/myos-dispatch-hook. Undetected
+    // until the 08:15 guard run the next morning. Fail closed here instead.
+    //
+    // Deliberately NOT an existence check: install.sh legitimately registers
+    // before the binary is in place, and the test suite uses a plausible-but-
+    // absent path. Only ephemerality is disqualifying.
+    if (!args.allowEphemeralHook) {
       process.stderr.write(
         `register-hook: refusing to register a hook inside a temporary directory:\n` +
         `  ${resolvedHook}\n` +
