@@ -1,0 +1,375 @@
+diff --git a/bin/myos-dispatch-hook b/bin/myos-dispatch-hook
+index 7f0e4a9..7b27a50 100755
+--- a/bin/myos-dispatch-hook
++++ b/bin/myos-dispatch-hook
+@@ -341,6 +341,298 @@ function appendRouteLog(record) {
+   }
+ }
+ 
++function unquoteToken(token) {
++  if (!token) return token;
++  if (
++    (token.startsWith("'") && token.endsWith("'")) ||
++    (token.startsWith('"') && token.endsWith('"'))
++  ) {
++    return token.slice(1, -1);
++  }
++  return token;
++}
++
++function hasGrepPathOperand(args) {
++  let hasPatternOption = false;
++  const nonOptionArgs = [];
++  let i = 0;
++  let inOptions = true;
++
++  while (i < args.length) {
++    const arg = unquoteToken(args[i]);
++
++    if (!inOptions) {
++      nonOptionArgs.push(arg);
++      i++;
++      continue;
++    }
++
++    if (arg === "--") {
++      inOptions = false;
++      i++;
++      continue;
++    }
++
++    if (arg.startsWith("--")) {
++      if (arg.includes("=")) {
++        const optName = arg.slice(0, arg.indexOf("="));
++        if (optName === "--regexp" || optName === "--file") {
++          hasPatternOption = true;
++        }
++        i++;
++      } else if (
++        arg === "--regexp" ||
++        arg === "--file" ||
++        arg === "--after-context" ||
++        arg === "--before-context" ||
++        arg === "--context" ||
++        arg === "--max-count" ||
++        arg === "--exclude" ||
++        arg === "--exclude-from" ||
++        arg === "--exclude-dir" ||
++        arg === "--include" ||
++        arg === "--label" ||
++        arg === "--directories" ||
++        arg === "--devices" ||
++        arg === "--binary-files" ||
++        arg === "--color" ||
++        arg === "--colour"
++      ) {
++        if (arg === "--regexp" || arg === "--file") {
++          hasPatternOption = true;
++        }
++        i++;
++        if (i < args.length && !args[i].startsWith("-")) {
++          i++;
++        }
++      } else {
++        i++;
++      }
++      continue;
++    }
++
++    if (arg.startsWith("-") && arg.length > 1) {
++      let j = 1;
++      let consumedNext = false;
++      while (j < arg.length) {
++        const char = arg[j];
++        if (
++          char === "e" ||
++          char === "f" ||
++          char === "A" ||
++          char === "B" ||
++          char === "C" ||
++          char === "m" ||
++          char === "d" ||
++          char === "D"
++        ) {
++          if (char === "e" || char === "f") {
++            hasPatternOption = true;
++          }
++          if (j + 1 < arg.length) {
++            j = arg.length;
++          } else {
++            consumedNext = true;
++          }
++          break;
++        }
++        j++;
++      }
++      i++;
++      if (consumedNext) {
++        i++;
++      }
++      continue;
++    }
++
++    nonOptionArgs.push(arg);
++    i++;
++  }
++
++  if (hasPatternOption) {
++    return nonOptionArgs.length > 0;
++  }
++  return nonOptionArgs.length > 1;
++}
++
++function tokenizeShellCommand(cmd) {
++  const tokens = [];
++  let currentToken = "";
++  let inSingleQuote = false;
++  let inDoubleQuote = false;
++  let escaped = false;
++  let hasComplexSyntax = false;
++
++  for (let i = 0; i < cmd.length; i++) {
++    const char = cmd[i];
++
++    if (escaped) {
++      currentToken += char;
++      escaped = false;
++      continue;
++    }
++
++    if (char === "\\") {
++      if (inSingleQuote) {
++        currentToken += char;
++      } else {
++        escaped = true;
++      }
++      continue;
++    }
++
++    if (char === "'" && !inDoubleQuote) {
++      inSingleQuote = !inSingleQuote;
++      currentToken += char;
++      continue;
++    }
++
++    if (char === '"' && !inSingleQuote) {
++      inDoubleQuote = !inDoubleQuote;
++      currentToken += char;
++      continue;
++    }
++
++    if (inSingleQuote || inDoubleQuote) {
++      if (char === "`" || (char === "$" && i + 1 < cmd.length && cmd[i + 1] === "(")) {
++        hasComplexSyntax = true;
++      }
++      currentToken += char;
++      continue;
++    }
++
++    if (
++      char === "`" ||
++      (char === "$" && i + 1 < cmd.length && cmd[i + 1] === "(") ||
++      (char === "<" && i + 1 < cmd.length && (cmd[i + 1] === "(" || cmd[i + 1] === "<"))
++    ) {
++      hasComplexSyntax = true;
++    }
++
++    if (char === "|" || char === "&" || char === ";" || char === "\n") {
++      if (currentToken) {
++        tokens.push(currentToken);
++        currentToken = "";
++      }
++      if (
++        (char === "|" && i + 1 < cmd.length && (cmd[i + 1] === "|" || cmd[i + 1] === "&")) ||
++        (char === "&" && i + 1 < cmd.length && cmd[i + 1] === "&")
++      ) {
++        tokens.push(char + cmd[i + 1]);
++        i++;
++      } else {
++        tokens.push(char);
++      }
++      continue;
++    }
++
++    if (/\s/.test(char)) {
++      if (currentToken) {
++        tokens.push(currentToken);
++        currentToken = "";
++      }
++      continue;
++    }
++
++    currentToken += char;
++  }
++
++  if (escaped || inSingleQuote || inDoubleQuote) {
++    hasComplexSyntax = true;
++  }
++
++  if (currentToken) {
++    tokens.push(currentToken);
++  }
++
++  return { tokens, hasComplexSyntax };
++}
++
++const GREP_COMMANDS = new Set(["grep", "egrep", "fgrep", "rgrep"]);
++
++function shouldRejectGrepRewrite(commandStr) {
++  if (!commandStr || typeof commandStr !== "string") return false;
++  if (!/\b(rtk\s+)?(grep|egrep|fgrep|rgrep)\b/.test(commandStr)) {
++    return false;
++  }
++
++  try {
++    const { tokens, hasComplexSyntax } = tokenizeShellCommand(commandStr);
++    if (hasComplexSyntax) {
++      return true;
++    }
++
++    const sequences = [];
++    let currentSeq = [];
++    for (const token of tokens) {
++      if (token === ";" || token === "&&" || token === "||" || token === "&" || token === "\n") {
++        if (currentSeq.length) {
++          sequences.push(currentSeq);
++          currentSeq = [];
++        }
++      } else {
++        currentSeq.push(token);
++      }
++    }
++    if (currentSeq.length) {
++      sequences.push(currentSeq);
++    }
++
++    for (const seq of sequences) {
++      const stages = [];
++      let currentStage = [];
++      for (const token of seq) {
++        if (token === "|" || token === "|&") {
++          stages.push(currentStage);
++          currentStage = [];
++        } else {
++          currentStage.push(token);
++        }
++      }
++      if (currentStage.length) {
++        stages.push(currentStage);
++      }
++
++      for (let i = 0; i < stages.length; i++) {
++        const stage = stages[i];
++        if (!stage.length) continue;
++
++        let execIndex = 0;
++        while (execIndex < stage.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(stage[execIndex])) {
++          execIndex++;
++        }
++        if (execIndex < stage.length && unquoteToken(stage[execIndex]) === "rtk") {
++          execIndex++;
++        }
++        if (execIndex >= stage.length) continue;
++
++        const rawExec = unquoteToken(stage[execIndex]);
++        const execName = path.basename(rawExec);
++
++        if (GREP_COMMANDS.has(execName)) {
++          if (i > 0) {
++            return true;
++          }
++          const args = stage.slice(execIndex + 1);
++          if (!hasGrepPathOperand(args)) {
++            return true;
++          }
++        }
++      }
++    }
++  } catch {
++    return true;
++  }
++
++  return false;
++}
++
++function isRtkRewriteSafe(originalCommand, updatedCommand) {
++  if (shouldRejectGrepRewrite(originalCommand)) return false;
++  if (shouldRejectGrepRewrite(updatedCommand)) return false;
++  return true;
++}
++
+ function buildRtkRewrite(payload) {
+   const command = readCommand(payload);
+   if (!command) return null;
+@@ -362,7 +654,9 @@ function buildRtkRewrite(payload) {
+     const parsed = JSON.parse(result.stdout);
+     const updated = parsed?.hookSpecificOutput?.updatedInput;
+     if (updated && typeof updated.command === "string" && updated.command.trim()) {
+-      return updated;
++      if (isRtkRewriteSafe(command, updated.command)) {
++        return updated;
++      }
+     }
+   } catch {
+     return null;
+@@ -499,4 +793,6 @@ module.exports = {
+   readHookEventName,
+   readPromptText,
+   readCommand,
++  shouldRejectGrepRewrite,
++  isRtkRewriteSafe,
+ };
+diff --git a/test/myos-dispatch-native-hook.test.js b/test/myos-dispatch-native-hook.test.js
+index 009944a..0d8af41 100644
+--- a/test/myos-dispatch-native-hook.test.js
++++ b/test/myos-dispatch-native-hook.test.js
+@@ -87,3 +87,49 @@ test("PreToolUse (Codex surface) emits compact context and never rewrites", () =
+   assert.equal(hook.permissionDecision, undefined);
+   assert.equal(hook.permissionDecisionReason, undefined);
+ });
++
++test("PreToolUse (Claude surface) rejects RTK grep rewrites when grep reads stdin or is in a pipe", () => {
++  function getRewrite(cmd) {
++    const output = handleHookPayload(
++      {
++        hook_event_name: "PreToolUse",
++        cwd: process.cwd(),
++        tool_name: "Bash",
++        tool_input: { command: cmd },
++      },
++      "claude",
++      { contextMode: "full", rewrite: true }
++    );
++    return output?.hookSpecificOutput?.updatedInput?.command;
++  }
++
++  // Bare grep without path operand (reads stdin) -> NOT rewritten
++  assert.equal(getRewrite("grep illy"), undefined);
++
++  // Grep on right-hand side of pipe -> NOT converted to rtk grep
++  assert.equal(getRewrite("ps aux | grep illy"), undefined);
++  assert.equal(getRewrite("lsof -i | grep LISTEN"), undefined);
++
++  // Genuine file searches with explicit path operands -> IS rtk-wrapped
++  assert.equal(getRewrite("grep -rn pattern ./src"), "rtk grep -rn pattern ./src");
++  assert.equal(getRewrite("grep -n foo file.txt"), "rtk grep -n foo file.txt");
++
++  // Non-grep commands -> still rewrites as expected
++  assert.equal(getRewrite("git status"), "rtk git status");
++
++  // Malformed/ambiguous command -> falls back to original, does not throw, emits valid JSON
++  const malformedOutput = handleHookPayload(
++    {
++      hook_event_name: "PreToolUse",
++      cwd: process.cwd(),
++      tool_name: "Bash",
++      tool_input: { command: "grep $(echo illy)" },
++    },
++    "claude",
++    { contextMode: "full", rewrite: true }
++  );
++  assert.ok(malformedOutput);
++  assert.equal(malformedOutput.hookSpecificOutput?.hookEventName, "PreToolUse");
++  assert.equal(malformedOutput.hookSpecificOutput?.updatedInput, undefined);
++});
++

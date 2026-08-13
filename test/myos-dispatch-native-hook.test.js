@@ -87,3 +87,49 @@ test("PreToolUse (Codex surface) emits compact context and never rewrites", () =
   assert.equal(hook.permissionDecision, undefined);
   assert.equal(hook.permissionDecisionReason, undefined);
 });
+
+test("PreToolUse (Claude surface) rejects RTK grep rewrites when grep reads stdin or is in a pipe", () => {
+  function getRewrite(cmd) {
+    const output = handleHookPayload(
+      {
+        hook_event_name: "PreToolUse",
+        cwd: process.cwd(),
+        tool_name: "Bash",
+        tool_input: { command: cmd },
+      },
+      "claude",
+      { contextMode: "full", rewrite: true }
+    );
+    return output?.hookSpecificOutput?.updatedInput?.command;
+  }
+
+  // Bare grep without path operand (reads stdin) -> NOT rewritten
+  assert.equal(getRewrite("grep illy"), undefined);
+
+  // Grep on right-hand side of pipe -> NOT converted to rtk grep
+  assert.equal(getRewrite("ps aux | grep illy"), undefined);
+  assert.equal(getRewrite("lsof -i | grep LISTEN"), undefined);
+
+  // Genuine file searches with explicit path operands -> IS rtk-wrapped
+  assert.equal(getRewrite("grep -rn pattern ./src"), "rtk grep -rn pattern ./src");
+  assert.equal(getRewrite("grep -n foo file.txt"), "rtk grep -n foo file.txt");
+
+  // Non-grep commands -> still rewrites as expected
+  assert.equal(getRewrite("git status"), "rtk git status");
+
+  // Malformed/ambiguous command -> falls back to original, does not throw, emits valid JSON
+  const malformedOutput = handleHookPayload(
+    {
+      hook_event_name: "PreToolUse",
+      cwd: process.cwd(),
+      tool_name: "Bash",
+      tool_input: { command: "grep $(echo illy)" },
+    },
+    "claude",
+    { contextMode: "full", rewrite: true }
+  );
+  assert.ok(malformedOutput);
+  assert.equal(malformedOutput.hookSpecificOutput?.hookEventName, "PreToolUse");
+  assert.equal(malformedOutput.hookSpecificOutput?.updatedInput, undefined);
+});
+
