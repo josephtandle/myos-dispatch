@@ -263,6 +263,11 @@ ok "Index written to $INDEX_PATH"
 # 5. Register the Claude Code hook (the careful part)
 # --------------------------------------------------------------------------
 step "5/9  Registering the Claude Code dispatch hook"
+MAIN_HOOK_ADDED=0
+TITLE_HOOK_ADDED=0
+RABBITHOLE_HOOK_ADDED=0
+SHELL_TITLE_RC_ADDED=0
+
 if [ "$NO_HOOK" -eq 1 ]; then
   info "--no-hook set; skipping settings.json registration."
 else
@@ -271,6 +276,10 @@ else
   # so no separate backup step is needed here.
   if [ ! -f "$SETTINGS" ]; then
     info "No existing settings.json; a minimal one will be created."
+  fi
+  PRE_MAIN_HOOK=0
+  if [ -f "$SETTINGS" ] && grep -q "myos-dispatch-hook" "$SETTINGS" 2>/dev/null; then
+    PRE_MAIN_HOOK=1
   fi
 
   REG_ARGS=(--settings "$SETTINGS" --node "$NODE_BIN" --hook "$HOOK_PATH" --home "$HOME_ROOT" --surface claude)
@@ -290,6 +299,7 @@ else
   if [ "$NO_HOOK" -ne 1 ]; then
     "$NODE_BIN" "$REPO_DIR/scripts/register-hook.js" "${REG_ARGS[@]}"
     ok "Hook merged (idempotent; unrelated settings untouched)."
+    [ "$PRE_MAIN_HOOK" -eq 0 ] && MAIN_HOOK_ADDED=1
   fi
 fi
 
@@ -304,10 +314,15 @@ if [ "$WITH_SHELL_TITLE" -eq 1 ]; then
     warn "--no-hook set; skipping shell-title hook registration too."
   else
     mkdir -p "$CLAUDE_DIR"
+    PRE_TITLE_HOOK=0
+    if [ -f "$SETTINGS" ] && grep -q "myos-title-hook" "$SETTINGS" 2>/dev/null; then
+      PRE_TITLE_HOOK=1
+    fi
     TITLE_HOOK_PATH="$REPO_DIR/bin/myos-title-hook"
     "$NODE_BIN" "$REPO_DIR/scripts/register-title-hook.js" --settings "$SETTINGS" --node "$NODE_BIN" --hook "$TITLE_HOOK_PATH"
     ok "Registered SessionStart + Stop title hooks (idempotent; unrelated settings untouched)."
     SHELL_TITLE_DONE=1
+    [ "$PRE_TITLE_HOOK" -eq 0 ] && TITLE_HOOK_ADDED=1
 
     if rc_pair="$(shell_title_rc_file)"; then
       RC_FILE="${rc_pair%%|*}"
@@ -323,6 +338,7 @@ if [ "$WITH_SHELL_TITLE" -eq 1 ]; then
           printf '%s\n' "$SHELL_TITLE_MARKER_END"
         } >> "$RC_FILE"
         ok "Appended one source line to $RC_FILE (restart your shell, or open a new tab, to pick it up)"
+        SHELL_TITLE_RC_ADDED=1
       fi
       SHELL_TITLE_RC_DONE=1
     else
@@ -343,10 +359,15 @@ if [ "$WITH_RABBIT_HOLE" -eq 1 ]; then
     warn "--no-hook set; skipping rabbit-hole hook registration too."
   else
     mkdir -p "$CLAUDE_DIR"
+    PRE_RABBITHOLE_HOOK=0
+    if [ -f "$SETTINGS" ] && grep -q "myos-rabbithole-hook" "$SETTINGS" 2>/dev/null; then
+      PRE_RABBITHOLE_HOOK=1
+    fi
     RABBITHOLE_HOOK_PATH="$REPO_DIR/bin/myos-rabbithole-hook"
     "$NODE_BIN" "$REPO_DIR/scripts/register-rabbithole-hook.js" --settings "$SETTINGS" --node "$NODE_BIN" --hook "$RABBITHOLE_HOOK_PATH"
     ok "Registered the rabbit-hole self-check hook (idempotent; unrelated settings untouched)."
     RABBITHOLE_DONE=1
+    [ "$PRE_RABBITHOLE_HOOK" -eq 0 ] && RABBITHOLE_HOOK_ADDED=1
   fi
 else
   info "rabbit-hole: skipped (pass --with-rabbit-hole to enable the periodic self-check nudge)"
@@ -356,19 +377,33 @@ fi
 # 8. Smoke test
 # --------------------------------------------------------------------------
 step "8/9  Smoke test"
-SMOKE_OUT="$(printf '%s' '{"prompt":"test","hookEventName":"UserPromptSubmit"}' | MYOS_HOME_ROOT="$HOME_ROOT" "$NODE_BIN" "$HOOK_PATH" --surface=claude 2>/dev/null || true)"
+if [ "${MYOS_TEST_FAIL_SMOKE:-0}" -eq 1 ]; then
+  SMOKE_OUT=""
+else
+  SMOKE_OUT="$(printf '%s' '{"prompt":"test","hookEventName":"UserPromptSubmit"}' | MYOS_HOME_ROOT="$HOME_ROOT" "$NODE_BIN" "$HOOK_PATH" --surface=claude 2>/dev/null || true)"
+fi
 if printf '%s' "$SMOKE_OUT" | grep -q '"additionalContext"'; then
   ok "Hook emitted hookSpecificOutput.additionalContext"
 else
-  # Auto-revert: if we just wrote a hook, strip it so a failed install never
-  # leaves a broken hook wired into settings.json.
-  if [ "$NO_HOOK" -ne 1 ]; then
-    warn "Smoke test failed — auto-reverting the hook just added…"
+  warn "Smoke test failed: auto-reverting additions from this invocation…"
+  if [ "$MAIN_HOOK_ADDED" -eq 1 ]; then
     if "$NODE_BIN" "$REPO_DIR/scripts/register-hook.js" --settings "$SETTINGS" --remove; then
       ok "Reverted the MyOS Dispatch hook (settings.json restored; a timestamped backup also remains)."
     else
       warn "Auto-revert reported an issue — inspect $SETTINGS and its .bak-* backups."
     fi
+  fi
+  if [ "$TITLE_HOOK_ADDED" -eq 1 ]; then
+    "$NODE_BIN" "$REPO_DIR/scripts/register-title-hook.js" --settings "$SETTINGS" --remove >/dev/null 2>&1 || true
+    ok "Reverted shell-title hook."
+  fi
+  if [ "$RABBITHOLE_HOOK_ADDED" -eq 1 ]; then
+    "$NODE_BIN" "$REPO_DIR/scripts/register-rabbithole-hook.js" --settings "$SETTINGS" --remove >/dev/null 2>&1 || true
+    ok "Reverted rabbit-hole hook."
+  fi
+  if [ "$SHELL_TITLE_RC_ADDED" -eq 1 ] && [ -n "${RC_FILE:-}" ]; then
+    remove_shell_title_rc_line "$RC_FILE"
+    ok "Reverted shell-title rc line from $RC_FILE."
   fi
   fail "Smoke test failed — hook did not emit additionalContext. Output was: $SMOKE_OUT"
 fi

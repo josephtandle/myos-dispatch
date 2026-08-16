@@ -160,3 +160,12 @@ test("output index is consumable by capability-router loadCapabilityIndex", () =
   assert.strictEqual(loaded.capabilities[0].id, "recipe:deploy-site");
   fs.rmSync(scanDir, { recursive: true, force: true });
 });
+
+test("parseFrontmatter handles exact YAML block scalars | and > with CRLF and paragraph breaks", () => {
+  const { parseFrontmatter } = require("../scripts/generate-index.js");
+  const content = "---\r\nname: test-skill\r\ndescription: |\r\n  First line\r\n  Second line\r\n\r\n  Paragraph two\r\nsummary: >\r\n  This is folded\r\n  into a single line.\r\n\r\n  New paragraph.\r\n---\r\nBody text\r\n";
+  const fm = parseFrontmatter(content);
+  assert.strictEqual(fm.name, "test-skill");
+  assert.strictEqual(fm.description, "First line\nSecond line\n\nParagraph two");
+  assert.strictEqual(fm.summary, "This is folded into a single line.\n\nNew paragraph.");
+});

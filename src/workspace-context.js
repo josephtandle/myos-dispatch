@@ -38,6 +38,7 @@ const WHATSAPP_OPERATION_HINTS = /\b(whatsapp link|whatsapp group|social media t
 const GENERIC_RESEARCH_HINTS = /\b(research a product|research a competitor|research a tool|research .* if it(?:'s| is) useful|tell me if it(?:'s| is) useful)\b/;
 const ROUTING_COMPLAINT_RE = /\b(bad routing error|routing is messed up|routing.*wrong|wrong route|not reading the whole context|not asking for a link|fix (?:this )?in the routing|fix your routing|log your mistake)\b/;
 const GENERIC_PROJECT_TERMS = new Set([
+  "alumni",
   "book",
   "household",
   "logistics",
@@ -309,10 +310,11 @@ function loadProjectIndex() {
   }
 }
 
-function toWorkspacePath(relativePath) {
+function toWorkspacePath(relativePath, scanDir) {
   if (!relativePath || typeof relativePath !== "string") return "";
+  if (path.isAbsolute(relativePath)) return relativePath;
   if (relativePath.startsWith("~")) return relativePath.replace(/^~(?=\/)/, HOME);
-  return path.join(WORKSPACE, relativePath);
+  return scanDir ? path.resolve(scanDir, relativePath) : path.join(WORKSPACE, relativePath);
 }
 
 function normalizeText(value) {
@@ -559,7 +561,7 @@ function collectDispatchSignals(query, options = {}) {
   const fastpathMatches = matchFastpaths(query, 3);
   const projects = loadProjectIndex();
   let projectMatches = matchProjects(query, projects);
-  const route = selectExecutionLane(query);
+  const route = selectExecutionLane(query, options);
   const intentType = inferIntentType(query);
   const actionType = inferActionType(query);
   const isFollowUp = isShortFollowUp(query);
@@ -625,7 +627,9 @@ function buildTypedEvidenceDispatchPlan(signals) {
     intentType: signals.intentType,
     dataSourceOptions: signals.dataSourceOptions,
   });
-  const topCapability = signals.route?.candidates?.[0]?.capability || null;
+  const topCandidate = signals.route?.candidates?.[0] || null;
+  const topCapability = topCandidate?.capability || null;
+  const candidateScanDir = topCandidate?.scan_dir || topCapability?.scan_dir || null;
   const dataRouting = owner === "data"
     ? buildDataLookupRouting({
         query: signals.query,
@@ -644,7 +648,7 @@ function buildTypedEvidenceDispatchPlan(signals) {
     : owner === "data"
       ? getDataSearchScope(signals.dataSources, signals.dataSourceOptions)
       : topCapability?.source_path
-        ? toWorkspacePath(topCapability.source_path)
+        ? toWorkspacePath(topCapability.source_path, candidateScanDir)
         : signals.fastpathEvidence[0]?.path
           ? toWorkspacePath(signals.fastpathEvidence[0].path)
           : "";
@@ -890,7 +894,9 @@ function resolveDispatchPlan(query, options = {}) {
     }), signals, options);
   }
 
-  const topCapability = route?.candidates?.[0]?.capability || null;
+  const topCandidate = route?.candidates?.[0] || null;
+  const topCapability = topCandidate?.capability || null;
+  const candidateScanDir = topCandidate?.scan_dir || topCapability?.scan_dir || null;
   const hasScopedCapability = topCapability && typeof topCapability.source_path === "string";
   return attachShadowDispatch(query, finalizePlan({
     branch: hasScopedCapability ? "capability" : "fallback",
@@ -901,7 +907,7 @@ function resolveDispatchPlan(query, options = {}) {
     projectSlug: primaryProject?.slug || null,
     projectRecipeFirst: false,
     serviceAgents: [],
-    searchScope: hasScopedCapability ? toWorkspacePath(topCapability.source_path) : "",
+    searchScope: hasScopedCapability ? toWorkspacePath(topCapability.source_path, candidateScanDir) : "",
     fastpathMatches,
     projectMatches,
     route,

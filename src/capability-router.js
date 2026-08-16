@@ -45,9 +45,14 @@ function loadCapabilityIndex(options = {}) {
   const indexPath = options.indexPath || CAPABILITIES_INDEX_PATH;
   try {
     const parsed = readJsonCached(indexPath);
-    return parsed && Array.isArray(parsed.capabilities) ? parsed : { capabilities: [], lanes: {} };
+    return parsed && Array.isArray(parsed.capabilities)
+      ? {
+          ...parsed,
+          scan_dir: options.scanDir || options.scan_dir || parsed.scan_dir || null,
+        }
+      : { capabilities: [], lanes: {}, scan_dir: null };
   } catch {
-    return { capabilities: [], lanes: {} };
+    return { capabilities: [], lanes: {}, scan_dir: null };
   }
 }
 
@@ -121,12 +126,20 @@ function shortlistCapabilities(text, lane = null, limit = 5, options = {}) {
     return [];
   }
   const index = loadCapabilityIndex(options);
+  const scanDir = options.scanDir || options.scan_dir || index.scan_dir || null;
   const scored = index.capabilities
     .filter((capability) => !lane || capability.execution_lane === lane)
-    .map((capability) => ({
-      capability,
-      ...scoreCapabilityMatch(capability, text),
-    }))
+    .map((capability) => {
+      const updatedCapability = {
+        ...capability,
+        ...(scanDir ? { scan_dir: scanDir } : {}),
+      };
+      return {
+        capability: updatedCapability,
+        ...scoreCapabilityMatch(capability, text),
+        ...(scanDir ? { scan_dir: scanDir } : {}),
+      };
+    })
     .filter((entry) =>
       entry.score > 0 &&
       (entry.evidenceScore >= MIN_CAPABILITY_EVIDENCE_SCORE || entry.score >= MIN_CAPABILITY_TOTAL_SCORE)
