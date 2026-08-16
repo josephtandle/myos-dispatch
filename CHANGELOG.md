@@ -2,6 +2,15 @@
 
 All notable changes to MyOS Dispatch are documented here.
 
+## v3.4.1 - 2026-08-16
+
+### Fixed
+
+- **External Git repository routing:** Propagate index `scan_dir` through candidates and resolve relative `source_path` against it.
+- **YAML block scalar parsing:** Parse exact YAML block scalars `|` (literal) and `>` (folded) with CRLF, common indentation, folding, and paragraph breaks.
+- **Goal Scale 4 fan-out posture:** Do not let planner-generated fanout independently promote simple actionable work to Goal Scale 4; replay "draft a bug report" as Scale 3 and "is everything ok" at most Scale 2.
+- **Alumni project capture:** Suppress generic single-word alumni project capture while preserving explicit Alumni Circle matches.
+
 ## v3.4.0 — 2026-07-22
 
 ### Added

@@ -65,6 +65,12 @@ hooks.
 
 ## Install
 
+Canonical code comes only from https://github.com/josephtandle/myos-dispatch.
+Existing clean canonical checkouts fetch and check out v3.4.1 then rerun the idempotent installer.
+Dirty or foreign checkouts are left untouched and a separate versioned canonical checkout is used.
+
+Note: Settings merging preserves unrelated settings in `settings.json`, but the installer intentionally rebuilds the generated capabilities index from the chosen `--index-dir`.
+
 ### macOS / Linux
 
 ```sh

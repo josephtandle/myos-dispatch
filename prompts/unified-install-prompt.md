@@ -16,8 +16,11 @@ Your job, in order:
 3. Ask me one question before downloading: "Where does your code live? For example ~/code or your projects folder." Use my answer as the index directory below. If I do not have one, use my home folder's most likely projects directory and tell me which you picked.
 
 4. Download it and inspect it before installing:
-   - `git clone https://github.com/josephtandle/myos-dispatch`
-   - `cd myos-dispatch`
+   - Canonical code comes only from https://github.com/josephtandle/myos-dispatch.
+   - Inspect origin and cleanliness first.
+   - For a clean canonical checkout, fetch and check out v3.4.1 then rerun the idempotent installer.
+   - Clone the canonical repo (`git clone https://github.com/josephtandle/myos-dispatch` and `cd myos-dispatch`) only when no checkout exists.
+   - When an existing checkout is dirty or foreign, leave it untouched and use a separate versioned checkout.
    - Before running anything, read `bin/install.sh` (or `bin/install.ps1` on Windows), `scripts/register-hook.js`, and `package.json`. Confirm the installer does only what it advertises: a scoped npm install, building a local index, registering a single UserPromptSubmit hook in `~/.claude/settings.json` with a timestamped backup, and a smoke test. No network calls to anywhere unexpected, no reading of secrets, nothing outside its own folder and that one settings entry.
    - Tell me in one line what you found. Install ONLY if it is clean. If anything looks off, stop and show me exactly what concerned you.
 
@@ -25,7 +28,7 @@ Your job, in order:
    - macOS: `bash bin/install.sh --yes --index-dir "<my code folder>"`
      (Drop `--yes` only if I say I want to review the settings.json merge interactively.)
    - Windows: `powershell -ExecutionPolicy Bypass -File bin\install.ps1 -Yes -IndexDir "C:\Users\<name>\code"`
-   - The installer does six things on its own: checks Node is 20+, runs a scoped `npm install --omit=optional`, skips optional components, builds the capability index, registers the Claude Code UserPromptSubmit hook in `~/.claude/settings.json` (it makes a timestamped backup, writes atomically, is idempotent, and preserves everything else in the file), and runs a smoke test that automatically reverts the hook if it fails. Let it do all six.
+   - The installer does six things on its own: checks Node is 20+, runs a scoped `npm install --omit=optional`, skips optional components, builds the capability index from the chosen `--index-dir`, registers the Claude Code UserPromptSubmit hook in `~/.claude/settings.json` (it makes a timestamped backup, writes atomically, is idempotent, and preserves unrelated settings in settings.json while intentionally rebuilding the generated capabilities index from the chosen `--index-dir`), and runs a smoke test that automatically reverts the hook if it fails. Let it do all six.
    - Home root for config, state, and the index is `~/.myos-dispatch` on macOS and `%USERPROFILE%\.myos-dispatch` on Windows.
 
 6. Prove it works. Run the success check yourself and show me the result:
