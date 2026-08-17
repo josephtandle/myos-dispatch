@@ -1,65 +1,66 @@
-Install MyOS Dispatch on this machine and wire it into Claude Code.
+Install WebFetch only, and make the installation as easy as possible.
 
-You must keep going until it is installed, verified, and wired in, unless you hit a true blocker. Diagnosis is not completion. If a step fails, fix it and retry before asking me anything.
+Repository:
+https://github.com/josephtandle/ultimate-web-fetch
 
-I may not be technical. Explain what you are doing in one plain sentence per step, run the commands yourself, and only ask me a question when you genuinely need my answer.
+Your job is to:
 
-Your job, in order:
+1. Detect whether this computer uses macOS, Windows PowerShell, Windows WSL, or Linux.
+2. Install WebFetch and every dependency it directly needs.
+3. Automatically choose the correct commands for this operating system.
+4. Repair normal installation problems automatically, including:
+   - missing Node.js or npm
+   - missing Python
+   - missing Playwright Chromium
+   - missing FFmpeg
+   - missing yt-dlp
+   - missing Python packages
+   - npm permission problems
+   - incorrect PATH or command availability
+   - incomplete previous installations
+5. Do not install Agent Browser, Vercel CLI, RTK, workflows, or unrelated tools.
+6. Do not make me manually research dependencies or copy commands between operating systems.
+7. If the current WebFetch installer is unnecessarily difficult, improve the installer or setup instructions in the WebFetch repository so future users can install it more easily.
+8. Use dynamic paths. Never hardcode a username or machine-specific path.
+9. Keep the installation persistent so the webfetch command remains available after this session.
+10. Preserve existing user files and local work.
 
-1. Detect whether this is macOS or Windows and adapt every command accordingly.
+Installation target:
 
-2. Check Node.js:
-   - Run `node --version`. Any version 20 or newer is fine. Never pin a version; upgrading Node later is safe because the default install is pure JavaScript with no native modules.
-   - If Node is missing or older than 20, help me install the LTS from nodejs.org. On Windows you can use `winget install OpenJS.NodeJS.LTS`.
-   - Do NOT use the `--with-extras` or `-WithExtras` install flag. That is the only flag that compiles a native module, and it breaks if Node's major version changes later. Stay on the default install.
+- Create or use a Tools/ultimate-web-fetch folder inside the current user’s home directory.
+- If the repository is already there, update it without deleting local work.
+- If it is not there, clone it.
+- Install the project dependencies.
+- Install Playwright Chromium.
+- Make the webfetch command available globally when possible.
+- If global npm installation fails, automatically use a working local fallback and make that fallback easy to run.
 
-3. Ask me one question before downloading: "Where does your code live? For example ~/code or your projects folder." Use my answer as the index directory below. If I do not have one, use my home folder's most likely projects directory and tell me which you picked.
+After installation:
 
-4. Download it and inspect it before installing:
-   - `git clone https://github.com/josephtandle/myos-dispatch`
-   - `cd myos-dispatch`
-   - Before running anything, read `bin/install.sh` (or `bin/install.ps1` on Windows), `scripts/register-hook.js`, and `package.json`. Confirm the installer does only what it advertises: a scoped npm install, building a local index, registering a single UserPromptSubmit hook in `~/.claude/settings.json` with a timestamped backup, and a smoke test. No network calls to anywhere unexpected, no reading of secrets, nothing outside its own folder and that one settings entry.
-   - Tell me in one line what you found. Install ONLY if it is clean. If anything looks off, stop and show me exactly what concerned you.
+1. Run the project’s check or preflight command.
+2. Automatically repair any ordinary dependency or configuration problems.
+3. Run a real test fetch against:
 
-5. Run the installer:
-   - macOS: `bash bin/install.sh --yes --index-dir "<my code folder>"`
-     (Drop `--yes` only if I say I want to review the settings.json merge interactively.)
-   - Windows: `powershell -ExecutionPolicy Bypass -File bin\install.ps1 -Yes -IndexDir "C:\Users\<name>\code"`
-   - The installer does six things on its own: checks Node is 20+, runs a scoped `npm install --omit=optional`, skips optional components, builds the capability index, registers the Claude Code UserPromptSubmit hook in `~/.claude/settings.json` (it makes a timestamped backup, writes atomically, is idempotent, and preserves everything else in the file), and runs a smoke test that automatically reverts the hook if it fails. Let it do all six.
-   - Home root for config, state, and the index is `~/.myos-dispatch` on macOS and `%USERPROFILE%\.myos-dispatch` on Windows.
+   https://example.com
 
-6. Prove it works. Run the success check yourself and show me the result:
-   - `echo '{"prompt":"test","hookEventName":"UserPromptSubmit"}' | node bin/myos-dispatch-hook --surface=claude`
-   - PASS means the output contains `hookSpecificOutput.additionalContext` with a `[MyOS Dispatch route]` block. The installer already ran this and would have auto-reverted on failure, so if install completed, this should be green.
+4. Confirm that the result is returned successfully.
+5. Confirm the exact command a user should run next time.
+6. If the installation process itself is confusing, improve the README or installer script with the simplest instructions for macOS, Windows, WSL, and Linux.
 
-7. Make the router useful for MY projects. The install already built the capability index; rebuild it pointed at my main code folder so Dispatch recognizes my own projects and routes instantly:
-   - macOS: `node scripts/generate-index.js --dir "<my code folder>" --out "$HOME/.myos-dispatch/workspace/capabilities-index.json"`
-   - Windows: same command with `--out "%USERPROFILE%\.myos-dispatch\workspace\capabilities-index.json"`
-   - Tell me in one line what the index and fastpaths do: they let Dispatch recognize my projects and recipes so it can route my prompts instantly instead of searching.
+Do not stop for routine setup problems. Diagnose them, fix them, and continue.
 
-8. Optional tools: git, ripgrep, sqlite3, and python are all optional. If any are missing, note it in the report and keep going. Never block on them.
+Only stop and ask me for help if:
 
-9. When everything above is done, print a completion report that clearly says:
-   - MyOS Dispatch is installed and the smoke test passed
-   - where the repo lives on my machine
-   - the home root (`~/.myos-dispatch` or `%USERPROFILE%\.myos-dispatch`)
-   - the index path and which code folder it was built from
-   - that the hook is registered in `~/.claude/settings.json` (and where the backup of my old settings is)
-   - which optional tools were missing, if any
-   - the two things I must do now:
-     1. Quit and reopen Claude Code so it reloads `~/.claude/settings.json`. (If you just installed Node in this same window, also close and reopen the terminal first.)
-     2. Type any prompt in the fresh Claude Code session and look for the `[MyOS Dispatch route]` line to confirm Dispatch is routing.
+- administrator approval is genuinely required,
+- the repository cannot be reached,
+- the operating system cannot be identified,
+- or a required credential is missing.
 
-Post-install model catalog:
-- Restate in my own language what MyOS Dispatch is, in human terms, not the internals.
-- Present the task-class report exactly as printed by `node scripts/setup-model-catalog.js --report`.
-- Ask whether I want to change any assignment.
-- If I want a change, edit the `overrides` section of `<MYOS_HOME_ROOT>/config/model-catalog.local.json`, then re-run `node scripts/setup-model-catalog.js --report` to confirm.
+When finished, report:
 
-Hard blockers, the only reasons to stop:
-
-- Node 20+ is not installed and I decline to install it
-- no write access to `~/.claude`
-- `git clone` fails because there is no network
-
-Everything else is a problem to solve, not a reason to stop. When you report success, keep it concrete: say exactly what you installed, where, and what you verified.
+- whether WebFetch installed successfully
+- what dependencies were installed
+- where it lives
+- the one-line command to run it
+- whether the test fetch succeeded
+- what installer or documentation improvements you made
