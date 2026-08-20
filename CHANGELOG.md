@@ -2,6 +2,13 @@
 
 All notable changes to MyOS Dispatch are documented here.
 
+## v3.4.3 - 2026-08-20
+
+### Fixed
+
+- **Trivial-goal fanout clamp:** Goal Scale 1 and 2 no longer emit a sidecar fanout plan. The parallelization plan was built before the goal scale was resolved, so a status question such as "is everything ok" still produced five read-only lanes. Scales 3 and 4 are unchanged, and an explicit `MYOS_PARALLELIZATION_AGGRESSION` override still wins.
+- **Fresh-clone test fixture:** `register-hook`'s durable-settings fixture was created under `__dirname`, which is ephemeral when the repository itself is cloned into a temp path. Two guard tests failed from such a clone while passing from a home checkout.
+
 ## v3.4.2 - 2026-08-20
 
 ### Fixed
