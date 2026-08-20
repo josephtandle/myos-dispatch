@@ -2,6 +2,13 @@
 
 All notable changes to MyOS Dispatch are documented here.
 
+## v3.5.0 - 2026-08-20
+
+### Added
+
+- **Fan-out now executes.** For Goal Scale 3+ routes, up to three read-only lanes are spawned in the background through `bin/myos-sidecar.js` at prompt time; their results are injected into the next prompt's route context with one-line summaries. Previously every lane was advisory text: 5,243 routes had advised 22,572 lanes with zero executed. Safety: read-only lanes only, six per session-hour, `MYOS_AUTO_FANOUT=0` opts out, `MYOS_BACKGROUND_AGENTS_ENABLED=0` still disables everything, and any failure degrades silently to the previous advice-only behaviour.
+- **Compliance measurement.** Each route records how many lanes were auto-dispatched and how many Agent tool calls the transcript actually shows, so advised-versus-executed is continuously logged.
+
 ## v3.4.3 - 2026-08-20
 
 ### Fixed
