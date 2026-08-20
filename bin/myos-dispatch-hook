@@ -427,11 +427,22 @@ function collectAndMarkDeliveredResults(sidecarResultsDir, manifestPath) {
     try {
       const content = fs.readFileSync(fullPath, "utf8");
       const parsed = JSON.parse(content);
+      // Worker CLIs emit terminal control sequences on stdout, and the first live
+      // auto-fanout delivered summaries that were pure OSC window-title escapes
+      // (ESC ]0;Working - MyOS - Codex BEL). Strip escapes and control bytes
+      // before this reaches a prompt, and fall back when nothing legible remains.
       const rawSummary = parsed.summary || parsed.errorMessage || "Result ready";
-      const summary = String(rawSummary).replace(/\s+/g, " ").trim();
+      const summary = String(rawSummary)
+        .replace(/\u001B\][^\u0007\u001B]*(?:\u0007|\u001B\\)/g, "")
+        .replace(/\u001B\[[0-9;?]*[ -/]*[@-~]/g, "")
+        .replace(/[\u0000-\u0008\u000B-\u001F\u007F]/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
       readyResults.push({
         laneId: parsed.id || parsed.taskId || laneId,
-        summary,
+        // A lane that produced nothing legible still gets delivered, so the
+        // orchestrator knows it finished and can open the file itself.
+        summary: summary.length >= 8 ? summary : "result ready (see file)",
         path: fullPath,
       });
     } catch {

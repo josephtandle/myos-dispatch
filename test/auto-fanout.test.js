@@ -299,3 +299,26 @@ test("auto-fanout suite", { concurrency: 1 }, async (t) => {
     }
   });
 });
+
+test("sidecar summaries strip terminal escapes and fall back when nothing legible remains", async (t) => {
+  // Verbatim from the first live auto-fanout run: a worker CLI wrote its OSC
+  // window-title sequence to stdout and that became the "summary" injected into
+  // a prompt. Contaminated summaries must never reach the orchestrator raw.
+  const osc = "\u001B]0;Working \u2014 MyOS \u2014 Codex\u0007";
+  const sgr = "\u001B[32mfound 3 modules, no blockers\u001B[0m";
+
+  const clean = (raw) => String(raw)
+    .replace(/\u001B\][^\u0007\u001B]*(?:\u0007|\u001B\\)/g, "")
+    .replace(/\u001B\[[0-9;?]*[ -/]*[@-~]/g, "")
+    .replace(/[\u0000-\u0008\u000B-\u001F\u007F]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  const oscClean = clean(osc);
+  assert.ok(!oscClean.includes("\u001B"), "escape bytes must be stripped");
+  assert.ok(oscClean.length < 8, "an all-escape summary leaves nothing legible");
+
+  const sgrClean = clean(sgr);
+  assert.equal(sgrClean, "found 3 modules, no blockers");
+  assert.ok(sgrClean.length >= 8, "a real summary survives intact");
+});

@@ -2,6 +2,13 @@
 
 All notable changes to MyOS Dispatch are documented here.
 
+## v3.5.1 - 2026-08-20
+
+### Fixed
+
+- **Sidecar summaries are sanitized.** The first live auto-fanout run injected worker terminal escape sequences into a prompt as lane findings. OSC/CSI sequences and control bytes are stripped, with a `result ready (see file)` fallback when nothing legible remains.
+- **`GITNEXUS_VERSION` pins the gitnexus check.** The installer verified an unpinned `npx gitnexus` while the All Sorted lockfile pins a version.
+
 ## v3.5.0 - 2026-08-20
 
 ### Added

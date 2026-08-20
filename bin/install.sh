@@ -233,7 +233,12 @@ fi
 
 if [ "$WITH_GITNEXUS" -eq 1 ]; then
   if command -v npx >/dev/null 2>&1; then
-    if npx --yes gitnexus --version >/dev/null 2>&1; then ok "gitnexus reachable via npx (ephemeral, no global install)";
+    # Pin when the caller supplies a version. The All Sorted bundle pins gitnexus
+    # in its lockfile, but this check ran unpinned, so a bundle install could
+    # verify one version and later fetch another.
+    GITNEXUS_SPEC="gitnexus"
+    [ -n "${GITNEXUS_VERSION:-}" ] && GITNEXUS_SPEC="gitnexus@${GITNEXUS_VERSION}"
+    if npx --yes "$GITNEXUS_SPEC" --version >/dev/null 2>&1; then ok "gitnexus reachable via npx (${GITNEXUS_SPEC}, ephemeral, no global install)";
     else warn "npx gitnexus --version did not succeed; it will still be fetched on first use (optional)."; fi
   else
     warn "npx not found; skipping gitnexus check (optional)."
