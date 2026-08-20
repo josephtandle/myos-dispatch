@@ -714,10 +714,38 @@ function finalizeDispatchPlan(query, plan, signals) {
     parallelizationPlan,
   };
 
-  return {
+  const finalPlan = {
     ...planWithParallelization,
     ...inferGoalScale(query, planWithParallelization),
   };
+
+  const env = signals?.env || process.env;
+  const envOverride = String(env?.MYOS_PARALLELIZATION_AGGRESSION || "").trim().toLowerCase();
+  const hasExplicitOverride = envOverride === "balanced" || envOverride === "deep";
+
+  if (
+    (finalPlan.goalScale === 1 || finalPlan.goalScale === 2) &&
+    !hasExplicitOverride &&
+    finalPlan.parallelizationPlan
+  ) {
+    finalPlan.parallelizationPlan = {
+      ...finalPlan.parallelizationPlan,
+      mode: "none",
+      reason: "no_safe_parallel_work_needed",
+      aggression: "off",
+      depth: 0,
+      backgroundTasks: [],
+      requiredTaskCount: 0,
+      joinPolicy: "none",
+      budget: {
+        ...finalPlan.parallelizationPlan.budget,
+        maxAgents: 0,
+      },
+      clampReason: "trivial_goal_scale",
+    };
+  }
+
+  return finalPlan;
 }
 
 function compareDispatchPlans(legacyPlan, shadowPlan) {

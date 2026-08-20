@@ -338,11 +338,11 @@ test("exploratory project asks load context instead of recipe-first hints", () =
   assert.equal(plan.branch, "project");
   assert.equal(plan.intentType, "exploratory");
   assert.equal(plan.projectRecipeFirst, false);
-  assert.equal(plan.parallelizationPlan.mode, "read_only");
-  assert.ok(plan.parallelizationPlan.backgroundTasks.length >= 1);
+  assert.equal(plan.parallelizationPlan.mode, "none");
+  assert.equal(plan.parallelizationPlan.backgroundTasks.length, 0);
   assert.match(bundle, /Intent type: exploratory/);
   assert.match(bundle, /Project recipe first: no/);
-  assert.match(bundle, /Parallelization: myos-parallelization-(writable-v1|v\d) read_only/);
+  assert.match(bundle, /Parallelization: myos-parallelization-(writable-v1|v\d) none/);
   assert.match(bundle, /CONTEXT\.md:/);
 });
 
@@ -1010,4 +1010,62 @@ test("suppresses generic single-word alumni project capture while preserving exp
 
   const explicitPlan = resolveDispatchPlan("Tell me about Alumni Circle");
   assert.equal(explicitPlan.projectSlug, "alumni");
+});
+
+test("clamps parallelization fanout for goalScale 1 prompts", () => {
+  const { resolveDispatchPlan } = require("../src/workspace-context");
+  const plan = resolveDispatchPlan("is everything ok");
+  assert.equal(plan.goalScale, 1);
+  assert.equal(plan.parallelizationPlan.aggression, "off");
+  assert.equal(plan.parallelizationPlan.mode, "none");
+  assert.equal(plan.parallelizationPlan.backgroundTasks.length, 0);
+  assert.equal(plan.parallelizationPlan.clampReason, "trivial_goal_scale");
+});
+
+test("clamps parallelization fanout for goalScale 2 prompts", () => {
+  const { resolveDispatchPlan } = require("../src/workspace-context");
+  const plan = resolveDispatchPlan("what time is my meeting tomorrow");
+  assert.equal(plan.goalScale, 2);
+  assert.equal(plan.parallelizationPlan.aggression, "off");
+  assert.equal(plan.parallelizationPlan.mode, "none");
+  assert.equal(plan.parallelizationPlan.backgroundTasks.length, 0);
+  assert.equal(plan.parallelizationPlan.clampReason, "trivial_goal_scale");
+});
+
+test("does not clamp parallelization fanout for goalScale 3 prompts", () => {
+  const { resolveDispatchPlan } = require("../src/workspace-context");
+  const plan = resolveDispatchPlan("rename this file to notes.md");
+  assert.equal(plan.goalScale, 3);
+  assert.notEqual(plan.parallelizationPlan.aggression, "off");
+  assert.ok(plan.parallelizationPlan.backgroundTasks.length > 0);
+  assert.equal(plan.parallelizationPlan.clampReason, undefined);
+});
+
+test("preserves deep fanout for goalScale 4 multi-part implementation prompts", () => {
+  const { resolveDispatchPlan } = require("../src/workspace-context");
+  const prompt = "Build a customer-facing export feature across the CRM and reporting modules, add tests, verify it end to end, and ship it";
+  const plan = resolveDispatchPlan(prompt);
+  assert.equal(plan.goalScale, 4);
+  assert.notEqual(plan.parallelizationPlan.aggression, "off");
+  assert.ok(plan.parallelizationPlan.backgroundTasks.length > 0);
+  assert.equal(plan.parallelizationPlan.clampReason, undefined);
+});
+
+test("operator env override MYOS_PARALLELIZATION_AGGRESSION=deep prevents clamping on goalScale 1", () => {
+  const { resolveDispatchPlan } = require("../src/workspace-context");
+  const origEnv = process.env.MYOS_PARALLELIZATION_AGGRESSION;
+  try {
+    process.env.MYOS_PARALLELIZATION_AGGRESSION = "deep";
+    const plan = resolveDispatchPlan("is everything ok");
+    assert.equal(plan.goalScale, 1);
+    assert.equal(plan.parallelizationPlan.aggression, "deep");
+    assert.ok(plan.parallelizationPlan.backgroundTasks.length > 0);
+    assert.equal(plan.parallelizationPlan.clampReason, undefined);
+  } finally {
+    if (origEnv === undefined) {
+      delete process.env.MYOS_PARALLELIZATION_AGGRESSION;
+    } else {
+      process.env.MYOS_PARALLELIZATION_AGGRESSION = origEnv;
+    }
+  }
 });
