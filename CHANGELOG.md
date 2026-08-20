@@ -2,6 +2,12 @@
 
 All notable changes to MyOS Dispatch are documented here.
 
+## v3.4.2 - 2026-08-20
+
+### Fixed
+
+- **RTK grep rewrite safety:** Reject the `grep` -> `rtk grep` rewrite when grep reads stdin or sits in a pipeline. The rewrite is only applied when a real path operand exists, with correct handling of option-taking flags, quoted operands, and the `--` terminator.
+
 ## v3.4.1 - 2026-08-16
 
 ### Fixed
