@@ -3,6 +3,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const { execFileSync } = require("node:child_process");
 
 function loadWorkspaceContextWithHome(homeDir) {
   process.env.HOME = homeDir;
@@ -337,11 +338,11 @@ test("exploratory project asks load context instead of recipe-first hints", () =
   assert.equal(plan.branch, "project");
   assert.equal(plan.intentType, "exploratory");
   assert.equal(plan.projectRecipeFirst, false);
-  assert.equal(plan.parallelizationPlan.mode, "read_only");
-  assert.ok(plan.parallelizationPlan.backgroundTasks.length >= 1);
+  assert.equal(plan.parallelizationPlan.mode, "none");
+  assert.equal(plan.parallelizationPlan.backgroundTasks.length, 0);
   assert.match(bundle, /Intent type: exploratory/);
   assert.match(bundle, /Project recipe first: no/);
-  assert.match(bundle, /Parallelization: myos-parallelization-(writable-v1|v\d) read_only/);
+  assert.match(bundle, /Parallelization: myos-parallelization-(writable-v1|v\d) none/);
   assert.match(bundle, /CONTEXT\.md:/);
 });
 
@@ -903,4 +904,168 @@ test("dispatch plans expose automatic scale 4 metadata for durable multi-system 
   assert.match(bundle, /Parallelization: myos-parallelization-(writable-v1|v\d) (provider_affine_git_worktrees|read_only)/);
   assert.match(bundle, /Requires plan: yes/);
   assert.match(bundle, /Stop rules: done_verified/);
+});
+
+test("shortlistCapabilities propagates scan_dir through candidates and resolves relative source_path", () => {
+  const { shortlistCapabilities } = require("../src/capability-router.js");
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "workspace-context-scan-"));
+  const indexPath = path.join(tmpDir, "capabilities-index.json");
+  const externalScanDir = path.join(tmpDir, "external-repo");
+  fs.writeFileSync(
+    indexPath,
+    JSON.stringify({
+      schema_version: 1,
+      scan_dir: externalScanDir,
+      lanes: {},
+      capabilities: [
+        {
+          id: "recipe:external-deploy",
+          execution_lane: "recipe_dispatcher",
+          aliases: ["external deploy"],
+          use_when: ["external deploy"],
+          source_path: "recipes/deploy.recipe.json",
+          priority: 50,
+        },
+      ],
+    }),
+    "utf8"
+  );
+
+  const results = shortlistCapabilities("external deploy", "recipe_dispatcher", 5, { indexPath });
+  assert.equal(results.length, 1);
+  assert.equal(results[0].scan_dir, externalScanDir);
+  assert.equal(results[0].capability.scan_dir, externalScanDir);
+  assert.equal(results[0].capability.source_path, "recipes/deploy.recipe.json");
+});
+
+test("relative scan directory routes external Git repo correctly after process cwd changes", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "workspace-context-cwd-"));
+  const origCwd = process.cwd();
+  try {
+    const extRepoDir = path.join(tmpDir, "external-git-repo");
+    fs.mkdirSync(path.join(extRepoDir, "recipes"), { recursive: true });
+    execFileSync("git", ["init", "-q"], { cwd: extRepoDir });
+
+    const recipePath = path.join(extRepoDir, "recipes", "deploy.recipe.json");
+    fs.writeFileSync(
+      recipePath,
+      JSON.stringify({
+        id: "external-git-deploy",
+        title: "External Git Deploy",
+        phrases: ["external git deploy"],
+      }),
+      "utf8"
+    );
+
+    const indexPath = path.join(tmpDir, "capabilities-index.json");
+
+    process.chdir(tmpDir);
+    const { run: runGenIndex } = require("../scripts/generate-index.js");
+    runGenIndex({ dir: "./external-git-repo", out: indexPath, quiet: true });
+
+    const anotherDir = fs.mkdtempSync(path.join(os.tmpdir(), "other-cwd-"));
+    process.chdir(anotherDir);
+
+    const { resolveDispatchPlan } = loadWorkspaceContextWithHome(tmpDir);
+    const plan = resolveDispatchPlan("external git deploy", { indexPath });
+
+    assert.equal(plan.branch, "capability");
+    assert.equal(fs.realpathSync(plan.searchScope), fs.realpathSync(recipePath));
+
+    fs.rmSync(anotherDir, { recursive: true, force: true });
+  } finally {
+    process.chdir(origCwd);
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("suppresses generic single-word alumni project capture while preserving explicit Alumni Circle", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "workspace-context-alumni-"));
+  const workspaceRoot = path.join(tmpDir, ".myos", "workspace");
+  fs.mkdirSync(path.join(workspaceRoot, "projects"), { recursive: true });
+  fs.mkdirSync(path.join(workspaceRoot, "data"), { recursive: true });
+  writeDefaultDataSourcesConfig(workspaceRoot);
+
+  fs.writeFileSync(path.join(workspaceRoot, "DISPATCH-FASTPATHS.json"), JSON.stringify({ fastpaths: [] }), "utf8");
+  fs.writeFileSync(
+    path.join(workspaceRoot, "projects", "_index.json"),
+    JSON.stringify({
+      projects: {
+        alumni: {
+          slug: "alumni",
+          name: "Alumni Circle",
+          aliases: ["alumni", "alumni circle"],
+          path: "alumni",
+        },
+      },
+    }),
+    "utf8",
+  );
+  fs.writeFileSync(path.join(workspaceRoot, "capabilities-index.json"), JSON.stringify({ capabilities: [], lanes: {} }), "utf8");
+
+  const { resolveDispatchPlan } = loadWorkspaceContextWithHome(tmpDir);
+
+  const genericPlan = resolveDispatchPlan("I am an alumni of Stanford");
+  assert.notEqual(genericPlan.projectSlug, "alumni");
+
+  const explicitPlan = resolveDispatchPlan("Tell me about Alumni Circle");
+  assert.equal(explicitPlan.projectSlug, "alumni");
+});
+
+test("clamps parallelization fanout for goalScale 1 prompts", () => {
+  const { resolveDispatchPlan } = require("../src/workspace-context");
+  const plan = resolveDispatchPlan("is everything ok");
+  assert.equal(plan.goalScale, 1);
+  assert.equal(plan.parallelizationPlan.aggression, "off");
+  assert.equal(plan.parallelizationPlan.mode, "none");
+  assert.equal(plan.parallelizationPlan.backgroundTasks.length, 0);
+  assert.equal(plan.parallelizationPlan.clampReason, "trivial_goal_scale");
+});
+
+test("clamps parallelization fanout for goalScale 2 prompts", () => {
+  const { resolveDispatchPlan } = require("../src/workspace-context");
+  const plan = resolveDispatchPlan("what time is my meeting tomorrow");
+  assert.equal(plan.goalScale, 2);
+  assert.equal(plan.parallelizationPlan.aggression, "off");
+  assert.equal(plan.parallelizationPlan.mode, "none");
+  assert.equal(plan.parallelizationPlan.backgroundTasks.length, 0);
+  assert.equal(plan.parallelizationPlan.clampReason, "trivial_goal_scale");
+});
+
+test("does not clamp parallelization fanout for goalScale 3 prompts", () => {
+  const { resolveDispatchPlan } = require("../src/workspace-context");
+  const plan = resolveDispatchPlan("rename this file to notes.md");
+  assert.equal(plan.goalScale, 3);
+  assert.notEqual(plan.parallelizationPlan.aggression, "off");
+  assert.ok(plan.parallelizationPlan.backgroundTasks.length > 0);
+  assert.equal(plan.parallelizationPlan.clampReason, undefined);
+});
+
+test("preserves deep fanout for goalScale 4 multi-part implementation prompts", () => {
+  const { resolveDispatchPlan } = require("../src/workspace-context");
+  const prompt = "Build a customer-facing export feature across the CRM and reporting modules, add tests, verify it end to end, and ship it";
+  const plan = resolveDispatchPlan(prompt);
+  assert.equal(plan.goalScale, 4);
+  assert.notEqual(plan.parallelizationPlan.aggression, "off");
+  assert.ok(plan.parallelizationPlan.backgroundTasks.length > 0);
+  assert.equal(plan.parallelizationPlan.clampReason, undefined);
+});
+
+test("operator env override MYOS_PARALLELIZATION_AGGRESSION=deep prevents clamping on goalScale 1", () => {
+  const { resolveDispatchPlan } = require("../src/workspace-context");
+  const origEnv = process.env.MYOS_PARALLELIZATION_AGGRESSION;
+  try {
+    process.env.MYOS_PARALLELIZATION_AGGRESSION = "deep";
+    const plan = resolveDispatchPlan("is everything ok");
+    assert.equal(plan.goalScale, 1);
+    assert.equal(plan.parallelizationPlan.aggression, "deep");
+    assert.ok(plan.parallelizationPlan.backgroundTasks.length > 0);
+    assert.equal(plan.parallelizationPlan.clampReason, undefined);
+  } finally {
+    if (origEnv === undefined) {
+      delete process.env.MYOS_PARALLELIZATION_AGGRESSION;
+    } else {
+      process.env.MYOS_PARALLELIZATION_AGGRESSION = origEnv;
+    }
+  }
 });

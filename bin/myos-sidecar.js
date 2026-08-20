@@ -7,6 +7,9 @@
 
 const os = require("node:os");
 
+const fs = require("node:fs");
+const path = require("node:path");
+
 const { runBackgroundTask, normalizeWorkerKind } = require("../src/background/background-agent-runner");
 
 function parseArgs(argv) {
@@ -15,6 +18,11 @@ function parseArgs(argv) {
     scope: "",
     provider: "",
     timeoutMs: 180000,
+    id: "",
+    kind: "",
+    role: "",
+    out: "",
+    envelope: "",
   };
   const positional = [];
   for (let i = 0; i < argv.length; i += 1) {
@@ -22,6 +30,11 @@ function parseArgs(argv) {
     if (arg === "--scope") args.scope = String(argv[++i] || "");
     else if (arg === "--provider") args.provider = String(argv[++i] || "");
     else if (arg === "--timeout-ms") args.timeoutMs = Math.max(10000, Number(argv[++i] || args.timeoutMs));
+    else if (arg === "--id" || arg === "--lane-id" || arg === "--task-id") args.id = String(argv[++i] || "");
+    else if (arg === "--kind") args.kind = String(argv[++i] || "");
+    else if (arg === "--role") args.role = String(argv[++i] || "");
+    else if (arg === "--out" || arg === "--result-file" || arg === "--output") args.out = String(argv[++i] || "");
+    else if (arg === "--envelope" || arg === "--execution-envelope") args.envelope = String(argv[++i] || "");
     else if (arg === "--help" || arg === "-h") args.help = true;
     else positional.push(arg);
   }
@@ -31,7 +44,7 @@ function parseArgs(argv) {
 
 function usage() {
   console.log([
-    'Usage: node agents/shared/bin/myos-sidecar.js "<question>" [--scope <dir>] [--provider codex|claude|gemini] [--timeout-ms <ms>]',
+    'Usage: node agents/shared/bin/myos-sidecar.js "<question>" [--scope <dir>] [--provider codex|claude|gemini] [--timeout-ms <ms>] [--out <file>] [--envelope <json>]',
     "",
     "Runs one orchestrator-approved read-only background scout and prints JSON: status, summary, findings, risks, checks, confidence.",
     "Direct worker or nested sidecar launches are refused; use MyOS Dispatch fan-out instead.",
@@ -50,6 +63,14 @@ function assertCliAllowed(env = process.env) {
   }
 }
 
+function writeResultFile(filePath, data) {
+  if (!filePath) return;
+  try {
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, JSON.stringify(data, null, 2), "utf8");
+  } catch {}
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   if (args.help || !args.prompt) {
@@ -60,15 +81,22 @@ async function main() {
 
   assertCliAllowed(process.env);
 
+  let envelopeObj = null;
+  if (args.envelope) {
+    try {
+      envelopeObj = typeof args.envelope === "object" ? args.envelope : JSON.parse(args.envelope);
+    } catch {}
+  }
+
   const command = args.provider
     || process.env.MYOS_BACKGROUND_PROVIDER
     || process.env.MYOS_LOCAL_WORKER
     || "codex";
   const scope = args.scope || process.cwd();
   const task = {
-    id: `midtask-${Date.now()}`,
-    kind: "midtask",
-    role: "scout",
+    id: args.id || `midtask-${Date.now()}`,
+    kind: args.kind || "midtask",
+    role: args.role || "scout",
     prompt: args.prompt,
     scope,
     ownershipPaths: [scope],
@@ -77,6 +105,7 @@ async function main() {
     mode: "read_only",
     modelProfile: "openai_cheap_extraction",
     timeoutMs: args.timeoutMs,
+    ...(envelopeObj ? { executionEnvelope: envelopeObj } : {}),
   };
 
   const result = await runBackgroundTask(task, {
@@ -92,7 +121,7 @@ async function main() {
     },
   });
 
-  console.log(JSON.stringify({
+  const outputData = {
     status: result.status,
     summary: result.summary,
     findings: result.findings,
@@ -102,11 +131,24 @@ async function main() {
     runner: result.runner,
     model: result.model,
     durationMs: result.durationMs,
-  }, null, 2));
+  };
+
+  writeResultFile(args.out, outputData);
+
+  console.log(JSON.stringify(outputData, null, 2));
   process.exitCode = result.status === "completed" ? 0 : 1;
 }
 
 main().catch((error) => {
+  const args = parseArgs(process.argv.slice(2));
+  writeResultFile(args.out, {
+    status: "failed",
+    summary: error?.message || String(error),
+    findings: [],
+    risks: [],
+    checks: [],
+    confidence: "failed",
+  });
   console.error(error?.stack || error?.message || String(error));
   process.exit(1);
 });

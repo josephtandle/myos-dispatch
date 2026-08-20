@@ -88,3 +88,27 @@ test("goal scale can see significant background fanout before final posture", ()
   assert.equal(goal.goalMode, "ultragoal");
   assert.match(goal.goalReasons.join(","), /parallel_background_work/);
 });
+
+test("planner-generated fanout does not independently promote simple actionable work to Goal Scale 4", () => {
+  const goal = inferGoalScale("draft a bug report", {
+    actionType: "write",
+    parallelizationPlan: {
+      mode: "read_only",
+      blockedReasons: [],
+      backgroundTasks: [
+        { id: "context-map", kind: "source_index_scan" },
+        { id: "verification-plan", kind: "verification_review" },
+      ],
+      joinPolicy: "require_before_final",
+    },
+  });
+
+  assert.equal(goal.goalScale, 3);
+  assert.equal(goal.goalMode, "ralph");
+});
+
+test("is everything ok is classified at most Scale 2", () => {
+  const goal = inferGoalScale("is everything ok");
+  assert.ok(goal.goalScale <= 2);
+  assert.equal(goal.requiresPlan, false);
+});

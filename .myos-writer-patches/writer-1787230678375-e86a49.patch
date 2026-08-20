@@ -1,0 +1,938 @@
+diff --git a/bin/myos-dispatch-hook b/bin/myos-dispatch-hook
+index 7b27a50..0a1bb09 100755
+--- a/bin/myos-dispatch-hook
++++ b/bin/myos-dispatch-hook
+@@ -5,13 +5,13 @@ const crypto = require("node:crypto");
+ const fs = require("node:fs");
+ const os = require("node:os");
+ const path = require("node:path");
+-const { spawnSync } = require("node:child_process");
++const { spawnSync, spawn } = require("node:child_process");
+ 
+ const WORKSPACE_ROOT = path.resolve(__dirname, "..");
+ const {
+   resolveDispatchPlan,
+ } = require(path.join(WORKSPACE_ROOT, "src/workspace-context"));
+-const { resolveLogsRoot } = require(path.join(WORKSPACE_ROOT, "src/myos-compat"));
++const { preferredHomeRoot, resolveLogsRoot } = require(path.join(WORKSPACE_ROOT, "src/myos-compat"));
+ const {
+   buildGoalPolicy,
+ } = require(path.join(WORKSPACE_ROOT, "src/orchestration/execution-envelope"));
+@@ -102,6 +102,15 @@ function readPromptText(payload) {
+   return "";
+ }
+ 
++function readSessionId(payload) {
++  return safeString(
++    payload.session_id ||
++    payload.sessionId ||
++    payload.conversation_id ||
++    payload.conversationId
++  ).trim() || "default-session";
++}
++
+ function readToolName(payload) {
+   return safeString(payload.tool_name || payload.toolName || payload.tool || "").trim();
+ }
+@@ -131,6 +140,8 @@ function compactRoute(plan) {
+         required: Boolean(task.required),
+         joinPolicy: task.joinPolicy || "optional_before_final",
+         scope: task.scope || "",
++        prompt: task.prompt || "",
++        executionEnvelope: task.executionEnvelope || null,
+       }))
+     : [];
+   const nativeTasks = tasks.filter((task) => task.mode !== "workspace_write");
+@@ -188,18 +199,31 @@ function formatList(values) {
+   return values && values.length ? values.join(", ") : "none";
+ }
+ 
+-function surfaceFanoutInstruction(surface, parallel) {
++function surfaceFanoutInstruction(surface, parallel, autoDispatchedTasks = []) {
+   if (parallel.mode === "none" || parallel.nativeTaskCount === 0) return "";
+   if (surface === "codex") {
+     return `- Codex: spawn the ${parallel.nativeTaskCount} read-only lane(s) listed above as native multi-agent threads now. Use the preferred custom agent when available, otherwise its fallback. Never run a runner-owned writable lane in a shared-workspace native thread.`;
+   }
++  if (autoDispatchedTasks.length > 0) {
++    const autoIds = autoDispatchedTasks.map((t) => t.id).join(", ");
++    const autoLine = `- Claude: ${autoDispatchedTasks.length} read-only lane(s) (${autoIds}) are ALREADY RUNNING in the background and results will arrive next turn. Do not re-spawn them; work the critical path.`;
++    const allTasks = parallel.tasks || [];
++    const remainingTasks = allTasks.filter(
++      (t) => !autoDispatchedTasks.some((a) => a.id === t.id)
++    );
++    if (remainingTasks.length > 0) {
++      const remIds = remainingTasks.map((t) => t.id).join(", ");
++      return `${autoLine}\n- Claude: launch the remaining ${remainingTasks.length} independent lane(s) (${remIds}) as parallel Agent calls in a single message before serial work on the critical path.`;
++    }
++    return autoLine;
++  }
+   if (surface === "claude") {
+     return "- Claude: launch the independent lanes as parallel Agent calls in a single message before serial work on the critical path.";
+   }
+   return "- Launch the independent lanes as parallel background subagents before serial work on the critical path.";
+ }
+ 
+-function fanoutMandateLines(surface, parallel) {
++function fanoutMandateLines(surface, parallel, autoDispatchedTasks = []) {
+   if ((parallel.blockedReasons || []).includes("background_agents_disabled")) {
+     return ["- Background fan-out is disabled on this machine (MYOS_BACKGROUND_AGENTS_ENABLED=0). Work the critical path in this session and do not spawn background subagents."];
+   }
+@@ -207,9 +231,9 @@ function fanoutMandateLines(surface, parallel) {
+     "- Fan out FIRST on non-trivial work: dispatch the parallel lanes above at the start of the turn, then work the critical path while they run.",
+     "- Prefer breadth over depth: many parallel single-purpose subagents, shallow nesting. Never chain subagents deeper than the depth shown; widen instead.",
+   ];
+-  const surfaceLine = surfaceFanoutInstruction(surface, parallel);
++  const surfaceLine = surfaceFanoutInstruction(surface, parallel, autoDispatchedTasks);
+   if (surfaceLine) lines.push(surfaceLine);
+-  if (parallel.mode !== "none" && parallel.nativeTaskCount > 0 && parallel.nativeTaskCount < 3) {
++  if (parallel.mode !== "none" && parallel.nativeTaskCount > 0 && parallel.nativeTaskCount < 3 && autoDispatchedTasks.length === 0) {
+     lines.push("- The plan exposes fewer than 3 lanes; if the task is multi-part, widen the fanout yourself within the same gates.");
+   }
+   return lines;
+@@ -233,7 +257,7 @@ function formatLaneAssignments(surface, parallel) {
+   return lines;
+ }
+ 
+-function formatDispatchContext({ surface, hookEventName, targetKind, text, plan }) {
++function formatDispatchContext({ surface, hookEventName, targetKind, text, plan, autoDispatchedTasks = [] }) {
+   const route = compactRoute(plan);
+   const parallel = route.parallelization;
+   const goalPolicy = buildGoalPolicy(text, plan);
+@@ -272,13 +296,13 @@ function formatDispatchContext({ surface, hookEventName, targetKind, text, plan
+     "- Treat this route as the first routing pass for the turn.",
+     "- Follow MyOS Dispatch evaluation order before broad search or provider-specific work.",
+     "- For non-trivial work, use the maximum safe fanout exposed by the plan, while respecting protected-surface, auth, destructive, and user-visible-send gates.",
+-    ...fanoutMandateLines(surface, parallel),
++    ...fanoutMandateLines(surface, parallel, autoDispatchedTasks),
+     "- If the route is wrong, correct it explicitly and continue through the next practical verification or fix step.",
+   ];
+   return lines.filter(Boolean).join("\n");
+ }
+ 
+-function formatCompactDispatchContext({ surface, plan }) {
++function formatCompactDispatchContext({ surface, plan, autoDispatchedTasks = [] }) {
+   const route = compactRoute(plan);
+   const parallel = route.parallelization;
+   const lane = route.route.lane || "worker_skill";
+@@ -296,19 +320,33 @@ function formatCompactDispatchContext({ surface, plan }) {
+     roles ? `Read-only lanes: ${roles}` : "",
+   ];
+   if (parallel.mode !== "none" && parallel.nativeTaskCount > 0) {
+-    lines.push(
+-      surface === "codex"
+-        ? `Mandatory fanout: spawn ${parallel.nativeTaskCount} read-only native subagent threads for the listed lanes now; keep writable lanes runner-owned.`
+-        : `Mandatory fanout: launch ${parallel.nativeTaskCount} read-only parallel subagents for the listed lanes now.`
+-    );
++    if (autoDispatchedTasks.length > 0) {
++      const autoIds = autoDispatchedTasks.map((t) => t.id).join(", ");
++      lines.push(
++        `Mandatory fanout: ${autoDispatchedTasks.length} read-only lane(s) (${autoIds}) are ALREADY RUNNING in the background and results will arrive next turn. Do not re-spawn them; work the critical path.`
++      );
++      const remainingTasks = (parallel.tasks || []).filter(
++        (t) => !autoDispatchedTasks.some((a) => a.id === t.id)
++      );
++      if (remainingTasks.length > 0) {
++        const remIds = remainingTasks.map((t) => t.id).join(", ");
++        lines.push(`Launch remaining ${remainingTasks.length} lane(s) (${remIds}) as parallel Agent calls.`);
++      }
++    } else {
++      lines.push(
++        surface === "codex"
++          ? `Mandatory fanout: spawn ${parallel.nativeTaskCount} read-only native subagent threads for the listed lanes now; keep writable lanes runner-owned.`
++          : `Mandatory fanout: launch ${parallel.nativeTaskCount} read-only parallel subagents for the listed lanes now.`
++      );
++    }
+   }
+   return lines.filter(Boolean).join("\n");
+ }
+ 
+-function buildContextForMode({ surface, hookEventName, targetKind, text, plan, contextMode }) {
++function buildContextForMode({ surface, hookEventName, targetKind, text, plan, contextMode, autoDispatchedTasks = [] }) {
+   if (contextMode === "none") return "";
+-  if (contextMode === "compact") return formatCompactDispatchContext({ surface, plan });
+-  return formatDispatchContext({ surface, hookEventName, targetKind, text, plan });
++  if (contextMode === "compact") return formatCompactDispatchContext({ surface, plan, autoDispatchedTasks });
++  return formatDispatchContext({ surface, hookEventName, targetKind, text, plan, autoDispatchedTasks });
+ }
+ 
+ function resolveHookPlan(text, options = {}) {
+@@ -322,10 +360,10 @@ function resolveHookPlan(text, options = {}) {
+   });
+ }
+ 
+-function buildDispatchContext({ surface, hookEventName, targetKind, text, contextMode = "full" }) {
++function buildDispatchContext({ surface, hookEventName, targetKind, text, contextMode = "full", autoDispatchedTasks = [] }) {
+   const plan = resolveHookPlan(text, { hookSurface: surface, hookEventName });
+   return {
+-    context: buildContextForMode({ surface, hookEventName, targetKind, text, plan, contextMode }),
++    context: buildContextForMode({ surface, hookEventName, targetKind, text, plan, contextMode, autoDispatchedTasks }),
+     route: compactRoute(plan),
+   };
+ }
+@@ -341,6 +379,241 @@ function appendRouteLog(record) {
+   }
+ }
+ 
++function loadSidecarManifest(manifestPath) {
++  try {
++    if (fs.existsSync(manifestPath)) {
++      const raw = fs.readFileSync(manifestPath, "utf8");
++      const parsed = JSON.parse(raw);
++      return {
++        delivered: Array.isArray(parsed?.delivered) ? parsed.delivered : [],
++        dispatched: Array.isArray(parsed?.dispatched) ? parsed.dispatched : [],
++      };
++    }
++  } catch {}
++  return { delivered: [], dispatched: [] };
++}
++
++function saveSidecarManifest(manifestPath, manifest) {
++  try {
++    fs.mkdirSync(path.dirname(manifestPath), { recursive: true });
++    fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2), "utf8");
++  } catch {}
++}
++
++function collectAndMarkDeliveredResults(sidecarResultsDir, manifestPath) {
++  if (!fs.existsSync(sidecarResultsDir)) return "";
++  const manifest = loadSidecarManifest(manifestPath);
++  const deliveredSet = new Set(manifest.delivered);
++
++  let files = [];
++  try {
++    files = fs.readdirSync(sidecarResultsDir);
++  } catch {
++    return "";
++  }
++
++  const readyResults = [];
++  for (const file of files) {
++    if (!file.endsWith(".json") || file === "manifest.json") continue;
++    const laneId = path.basename(file, ".json");
++    if (deliveredSet.has(laneId)) continue;
++
++    const fullPath = path.join(sidecarResultsDir, file);
++    try {
++      const content = fs.readFileSync(fullPath, "utf8");
++      const parsed = JSON.parse(content);
++      const rawSummary = parsed.summary || parsed.errorMessage || "Result ready";
++      const summary = String(rawSummary).replace(/\s+/g, " ").trim();
++      readyResults.push({
++        laneId: parsed.id || parsed.taskId || laneId,
++        summary,
++        path: fullPath,
++      });
++    } catch {
++      // Ignore unparseable or incomplete files
++    }
++  }
++
++  if (readyResults.length === 0) return "";
++
++  const maxLines = 14;
++  const itemsToInclude = readyResults.slice(0, maxLines);
++  const lines = [`Sidecar results ready (${readyResults.length}):`];
++  for (const item of itemsToInclude) {
++    lines.push(`${item.laneId}: ${item.summary} (full: ${item.path})`);
++  }
++  if (readyResults.length > maxLines) {
++    lines.push(`... and ${readyResults.length - maxLines} more sidecar results`);
++  }
++
++  for (const item of readyResults) {
++    if (!manifest.delivered.includes(item.laneId)) {
++      manifest.delivered.push(item.laneId);
++    }
++  }
++  saveSidecarManifest(manifestPath, manifest);
++
++  return lines.join("\n");
++}
++
++function isWorkerCliAvailable(surface) {
++  if (process.env.MYOS_SIDECAR_BIN) {
++    return fs.existsSync(process.env.MYOS_SIDECAR_BIN);
++  }
++  const cmd = process.env.MYOS_BACKGROUND_PROVIDER || process.env.MYOS_LOCAL_WORKER || (surface === "claude" ? "claude" : "codex");
++  if (!cmd) return false;
++  if (path.isAbsolute(cmd)) return fs.existsSync(cmd);
++  try {
++    const res = spawnSync("which", [cmd], { encoding: "utf8", timeout: 1000 });
++    return res.status === 0 && Boolean(res.stdout.trim());
++  } catch {
++    return false;
++  }
++}
++
++function countDispatchedInLastHour(manifest) {
++  const now = Date.now();
++  const oneHourMs = 60 * 60 * 1000;
++  return (manifest.dispatched || []).filter((item) => {
++    const ts = typeof item === "object" ? (item.timestamp || item.at) : null;
++    const time = typeof ts === "number" ? ts : Date.parse(ts || "");
++    return Number.isFinite(time) && now - time < oneHourMs;
++  }).length;
++}
++
++function spawnSidecarTask(task, sidecarResultsDir, cwd) {
++  try {
++    fs.mkdirSync(sidecarResultsDir, { recursive: true });
++    const resultFile = path.join(sidecarResultsDir, `${task.id}.json`);
++    const logFile = path.join(sidecarResultsDir, `${task.id}.log`);
++    const outFd = fs.openSync(logFile, "a");
++    const errFd = fs.openSync(logFile, "a");
++
++    const targetCwd =
++      (task.scope && fs.existsSync(task.scope)) ? task.scope :
++      (cwd && fs.existsSync(cwd)) ? cwd :
++      process.cwd();
++
++    const sidecarBin = process.env.MYOS_SIDECAR_BIN;
++    let command;
++    let args;
++
++    if (sidecarBin) {
++      if (sidecarBin.endsWith(".js")) {
++        command = process.execPath;
++        args = [
++          sidecarBin,
++          task.prompt || "",
++          "--scope",
++          targetCwd,
++          "--id",
++          task.id,
++          "--out",
++          resultFile,
++        ];
++      } else {
++        command = sidecarBin;
++        args = [
++          task.prompt || "",
++          "--scope",
++          targetCwd,
++          "--id",
++          task.id,
++          "--out",
++          resultFile,
++        ];
++      }
++      if (task.executionEnvelope) {
++        args.push("--envelope", JSON.stringify(task.executionEnvelope));
++      }
++    } else {
++      command = process.execPath;
++      args = [
++        path.join(__dirname, "myos-sidecar.js"),
++        task.prompt || "",
++        "--scope",
++        targetCwd,
++        "--id",
++        task.id,
++        "--out",
++        resultFile,
++      ];
++      if (task.executionEnvelope) {
++        args.push("--envelope", JSON.stringify(task.executionEnvelope));
++      }
++    }
++
++    const childEnv = { ...process.env };
++    delete childEnv.MYOS_BACKGROUND_IS_SIDECAR;
++    delete childEnv.MYOS_SIDECAR_ORCHESTRATED;
++    childEnv.MYOS_SIDECAR_CLI_ALLOWED = "1";
++    childEnv.MYOS_SIDECAR_RUN_ID = childEnv.MYOS_SIDECAR_RUN_ID || `sidecar-run-${Date.now()}`;
++    childEnv.MYOS_SIDECAR_ORCHESTRATOR_TOKEN = childEnv.MYOS_SIDECAR_ORCHESTRATOR_TOKEN || `sidecar-token-${Date.now()}`;
++
++    const child = spawn(command, args, {
++      cwd: targetCwd,
++      env: childEnv,
++      detached: true,
++      stdio: ["ignore", outFd, errFd],
++    });
++    child.unref();
++    try { fs.closeSync(outFd); } catch {}
++    try { fs.closeSync(errFd); } catch {}
++    return true;
++  } catch {
++    return false;
++  }
++}
++
++function scanTranscriptForAgentCalls(transcriptPath) {
++  if (!transcriptPath || typeof transcriptPath !== "string") return 0;
++  try {
++    if (!fs.existsSync(transcriptPath)) return 0;
++    const stats = fs.statSync(transcriptPath);
++    const bufferSize = Math.min(stats.size, 512 * 1024);
++    const fd = fs.openSync(transcriptPath, "r");
++    const buffer = Buffer.alloc(bufferSize);
++    fs.readSync(fd, buffer, 0, bufferSize, stats.size - bufferSize);
++    fs.closeSync(fd);
++    const raw = buffer.toString("utf8");
++    const lines = raw.split("\n").slice(-400);
++
++    let lastUserIndex = -1;
++    for (let i = lines.length - 1; i >= 0; i--) {
++      const line = lines[i];
++      if (
++        line.includes('"type":"user"') ||
++        line.includes('"type":"user_prompt"') ||
++        line.includes('"type":"USER_INPUT"') ||
++        line.includes('"role":"user"')
++      ) {
++        lastUserIndex = i;
++        break;
++      }
++    }
++
++    const linesToScan = lastUserIndex >= 0 ? lines.slice(lastUserIndex + 1) : lines;
++    let agentCallCount = 0;
++    for (const line of linesToScan) {
++      if (!line) continue;
++      if (
++        line.includes('"name":"Agent"') ||
++        line.includes('"name": "Agent"') ||
++        line.includes('"tool_name":"Agent"') ||
++        line.includes('"tool_name": "Agent"')
++      ) {
++        const matches = line.match(/"(?:tool_)?name"\s*:\s*"Agent"/g);
++        if (matches) {
++          agentCallCount += matches.length;
++        }
++      }
++    }
++    return agentCallCount;
++  } catch {
++    return 0;
++  }
++}
++
+ function unquoteToken(token) {
+   if (!token) return token;
+   if (
+@@ -677,13 +950,70 @@ function outputHookContext(hookEventName, context, extra = {}) {
+ function handleUserPromptSubmit(payload, surface, options = {}) {
+   const text = readPromptText(payload);
+   if (!text) return null;
+-  const route = buildDispatchContext({
++
++  const sessionId = readSessionId(payload);
++  const homeRoot = preferredHomeRoot();
++  const sidecarResultsDir = path.join(homeRoot, "state", "sidecar-results", sessionId);
++  const manifestPath = path.join(sidecarResultsDir, "manifest.json");
++
++  const sidecarResultsText = collectAndMarkDeliveredResults(sidecarResultsDir, manifestPath);
++
++  const plan = resolveHookPlan(text, { hookSurface: surface, hookEventName: "UserPromptSubmit" });
++  const routeObj = compactRoute(plan);
++
++  const manifest = loadSidecarManifest(manifestPath);
++
++  const autoFanoutEnabled =
++    String(process.env.MYOS_AUTO_FANOUT || "1") !== "0" &&
++    String(process.env.MYOS_BACKGROUND_AGENTS_ENABLED || "1") !== "0";
++
++  const goalScale = Number(plan.goalScale || routeObj.goalScale || 0);
++  const rawTasks = plan.parallelizationPlan?.backgroundTasks || [];
++  const readOnlyTasks = rawTasks.filter((t) => t.mode !== "workspace_write");
++
++  let autoDispatchedTasks = [];
++  if (
++    autoFanoutEnabled &&
++    goalScale >= 3 &&
++    readOnlyTasks.length > 0 &&
++    isWorkerCliAvailable(surface)
++  ) {
++    const dispatchedInLastHour = countDispatchedInLastHour(manifest);
++    const availableCap = Math.min(3, 6 - dispatchedInLastHour);
++    if (availableCap > 0) {
++      const candidates = readOnlyTasks.slice(0, availableCap);
++      for (const task of candidates) {
++        const spawned = spawnSidecarTask(task, sidecarResultsDir, payload.cwd || process.cwd());
++        if (spawned) {
++          autoDispatchedTasks.push(task);
++          manifest.dispatched.push({ id: task.id, timestamp: Date.now() });
++        }
++      }
++      if (autoDispatchedTasks.length > 0) {
++        saveSidecarManifest(manifestPath, manifest);
++      }
++    }
++  }
++
++  let routeContextText = buildContextForMode({
+     surface,
+     hookEventName: "UserPromptSubmit",
+     targetKind: "user_prompt",
+     text,
++    plan,
+     contextMode: options.contextMode || "full",
++    autoDispatchedTasks,
+   });
++
++  if (sidecarResultsText) {
++    routeContextText = routeContextText
++      ? `${routeContextText}\n\n${sidecarResultsText}`
++      : sidecarResultsText;
++  }
++
++  const transcriptPath = payload.transcript_path || payload.transcriptPath;
++  const agentCallsObserved = scanTranscriptForAgentCalls(transcriptPath);
++
+   appendRouteLog({
+     at: new Date().toISOString(),
+     surface,
+@@ -692,9 +1022,12 @@ function handleUserPromptSubmit(payload, surface, options = {}) {
+     inputHash: `sha256:${sha256(text)}`,
+     inputLength: text.length,
+     cwd: safeString(payload.cwd || process.cwd()),
+-    route: route.route,
++    route: routeObj.route,
++    lanesAutoDispatched: autoDispatchedTasks.length,
++    agentCallsObserved,
+   });
+-  return outputHookContext("UserPromptSubmit", route.context);
++
++  return outputHookContext("UserPromptSubmit", routeContextText);
+ }
+ 
+ function handlePreToolUse(payload, surface, options = {}) {
+diff --git a/bin/myos-sidecar.js b/bin/myos-sidecar.js
+index 8632c57..5b9f08d 100755
+--- a/bin/myos-sidecar.js
++++ b/bin/myos-sidecar.js
+@@ -7,6 +7,9 @@
+ 
+ const os = require("node:os");
+ 
++const fs = require("node:fs");
++const path = require("node:path");
++
+ const { runBackgroundTask, normalizeWorkerKind } = require("../src/background/background-agent-runner");
+ 
+ function parseArgs(argv) {
+@@ -15,6 +18,11 @@ function parseArgs(argv) {
+     scope: "",
+     provider: "",
+     timeoutMs: 180000,
++    id: "",
++    kind: "",
++    role: "",
++    out: "",
++    envelope: "",
+   };
+   const positional = [];
+   for (let i = 0; i < argv.length; i += 1) {
+@@ -22,6 +30,11 @@ function parseArgs(argv) {
+     if (arg === "--scope") args.scope = String(argv[++i] || "");
+     else if (arg === "--provider") args.provider = String(argv[++i] || "");
+     else if (arg === "--timeout-ms") args.timeoutMs = Math.max(10000, Number(argv[++i] || args.timeoutMs));
++    else if (arg === "--id" || arg === "--lane-id" || arg === "--task-id") args.id = String(argv[++i] || "");
++    else if (arg === "--kind") args.kind = String(argv[++i] || "");
++    else if (arg === "--role") args.role = String(argv[++i] || "");
++    else if (arg === "--out" || arg === "--result-file" || arg === "--output") args.out = String(argv[++i] || "");
++    else if (arg === "--envelope" || arg === "--execution-envelope") args.envelope = String(argv[++i] || "");
+     else if (arg === "--help" || arg === "-h") args.help = true;
+     else positional.push(arg);
+   }
+@@ -31,7 +44,7 @@ function parseArgs(argv) {
+ 
+ function usage() {
+   console.log([
+-    'Usage: node agents/shared/bin/myos-sidecar.js "<question>" [--scope <dir>] [--provider codex|claude|gemini] [--timeout-ms <ms>]',
++    'Usage: node agents/shared/bin/myos-sidecar.js "<question>" [--scope <dir>] [--provider codex|claude|gemini] [--timeout-ms <ms>] [--out <file>] [--envelope <json>]',
+     "",
+     "Runs one orchestrator-approved read-only background scout and prints JSON: status, summary, findings, risks, checks, confidence.",
+     "Direct worker or nested sidecar launches are refused; use MyOS Dispatch fan-out instead.",
+@@ -50,6 +63,14 @@ function assertCliAllowed(env = process.env) {
+   }
+ }
+ 
++function writeResultFile(filePath, data) {
++  if (!filePath) return;
++  try {
++    fs.mkdirSync(path.dirname(filePath), { recursive: true });
++    fs.writeFileSync(filePath, JSON.stringify(data, null, 2), "utf8");
++  } catch {}
++}
++
+ async function main() {
+   const args = parseArgs(process.argv.slice(2));
+   if (args.help || !args.prompt) {
+@@ -60,15 +81,22 @@ async function main() {
+ 
+   assertCliAllowed(process.env);
+ 
++  let envelopeObj = null;
++  if (args.envelope) {
++    try {
++      envelopeObj = typeof args.envelope === "object" ? args.envelope : JSON.parse(args.envelope);
++    } catch {}
++  }
++
+   const command = args.provider
+     || process.env.MYOS_BACKGROUND_PROVIDER
+     || process.env.MYOS_LOCAL_WORKER
+     || "codex";
+   const scope = args.scope || process.cwd();
+   const task = {
+-    id: `midtask-${Date.now()}`,
+-    kind: "midtask",
+-    role: "scout",
++    id: args.id || `midtask-${Date.now()}`,
++    kind: args.kind || "midtask",
++    role: args.role || "scout",
+     prompt: args.prompt,
+     scope,
+     ownershipPaths: [scope],
+@@ -77,6 +105,7 @@ async function main() {
+     mode: "read_only",
+     modelProfile: "openai_cheap_extraction",
+     timeoutMs: args.timeoutMs,
++    ...(envelopeObj ? { executionEnvelope: envelopeObj } : {}),
+   };
+ 
+   const result = await runBackgroundTask(task, {
+@@ -92,7 +121,7 @@ async function main() {
+     },
+   });
+ 
+-  console.log(JSON.stringify({
++  const outputData = {
+     status: result.status,
+     summary: result.summary,
+     findings: result.findings,
+@@ -102,11 +131,24 @@ async function main() {
+     runner: result.runner,
+     model: result.model,
+     durationMs: result.durationMs,
+-  }, null, 2));
++  };
++
++  writeResultFile(args.out, outputData);
++
++  console.log(JSON.stringify(outputData, null, 2));
+   process.exitCode = result.status === "completed" ? 0 : 1;
+ }
+ 
+ main().catch((error) => {
++  const args = parseArgs(process.argv.slice(2));
++  writeResultFile(args.out, {
++    status: "failed",
++    summary: error?.message || String(error),
++    findings: [],
++    risks: [],
++    checks: [],
++    confidence: "failed",
++  });
+   console.error(error?.stack || error?.message || String(error));
+   process.exit(1);
+ });
+diff --git a/test/auto-fanout.test.js b/test/auto-fanout.test.js
+new file mode 100644
+index 0000000..1e9f376
+--- /dev/null
++++ b/test/auto-fanout.test.js
+@@ -0,0 +1,301 @@
++"use strict";
++
++const assert = require("node:assert/strict");
++const fs = require("node:fs");
++const os = require("node:os");
++const path = require("node:path");
++const test = require("node:test");
++
++const { handleHookPayload } = require("../bin/myos-dispatch-hook");
++
++function createTmpHome() {
++  return fs.mkdtempSync(path.join(os.tmpdir(), "myos-test-home-"));
++}
++
++function cleanupTmpHome(tmpHome) {
++  try {
++    fs.rmSync(tmpHome, { recursive: true, force: true });
++  } catch {}
++}
++
++function createFixtureScript(tmpHome) {
++  const fixturePath = path.join(tmpHome, "fixture-sidecar.js");
++  const code = `
++    const fs = require("node:fs");
++    const argv = process.argv.slice(2);
++    let out = "";
++    let id = "lane";
++    for (let i = 0; i < argv.length; i++) {
++      if (argv[i] === "--out") out = argv[++i];
++      else if (argv[i] === "--id") id = argv[++i];
++    }
++    if (out) {
++      fs.mkdirSync(require("path").dirname(out), { recursive: true });
++      fs.writeFileSync(out, JSON.stringify({
++        status: "completed",
++        summary: "Fixture result summary for " + id,
++        findings: [{ file: "foo.js", note: "done" }],
++        confidence: "high"
++      }, null, 2));
++    }
++  `;
++  fs.writeFileSync(fixturePath, code, "utf8");
++  return fixturePath;
++}
++
++function setupTestEnv(tmpHome, fixtureBin) {
++  const saved = {
++    MYOS_HOME_ROOT: process.env.MYOS_HOME_ROOT,
++    MYOS_SIDECAR_BIN: process.env.MYOS_SIDECAR_BIN,
++    MYOS_AUTO_FANOUT: process.env.MYOS_AUTO_FANOUT,
++    MYOS_BACKGROUND_AGENTS_ENABLED: process.env.MYOS_BACKGROUND_AGENTS_ENABLED,
++    MYOS_BACKGROUND_IS_SIDECAR: process.env.MYOS_BACKGROUND_IS_SIDECAR,
++    MYOS_SIDECAR_ORCHESTRATED: process.env.MYOS_SIDECAR_ORCHESTRATED,
++  };
++
++  process.env.MYOS_HOME_ROOT = tmpHome;
++  if (fixtureBin) process.env.MYOS_SIDECAR_BIN = fixtureBin;
++  delete process.env.MYOS_BACKGROUND_IS_SIDECAR;
++  delete process.env.MYOS_SIDECAR_ORCHESTRATED;
++
++  return () => {
++    for (const key of Object.keys(saved)) {
++      if (saved[key] === undefined) delete process.env[key];
++      else process.env[key] = saved[key];
++    }
++  };
++}
++
++test("auto-fanout suite", { concurrency: 1 }, async (t) => {
++  await t.test("goal 4 route with read-only lanes: spawns up to 3, hook exits fast, manifest records them", () => {
++    const tmpHome = createTmpHome();
++    const fixtureBin = createFixtureScript(tmpHome);
++    const sessionId = "session-g4-" + Date.now();
++    const restoreEnv = setupTestEnv(tmpHome, fixtureBin);
++
++    try {
++      process.env.MYOS_AUTO_FANOUT = "1";
++      process.env.MYOS_BACKGROUND_AGENTS_ENABLED = "1";
++
++      const prompt = "Implement the new report pipeline across all services, verify end-to-end, and update docs";
++      const start = Date.now();
++      const output = handleHookPayload({
++        hook_event_name: "UserPromptSubmit",
++        session_id: sessionId,
++        cwd: process.cwd(),
++        prompt,
++      }, "claude", { contextMode: "full" });
++      const duration = Date.now() - start;
++
++      assert.ok(duration < 2000, `Hook should exit fast, took ${duration}ms`);
++      const context = output?.hookSpecificOutput?.additionalContext || "";
++      assert.match(context, /ALREADY RUNNING in the background/);
++
++      const manifestPath = path.join(tmpHome, "state", "sidecar-results", sessionId, "manifest.json");
++      assert.ok(fs.existsSync(manifestPath), "Manifest should be created");
++      const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
++      assert.ok(Array.isArray(manifest.dispatched));
++      assert.ok(manifest.dispatched.length > 0 && manifest.dispatched.length <= 3, `Expected 1-3 dispatched, got ${manifest.dispatched.length}`);
++    } finally {
++      restoreEnv();
++      cleanupTmpHome(tmpHome);
++    }
++  });
++
++  await t.test("goal 2 route: spawns nothing (clamped plans stay clamped)", () => {
++    const tmpHome = createTmpHome();
++    const fixtureBin = createFixtureScript(tmpHome);
++    const sessionId = "session-g2-" + Date.now();
++    const restoreEnv = setupTestEnv(tmpHome, fixtureBin);
++
++    try {
++      process.env.MYOS_AUTO_FANOUT = "1";
++      process.env.MYOS_BACKGROUND_AGENTS_ENABLED = "1";
++
++      const output = handleHookPayload({
++        hook_event_name: "UserPromptSubmit",
++        session_id: sessionId,
++        cwd: process.cwd(),
++        prompt: "explain how the routing logic works",
++      }, "claude", { contextMode: "full" });
++
++      const context = output?.hookSpecificOutput?.additionalContext || "";
++      assert.doesNotMatch(context, /ALREADY RUNNING in the background/);
++
++      const manifestPath = path.join(tmpHome, "state", "sidecar-results", sessionId, "manifest.json");
++      if (fs.existsSync(manifestPath)) {
++        const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
++        assert.equal(manifest.dispatched.length, 0);
++      }
++    } finally {
++      restoreEnv();
++      cleanupTmpHome(tmpHome);
++    }
++  });
++
++  await t.test("MYOS_AUTO_FANOUT=0 and MYOS_BACKGROUND_AGENTS_ENABLED=0: nothing spawns, text falls back to advice", () => {
++    const tmpHome = createTmpHome();
++    const fixtureBin = createFixtureScript(tmpHome);
++    const sessionId = "session-optout-" + Date.now();
++    const restoreEnv = setupTestEnv(tmpHome, fixtureBin);
++
++    try {
++      // Test MYOS_AUTO_FANOUT=0
++      process.env.MYOS_AUTO_FANOUT = "0";
++      process.env.MYOS_BACKGROUND_AGENTS_ENABLED = "1";
++      const prompt = "Implement the new report pipeline across all services, verify end-to-end, and update docs";
++
++      let output = handleHookPayload({
++        hook_event_name: "UserPromptSubmit",
++        session_id: sessionId,
++        cwd: process.cwd(),
++        prompt,
++      }, "claude", { contextMode: "full" });
++
++      let context = output?.hookSpecificOutput?.additionalContext || "";
++      assert.doesNotMatch(context, /ALREADY RUNNING in the background/);
++
++      // Test MYOS_BACKGROUND_AGENTS_ENABLED=0
++      process.env.MYOS_AUTO_FANOUT = "1";
++      process.env.MYOS_BACKGROUND_AGENTS_ENABLED = "0";
++
++      output = handleHookPayload({
++        hook_event_name: "UserPromptSubmit",
++        session_id: sessionId + "-bg",
++        cwd: process.cwd(),
++        prompt,
++      }, "claude", { contextMode: "full" });
++
++      context = output?.hookSpecificOutput?.additionalContext || "";
++      assert.doesNotMatch(context, /ALREADY RUNNING in the background/);
++      assert.match(context, /Background fan-out is disabled on this machine/);
++    } finally {
++      restoreEnv();
++      cleanupTmpHome(tmpHome);
++    }
++  });
++
++  await t.test("result file present on next prompt: injected into additionalContext once, never twice", () => {
++    const tmpHome = createTmpHome();
++    const sessionId = "session-results-inject-" + Date.now();
++    const restoreEnv = setupTestEnv(tmpHome);
++
++    try {
++      const resDir = path.join(tmpHome, "state", "sidecar-results", sessionId);
++      fs.mkdirSync(resDir, { recursive: true });
++
++      const resultFile = path.join(resDir, "context-1.json");
++      fs.writeFileSync(resultFile, JSON.stringify({
++        status: "completed",
++        summary: "Context mapping complete for feature",
++        findings: [],
++        confidence: "high"
++      }), "utf8");
++
++      // First prompt: result file should be injected
++      const out1 = handleHookPayload({
++        hook_event_name: "UserPromptSubmit",
++        session_id: sessionId,
++        cwd: process.cwd(),
++        prompt: "Next turn user prompt",
++      }, "claude", { contextMode: "full" });
++
++      const context1 = out1?.hookSpecificOutput?.additionalContext || "";
++      assert.match(context1, /Sidecar results ready \(1\):/);
++      assert.match(context1, /context-1: Context mapping complete for feature/);
++
++      // Second prompt: should NOT inject again
++      const out2 = handleHookPayload({
++        hook_event_name: "UserPromptSubmit",
++        session_id: sessionId,
++        cwd: process.cwd(),
++        prompt: "Another prompt after result delivered",
++      }, "claude", { contextMode: "full" });
++
++      const context2 = out2?.hookSpecificOutput?.additionalContext || "";
++      assert.doesNotMatch(context2, /Sidecar results ready/);
++    } finally {
++      restoreEnv();
++      cleanupTmpHome(tmpHome);
++    }
++  });
++
++  await t.test("missing worker CLI: silent skip, route text falls back to the advice form", () => {
++    const tmpHome = createTmpHome();
++    const sessionId = "session-no-cli-" + Date.now();
++    const restoreEnv = setupTestEnv(tmpHome);
++    const origWorker = process.env.MYOS_BACKGROUND_PROVIDER;
++    const origPath = process.env.PATH;
++
++    try {
++      delete process.env.MYOS_SIDECAR_BIN;
++      process.env.MYOS_BACKGROUND_PROVIDER = "non_existent_worker_cli_12345";
++      process.env.MYOS_AUTO_FANOUT = "1";
++      process.env.MYOS_BACKGROUND_AGENTS_ENABLED = "1";
++
++      const prompt = "Implement the new report pipeline across all services, verify end-to-end, and update docs";
++      const output = handleHookPayload({
++        hook_event_name: "UserPromptSubmit",
++        session_id: sessionId,
++        cwd: process.cwd(),
++        prompt,
++      }, "claude", { contextMode: "full" });
++
++      const context = output?.hookSpecificOutput?.additionalContext || "";
++      assert.doesNotMatch(context, /ALREADY RUNNING in the background/);
++      assert.match(context, /launch the independent lanes as parallel Agent calls/);
++    } finally {
++      if (origWorker === undefined) delete process.env.MYOS_BACKGROUND_PROVIDER; else process.env.MYOS_BACKGROUND_PROVIDER = origWorker;
++      process.env.PATH = origPath;
++      restoreEnv();
++      cleanupTmpHome(tmpHome);
++    }
++  });
++
++  await t.test("hourly cap: seventh lane in an hour is not spawned", () => {
++    const tmpHome = createTmpHome();
++    const fixtureBin = createFixtureScript(tmpHome);
++    const sessionId = "session-hourly-cap-" + Date.now();
++    const restoreEnv = setupTestEnv(tmpHome, fixtureBin);
++
++    try {
++      process.env.MYOS_AUTO_FANOUT = "1";
++      process.env.MYOS_BACKGROUND_AGENTS_ENABLED = "1";
++
++      const resDir = path.join(tmpHome, "state", "sidecar-results", sessionId);
++      fs.mkdirSync(resDir, { recursive: true });
++
++      // Seed manifest with 6 dispatched lanes in the last hour
++      const now = Date.now();
++      const manifestPath = path.join(resDir, "manifest.json");
++      fs.writeFileSync(manifestPath, JSON.stringify({
++        delivered: [],
++        dispatched: [
++          { id: "l1", timestamp: now - 1000 },
++          { id: "l2", timestamp: now - 2000 },
++          { id: "l3", timestamp: now - 3000 },
++          { id: "l4", timestamp: now - 4000 },
++          { id: "l5", timestamp: now - 5000 },
++          { id: "l6", timestamp: now - 6000 },
++        ],
++      }), "utf8");
++
++      const prompt = "Implement the new report pipeline across all services, verify end-to-end, and update docs";
++      const output = handleHookPayload({
++        hook_event_name: "UserPromptSubmit",
++        session_id: sessionId,
++        cwd: process.cwd(),
++        prompt,
++      }, "claude", { contextMode: "full" });
++
++      const context = output?.hookSpecificOutput?.additionalContext || "";
++      assert.doesNotMatch(context, /ALREADY RUNNING in the background/);
++
++      const manifestAfter = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
++      assert.equal(manifestAfter.dispatched.length, 6, "Seventh lane should not be dispatched due to hourly cap");
++    } finally {
++      restoreEnv();
++      cleanupTmpHome(tmpHome);
++    }
++  });
++});

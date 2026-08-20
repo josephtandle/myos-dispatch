@@ -333,6 +333,12 @@ test("background runner rejects non-Codex workers before provider quarantine che
     enabled: true,
     command: "gemini",
     stateFile,
+    env: {
+      MYOS_BACKGROUND_AGENTS_ENABLED: "1",
+      MYOS_BACKGROUND_BACKPRESSURE_ENABLED: "0",
+      MYOS_BACKGROUND_IS_SIDECAR: "0",
+      MYOS_SIDECAR_ORCHESTRATED: "0",
+    },
     async runCommand() {
       throw new Error("non-Codex worker should not execute");
     },
@@ -390,6 +396,7 @@ test("background runner builds read-only Codex invocation and scrubs API-key env
     command: "codex",
     stateFile: tempStateFile(),
     env: {
+      MYOS_BACKGROUND_BACKPRESSURE_ENABLED: "0",
       OPENAI_API_KEY: "test-openai",
       CODEX_API_KEY: "test-codex",
       PATH: "/bin",
@@ -438,6 +445,7 @@ test("background runner blocks nested fan-out from sidecar processes", async () 
     command: "codex",
     stateFile: tempStateFile(),
     env: {
+      MYOS_BACKGROUND_BACKPRESSURE_ENABLED: "0",
       PATH: "/bin",
       MYOS_BACKGROUND_IS_SIDECAR: "1",
       MYOS_SIDECAR_ORCHESTRATED: "1",
@@ -513,6 +521,7 @@ test("background runner uses API-key env for autonomous/cron callers (MYOS_INITI
     command: "codex",
     stateFile: tempStateFile(),
     env: {
+      MYOS_BACKGROUND_BACKPRESSURE_ENABLED: "0",
       OPENAI_API_KEY: "test-openai",
       CODEX_API_KEY: "test-codex",
       PATH: "/bin",
@@ -573,7 +582,7 @@ test("background runner refuses Gemini sidecars when API-key env is visible", as
   }, {
     enabled: true,
     command: "gemini",
-    env: { GEMINI_API_KEY: "test" },
+    env: { MYOS_BACKGROUND_BACKPRESSURE_ENABLED: "0", GEMINI_API_KEY: "test" },
     async runCommand() {
       throw new Error("Gemini API-key sidecar should not execute");
     },
@@ -621,6 +630,7 @@ test("assertNoAnthropicKeysInChildEnv throws on any Anthropic credential includi
 test("background runner strips all Anthropic keys from child env in both OAuth and API-key modes", async () => {
   const task = { id: "context-map", kind: "source_index_scan", prompt: "read only", writeScope: [] };
   const dirtyEnv = {
+    MYOS_BACKGROUND_BACKPRESSURE_ENABLED: "0",
     OPENAI_API_KEY: "test-openai",
     ANTHROPIC_API_KEY: "test-anthropic",
     ANTHROPIC_AUTH_TOKEN: "test-token",
@@ -781,7 +791,7 @@ test("background runner is provider-affine: claude caller spawns claude sidecars
     command: "claude",
     callerProvider: "claude",
     stateFile: tempStateFile(),
-    env: { PATH: "/bin" },
+    env: { MYOS_BACKGROUND_BACKPRESSURE_ENABLED: "0", PATH: "/bin" },
     async runCommand({ invocation }) {
       assert.equal(invocation.kind, "claude");
       assert.ok(invocation.args.includes("plan"));
@@ -804,7 +814,7 @@ test("background runner refuses cross-provider mixing when a caller provider is 
     command: "codex",
     callerProvider: "claude",
     stateFile: tempStateFile(),
-    env: { PATH: "/bin" },
+    env: { MYOS_BACKGROUND_BACKPRESSURE_ENABLED: "0", PATH: "/bin" },
     async runCommand() {
       throw new Error("cross-provider sidecar must not execute");
     },

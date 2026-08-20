@@ -2,6 +2,35 @@
 
 All notable changes to MyOS Dispatch are documented here.
 
+## v3.5.0 - 2026-08-20
+
+### Added
+
+- **Fan-out now executes.** For Goal Scale 3+ routes, up to three read-only lanes are spawned in the background through `bin/myos-sidecar.js` at prompt time; their results are injected into the next prompt's route context with one-line summaries. Previously every lane was advisory text: 5,243 routes had advised 22,572 lanes with zero executed. Safety: read-only lanes only, six per session-hour, `MYOS_AUTO_FANOUT=0` opts out, `MYOS_BACKGROUND_AGENTS_ENABLED=0` still disables everything, and any failure degrades silently to the previous advice-only behaviour.
+- **Compliance measurement.** Each route records how many lanes were auto-dispatched and how many Agent tool calls the transcript actually shows, so advised-versus-executed is continuously logged.
+
+## v3.4.3 - 2026-08-20
+
+### Fixed
+
+- **Trivial-goal fanout clamp:** Goal Scale 1 and 2 no longer emit a sidecar fanout plan. The parallelization plan was built before the goal scale was resolved, so a status question such as "is everything ok" still produced five read-only lanes. Scales 3 and 4 are unchanged, and an explicit `MYOS_PARALLELIZATION_AGGRESSION` override still wins.
+- **Fresh-clone test fixture:** `register-hook`'s durable-settings fixture was created under `__dirname`, which is ephemeral when the repository itself is cloned into a temp path. Two guard tests failed from such a clone while passing from a home checkout.
+
+## v3.4.2 - 2026-08-20
+
+### Fixed
+
+- **RTK grep rewrite safety:** Reject the `grep` -> `rtk grep` rewrite when grep reads stdin or sits in a pipeline. The rewrite is only applied when a real path operand exists, with correct handling of option-taking flags, quoted operands, and the `--` terminator.
+
+## v3.4.1 - 2026-08-16
+
+### Fixed
+
+- **External Git repository routing:** Propagate index `scan_dir` through candidates and resolve relative `source_path` against it.
+- **YAML block scalar parsing:** Parse exact YAML block scalars `|` (literal) and `>` (folded) with CRLF, common indentation, folding, and paragraph breaks.
+- **Goal Scale 4 fan-out posture:** Do not let planner-generated fanout independently promote simple actionable work to Goal Scale 4; replay "draft a bug report" as Scale 3 and "is everything ok" at most Scale 2.
+- **Alumni project capture:** Suppress generic single-word alumni project capture while preserving explicit Alumni Circle matches.
+
 ## v3.4.0 — 2026-07-22
 
 ### Added

@@ -102,10 +102,60 @@ function parseFrontmatter(content) {
     const keyMatch = line.match(/^([\w][\w_-]*):\s*(.*)$/);
     if (listMatch && currentKey) {
       if (!Array.isArray(result[currentKey])) result[currentKey] = [];
-      result[currentKey].push(listMatch[1].trim());
+      result[currentKey].push(listMatch[1].trim().replace(/^["']|["']$/g, ""));
     } else if (keyMatch) {
       currentKey = keyMatch[1];
       const val = keyMatch[2].trim();
+      const blockMatch = val.match(/^([|>])([+-])?$/);
+      if (blockMatch) {
+        const blockType = blockMatch[1];
+        const blockLines = [];
+        let commonIndent = null;
+        i += 1;
+        while (i < lines.length) {
+          const blockLine = lines[i];
+          if (blockLine.trim() === "---") break;
+          if (commonIndent === null) {
+            if (blockLine.trim() === "") {
+              blockLines.push("");
+              i += 1;
+              continue;
+            }
+            const indentMatch = blockLine.match(/^([ \t]+)/);
+            if (!indentMatch) break;
+            commonIndent = indentMatch[1].length;
+          }
+          if (blockLine.trim() === "") {
+            blockLines.push("");
+          } else {
+            const lineIndentMatch = blockLine.match(/^([ \t]*)/);
+            const lineIndent = lineIndentMatch ? lineIndentMatch[1].length : 0;
+            if (lineIndent < commonIndent) break;
+            blockLines.push(blockLine.slice(commonIndent));
+          }
+          i += 1;
+        }
+        if (blockType === "|") {
+          result[currentKey] = blockLines.join("\n").trimEnd();
+        } else if (blockType === ">") {
+          let foldedText = "";
+          for (let j = 0; j < blockLines.length; j += 1) {
+            const cur = blockLines[j];
+            if (j === 0) {
+              foldedText += cur;
+            } else {
+              const prev = blockLines[j - 1];
+              if (cur === "" || prev === "") {
+                foldedText += "\n" + cur;
+              } else {
+                foldedText += " " + cur;
+              }
+            }
+          }
+          result[currentKey] = foldedText.trimEnd();
+        }
+        continue;
+      }
       result[currentKey] = val.replace(/^["']|["']$/g, "") || null;
     }
     i += 1;
@@ -296,9 +346,10 @@ function buildCapabilities(scanDir, found, warnings) {
 }
 
 function buildIndex(scanDir, options = {}) {
+  const absScanDir = scanDir ? path.resolve(scanDir) : scanDir;
   const warnings = [];
-  const found = walk(scanDir);
-  const capabilities = buildCapabilities(scanDir, found, warnings);
+  const found = walk(absScanDir);
+  const capabilities = buildCapabilities(absScanDir, found, warnings);
   const plugins = Array.isArray(options.plugins) ? options.plugins : [];
   const seenIds = new Set(capabilities.map((capability) => capability.id));
   for (const record of pluginsToCapabilityRecords(plugins)) {
@@ -311,7 +362,7 @@ function buildIndex(scanDir, options = {}) {
       version: 1,
       generated_at: new Date().toISOString(),
       generator_version: GENERATOR_VERSION,
-      scan_dir: scanDir,
+      scan_dir: absScanDir,
       lanes: {
         recipe_dispatcher: {
           description: "Deterministic operational execution through the recipe dispatcher.",

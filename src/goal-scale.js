@@ -16,7 +16,7 @@ const GOAL_MODES = Object.freeze({
   4: "ultragoal",
 });
 
-const DIRECT_STATUS_RE = /\b(status|are you awake|are you there|bring up|restart|open|show|list|what is|what's|where is|who is|which)\b/;
+const DIRECT_STATUS_RE = /\b(status|are you awake|are you there|is everything ok|everything ok|bring up|restart|open|show|list|what is|what's|where is|who is|which)\b/;
 const DIRECT_LOOKUP_RE = /\b(link|url|id|status|version|path|file|title|time|date|count)\b/;
 const ACTION_RE = /\b(implement|fix|build|create|update|add|wire|ship|verify|test|debug|repair|revise|evaluate|plan|send|write|draft|run|audit|delete|remove|clean up|cleanup|triage|organize|handoff|hand off)\b/;
 const MANAGER_HANDOFF_RE = /\b(?:ask|tell)\s+[a-z0-9-]+(?:\s+(?:project\s+)?manager|\s+agent)\b|\b(?:give|hand off|handoff|talk to|chat with|bring up)\b(?!\s+me\b).{0,48}\b[a-z0-9-]+(?:\s+(?:project\s+)?manager|\s+agent)\b/;
@@ -185,12 +185,11 @@ function inferGoalScale(input, context = {}) {
     actionVerbCount >= 3,
     systemsTouched >= 3,
     routeComplex && hasAction,
-    hasParallelBackgroundWork && hasAction,
-    hasOrchestratedFanout && hasAction,
+    (hasParallelBackgroundWork || hasOrchestratedFanout) && hasAction && (actionVerbCount >= 2 || systemsTouched >= 2 || hasPlanning || hasMultiStep),
   ].filter(Boolean).length;
 
   const hasStructuralScale4Signal =
-    hasMultiStep || hasManagerHandoff || hasParallelBackgroundWork || hasOrchestratedFanout;
+    hasMultiStep || hasManagerHandoff || (hasAutonomy && hasPlanning);
   if (
     scale4Score >= 3 ||
     (hasAction && scale4Score >= 2 && hasStructuralScale4Signal) ||

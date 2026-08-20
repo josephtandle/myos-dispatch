@@ -265,7 +265,7 @@ test("(l2) --allow-ephemeral-hook is the documented escape hatch", () => {
 function durableSettings() {
   // Durable by the guard's definition (not under any ephemeral root) while
   // still being a throwaway this suite owns and removes in a finally.
-  const dir = fs.mkdtempSync(path.join(__dirname, ".rh-durable-"));
+  const dir = fs.mkdtempSync(path.join(os.homedir(), ".rh-durable-"));
   return { dir, settings: path.join(dir, "settings.json") };
 }
 
