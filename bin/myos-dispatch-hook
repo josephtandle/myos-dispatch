@@ -970,6 +970,24 @@ function handleUserPromptSubmit(payload, surface, options = {}) {
   const text = readPromptText(payload);
   if (!text) return null;
 
+  if (/^h$/i.test(text.trim())) {
+    appendRouteLog({
+      at: new Date().toISOString(),
+      surface,
+      hookEventName: "UserPromptSubmit",
+      targetKind: "user_prompt",
+      inputHash: `sha256:${sha256(text)}`,
+      inputLength: text.length,
+      cwd: safeString(payload.cwd || process.cwd()),
+      route: "ping_shortcut",
+      capabilityId: null,
+      branch: null,
+      lanesAutoDispatched: 0,
+      agentCallsObserved: 0,
+    });
+    return { decision: "block", reason: "ping" };
+  }
+
   const sessionId = readSessionId(payload);
   const homeRoot = preferredHomeRoot();
   const sidecarResultsDir = path.join(homeRoot, "state", "sidecar-results", sessionId);
