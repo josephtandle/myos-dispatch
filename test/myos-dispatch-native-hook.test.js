@@ -56,6 +56,53 @@ test("UserPromptSubmit emits compact MyOS Dispatch route context", () => {
   assert.match(context, /Mandatory behavior:/);
 });
 
+test("UserPromptSubmit blocks uppercase H ping", () => {
+  const output = handleHookPayload({
+    hook_event_name: "UserPromptSubmit",
+    cwd: process.cwd(),
+    prompt: "H",
+  }, "test");
+
+  assert.equal(output.decision, "block");
+  assert.equal(output.reason, "ping");
+  assert.equal(output.hookSpecificOutput, undefined);
+});
+
+test("UserPromptSubmit blocks lowercase h ping", () => {
+  const output = handleHookPayload({
+    hook_event_name: "UserPromptSubmit",
+    cwd: process.cwd(),
+    prompt: "h",
+  }, "test");
+
+  assert.equal(output.decision, "block");
+  assert.equal(output.reason, "ping");
+  assert.equal(output.hookSpecificOutput, undefined);
+});
+
+test("UserPromptSubmit does not over-match ordinary prompts", () => {
+  const output = handleHookPayload({
+    hook_event_name: "UserPromptSubmit",
+    cwd: process.cwd(),
+    prompt: "Hello",
+  }, "test");
+
+  assert.notEqual(output.decision, "block");
+  assert.ok(output.hookSpecificOutput?.additionalContext);
+});
+
+test("UserPromptSubmit blocks whitespace-padded H ping", () => {
+  const output = handleHookPayload({
+    hook_event_name: "UserPromptSubmit",
+    cwd: process.cwd(),
+    prompt: " H ",
+  }, "test");
+
+  assert.equal(output.decision, "block");
+  assert.equal(output.reason, "ping");
+  assert.equal(output.hookSpecificOutput, undefined);
+});
+
 test("PreToolUse (Claude surface) routes Bash commands and preserves RTK rewrite", () => {
   const output = handleHookPayload({
     hook_event_name: "PreToolUse",
