@@ -170,6 +170,9 @@ function compactRoute(plan) {
     allowBroadSearch: Boolean(plan.allowBroadSearch),
     projectSlug: plan.projectSlug || null,
     searchScope: plan.searchScope || "",
+    // Logged so the evolver can count what actually matched. Without it the log
+    // records a lane, and no faithful bridge from log to observer is possible.
+    capabilityId: plan.capabilityId || null,
     dataSources: Array.isArray(plan.dataSources) ? plan.dataSources : [],
     route: {
       lane: plan.route?.lane || "",
@@ -1039,6 +1042,13 @@ function handleUserPromptSubmit(payload, surface, options = {}) {
     inputLength: text.length,
     cwd: safeString(payload.cwd || process.cwd()),
     route: routeObj.route,
+    // The prompt record logged only the inner {lane, reason}. "worker_skill" is not
+    // something the evolver can propose a fast path for, and inputHash only matches
+    // byte-identical prompts, so no faithful bridge from this log to the observer was
+    // possible and the learning loop had no signal at all. These two fields are what
+    // make a repeated route countable.
+    capabilityId: routeObj.capabilityId || null,
+    branch: routeObj.branch || null,
     lanesAutoDispatched: autoDispatchedTasks.length,
     agentCallsObserved,
   });

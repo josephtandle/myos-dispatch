@@ -1,11 +1,30 @@
 'use strict';
 
+const fs = require('node:fs');
 const path = require('node:path');
 const { resolveWorkspaceRoot } = require('./myos-compat.js');
 const { readJsonCached } = require('./json-cache');
 
 const WORKSPACE_ROOT = resolveWorkspaceRoot();
-const CAPABILITIES_INDEX_PATH = path.join(WORKSPACE_ROOT, 'capabilities-index.json');
+
+// The organizer module and this router disagreed about what "workspace" means,
+// one directory apart, and nothing surfaced it. Organizer writes
+// <home>/capabilities-index.json; this reads <home>/workspace/capabilities-index.json.
+// A customer could rebuild the index perfectly, verify it, and change nothing about
+// how anything routed, because the file they fixed was not the file being read.
+// Measured on a real install: the router's copy had 0 of 432 entries resolving.
+//
+// Resolve it by looking, rather than by assuming. Preference goes to this router's
+// own location so an explicitly-placed index still wins; the organizer's location
+// is the fallback so a correctly rebuilt index is never ignored again.
+function resolveCapabilitiesIndexPath() {
+  const own = path.join(WORKSPACE_ROOT, 'capabilities-index.json');
+  if (fs.existsSync(own)) return own;
+  const organizerCopy = path.join(path.dirname(WORKSPACE_ROOT), 'capabilities-index.json');
+  if (fs.existsSync(organizerCopy)) return organizerCopy;
+  return own;
+}
+const CAPABILITIES_INDEX_PATH = resolveCapabilitiesIndexPath();
 const MIN_CAPABILITY_EVIDENCE_SCORE = 10;
 const MIN_CAPABILITY_TOTAL_SCORE = 18;
 const ROUTING_COMPLAINT_RE = /\b(bad routing error|routing is messed up|routing.*wrong|wrong route|route this correctly|fix (?:this )?in the routing|fix your routing|not asking for a link|log your mistake)\b/i;
