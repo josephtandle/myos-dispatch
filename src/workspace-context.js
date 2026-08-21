@@ -936,6 +936,12 @@ function resolveDispatchPlan(query, options = {}) {
     projectRecipeFirst: false,
     serviceAgents: [],
     searchScope: hasScopedCapability ? toWorkspacePath(topCapability.source_path, candidateScanDir) : "",
+    // The matched capability id, carried so the route can be OBSERVED. The evolver
+    // counts repeated routes to propose fast paths, but the hook log recorded only
+    // the lane ("worker_skill"), which is not something a fast path can be proposed
+    // for, and an input hash, which only matches byte-identical prompts. The id was
+    // known here and thrown away, so the learning loop had no usable signal at all.
+    capabilityId: hasScopedCapability ? (topCapability.id || null) : null,
     fastpathMatches,
     projectMatches,
     route,
