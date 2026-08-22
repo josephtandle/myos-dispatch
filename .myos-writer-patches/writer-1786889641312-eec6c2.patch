@@ -1,0 +1,360 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 460225a..895e674 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -2,6 +2,15 @@
+ 
+ All notable changes to MyOS Dispatch are documented here.
+ 
++## v3.4.1 - 2026-08-16
++
++### Fixed
++
++- **External Git repository routing:** Propagate index `scan_dir` through candidates and resolve relative `source_path` against it.
++- **YAML block scalar parsing:** Parse exact YAML block scalars `|` (literal) and `>` (folded) with CRLF, common indentation, folding, and paragraph breaks.
++- **Goal Scale 4 fan-out posture:** Do not let planner-generated fanout independently promote simple actionable work to Goal Scale 4; replay "draft a bug report" as Scale 3 and "is everything ok" at most Scale 2.
++- **Alumni project capture:** Suppress generic single-word alumni project capture while preserving explicit Alumni Circle matches.
++
+ ## v3.4.0 — 2026-07-22
+ 
+ ### Added
+diff --git a/README.md b/README.md
+index 9b49f06..7a7928a 100644
+--- a/README.md
++++ b/README.md
+@@ -65,6 +65,12 @@ hooks.
+ 
+ ## Install
+ 
++Canonical code comes only from https://github.com/josephtandle/myos-dispatch.
++Existing clean canonical checkouts fetch and check out v3.4.1 then rerun the idempotent installer.
++Dirty or foreign checkouts are left untouched and a separate versioned canonical checkout is used.
++
++Note: Settings merging preserves unrelated settings in `settings.json`, but the installer intentionally rebuilds the generated capabilities index from the chosen `--index-dir`.
++
+ ### macOS / Linux
+ 
+ ```sh
+diff --git a/package.json b/package.json
+index 96ae4dd..db329cd 100644
+--- a/package.json
++++ b/package.json
+@@ -1,6 +1,6 @@
+ {
+   "name": "myos-dispatch",
+-  "version": "3.4.0",
++  "version": "3.4.1",
+   "description": "Standalone MyOS Dispatch routing and execution core.",
+   "type": "commonjs",
+   "main": "src/workspace-context.js",
+diff --git a/prompts/unified-install-prompt.md b/prompts/unified-install-prompt.md
+index d752849..6e2db7a 100644
+--- a/prompts/unified-install-prompt.md
++++ b/prompts/unified-install-prompt.md
+@@ -16,6 +16,9 @@ Your job, in order:
+ 3. Ask me one question before downloading: "Where does your code live? For example ~/code or your projects folder." Use my answer as the index directory below. If I do not have one, use my home folder's most likely projects directory and tell me which you picked.
+ 
+ 4. Download it and inspect it before installing:
++   - Canonical code comes only from https://github.com/josephtandle/myos-dispatch.
++   - For an existing clean canonical checkout, fetch and check out v3.4.1 then rerun the idempotent installer.
++   - Dirty or foreign checkouts are left untouched and a separate versioned canonical checkout is used.
+    - `git clone https://github.com/josephtandle/myos-dispatch`
+    - `cd myos-dispatch`
+    - Before running anything, read `bin/install.sh` (or `bin/install.ps1` on Windows), `scripts/register-hook.js`, and `package.json`. Confirm the installer does only what it advertises: a scoped npm install, building a local index, registering a single UserPromptSubmit hook in `~/.claude/settings.json` with a timestamped backup, and a smoke test. No network calls to anywhere unexpected, no reading of secrets, nothing outside its own folder and that one settings entry.
+@@ -25,7 +28,7 @@ Your job, in order:
+    - macOS: `bash bin/install.sh --yes --index-dir "<my code folder>"`
+      (Drop `--yes` only if I say I want to review the settings.json merge interactively.)
+    - Windows: `powershell -ExecutionPolicy Bypass -File bin\install.ps1 -Yes -IndexDir "C:\Users\<name>\code"`
+-   - The installer does six things on its own: checks Node is 20+, runs a scoped `npm install --omit=optional`, skips optional components, builds the capability index, registers the Claude Code UserPromptSubmit hook in `~/.claude/settings.json` (it makes a timestamped backup, writes atomically, is idempotent, and preserves everything else in the file), and runs a smoke test that automatically reverts the hook if it fails. Let it do all six.
++   - The installer does six things on its own: checks Node is 20+, runs a scoped `npm install --omit=optional`, skips optional components, builds the capability index from the chosen `--index-dir`, registers the Claude Code UserPromptSubmit hook in `~/.claude/settings.json` (it makes a timestamped backup, writes atomically, is idempotent, and preserves unrelated settings in settings.json while intentionally rebuilding the generated capabilities index from the chosen `--index-dir`), and runs a smoke test that automatically reverts the hook if it fails. Let it do all six.
+    - Home root for config, state, and the index is `~/.myos-dispatch` on macOS and `%USERPROFILE%\.myos-dispatch` on Windows.
+ 
+ 6. Prove it works. Run the success check yourself and show me the result:
+diff --git a/scripts/generate-index.js b/scripts/generate-index.js
+index be2089f..fb813e0 100755
+--- a/scripts/generate-index.js
++++ b/scripts/generate-index.js
+@@ -102,10 +102,60 @@ function parseFrontmatter(content) {
+     const keyMatch = line.match(/^([\w][\w_-]*):\s*(.*)$/);
+     if (listMatch && currentKey) {
+       if (!Array.isArray(result[currentKey])) result[currentKey] = [];
+-      result[currentKey].push(listMatch[1].trim());
++      result[currentKey].push(listMatch[1].trim().replace(/^["']|["']$/g, ""));
+     } else if (keyMatch) {
+       currentKey = keyMatch[1];
+       const val = keyMatch[2].trim();
++      const blockMatch = val.match(/^([|>])([+-])?$/);
++      if (blockMatch) {
++        const blockType = blockMatch[1];
++        const blockLines = [];
++        let commonIndent = null;
++        i += 1;
++        while (i < lines.length) {
++          const blockLine = lines[i];
++          if (blockLine.trim() === "---") break;
++          if (commonIndent === null) {
++            if (blockLine.trim() === "") {
++              blockLines.push("");
++              i += 1;
++              continue;
++            }
++            const indentMatch = blockLine.match(/^([ \t]+)/);
++            if (!indentMatch) break;
++            commonIndent = indentMatch[1].length;
++          }
++          if (blockLine.trim() === "") {
++            blockLines.push("");
++          } else {
++            const lineIndentMatch = blockLine.match(/^([ \t]*)/);
++            const lineIndent = lineIndentMatch ? lineIndentMatch[1].length : 0;
++            if (lineIndent < commonIndent) break;
++            blockLines.push(blockLine.slice(commonIndent));
++          }
++          i += 1;
++        }
++        if (blockType === "|") {
++          result[currentKey] = blockLines.join("\n").trimEnd();
++        } else if (blockType === ">") {
++          let foldedText = "";
++          for (let j = 0; j < blockLines.length; j += 1) {
++            const cur = blockLines[j];
++            if (j === 0) {
++              foldedText += cur;
++            } else {
++              const prev = blockLines[j - 1];
++              if (cur === "" || prev === "") {
++                foldedText += "\n" + cur;
++              } else {
++                foldedText += " " + cur;
++              }
++            }
++          }
++          result[currentKey] = foldedText.trimEnd();
++        }
++        continue;
++      }
+       result[currentKey] = val.replace(/^["']|["']$/g, "") || null;
+     }
+     i += 1;
+diff --git a/src/capability-router.js b/src/capability-router.js
+index 4cb9f0c..264ccdf 100644
+--- a/src/capability-router.js
++++ b/src/capability-router.js
+@@ -45,9 +45,14 @@ function loadCapabilityIndex(options = {}) {
+   const indexPath = options.indexPath || CAPABILITIES_INDEX_PATH;
+   try {
+     const parsed = readJsonCached(indexPath);
+-    return parsed && Array.isArray(parsed.capabilities) ? parsed : { capabilities: [], lanes: {} };
++    return parsed && Array.isArray(parsed.capabilities)
++      ? {
++          ...parsed,
++          scan_dir: options.scanDir || options.scan_dir || parsed.scan_dir || null,
++        }
++      : { capabilities: [], lanes: {}, scan_dir: null };
+   } catch {
+-    return { capabilities: [], lanes: {} };
++    return { capabilities: [], lanes: {}, scan_dir: null };
+   }
+ }
+ 
+@@ -121,12 +126,26 @@ function shortlistCapabilities(text, lane = null, limit = 5, options = {}) {
+     return [];
+   }
+   const index = loadCapabilityIndex(options);
++  const scanDir = options.scanDir || options.scan_dir || index.scan_dir || null;
+   const scored = index.capabilities
+     .filter((capability) => !lane || capability.execution_lane === lane)
+-    .map((capability) => ({
+-      capability,
+-      ...scoreCapabilityMatch(capability, text),
+-    }))
++    .map((capability) => {
++      const resolvedSourcePath = (scanDir && capability.source_path && !path.isAbsolute(capability.source_path) && !capability.source_path.startsWith("~"))
++        ? path.resolve(scanDir, capability.source_path)
++        : (capability.source_path && capability.source_path.startsWith("~")
++            ? capability.source_path.replace(/^~(?=\/)/, process.env.HOME || require("node:os").homedir())
++            : capability.source_path);
++      const updatedCapability = {
++        ...capability,
++        ...(resolvedSourcePath ? { source_path: resolvedSourcePath } : {}),
++        ...(scanDir ? { scan_dir: scanDir } : {}),
++      };
++      return {
++        capability: updatedCapability,
++        ...scoreCapabilityMatch(capability, text),
++        ...(scanDir ? { scan_dir: scanDir } : {}),
++      };
++    })
+     .filter((entry) =>
+       entry.score > 0 &&
+       (entry.evidenceScore >= MIN_CAPABILITY_EVIDENCE_SCORE || entry.score >= MIN_CAPABILITY_TOTAL_SCORE)
+diff --git a/src/goal-scale.js b/src/goal-scale.js
+index 905d59c..5e7df93 100644
+--- a/src/goal-scale.js
++++ b/src/goal-scale.js
+@@ -16,7 +16,7 @@ const GOAL_MODES = Object.freeze({
+   4: "ultragoal",
+ });
+ 
+-const DIRECT_STATUS_RE = /\b(status|are you awake|are you there|bring up|restart|open|show|list|what is|what's|where is|who is|which)\b/;
++const DIRECT_STATUS_RE = /\b(status|are you awake|are you there|is everything ok|everything ok|bring up|restart|open|show|list|what is|what's|where is|who is|which)\b/;
+ const DIRECT_LOOKUP_RE = /\b(link|url|id|status|version|path|file|title|time|date|count)\b/;
+ const ACTION_RE = /\b(implement|fix|build|create|update|add|wire|ship|verify|test|debug|repair|revise|evaluate|plan|send|write|draft|run|audit|delete|remove|clean up|cleanup|triage|organize|handoff|hand off)\b/;
+ const MANAGER_HANDOFF_RE = /\b(?:ask|tell)\s+[a-z0-9-]+(?:\s+(?:project\s+)?manager|\s+agent)\b|\b(?:give|hand off|handoff|talk to|chat with|bring up)\b(?!\s+me\b).{0,48}\b[a-z0-9-]+(?:\s+(?:project\s+)?manager|\s+agent)\b/;
+@@ -185,12 +185,11 @@ function inferGoalScale(input, context = {}) {
+     actionVerbCount >= 3,
+     systemsTouched >= 3,
+     routeComplex && hasAction,
+-    hasParallelBackgroundWork && hasAction,
+-    hasOrchestratedFanout && hasAction,
++    (hasParallelBackgroundWork || hasOrchestratedFanout) && hasAction && (actionVerbCount >= 2 || systemsTouched >= 2 || hasPlanning || hasMultiStep),
+   ].filter(Boolean).length;
+ 
+   const hasStructuralScale4Signal =
+-    hasMultiStep || hasManagerHandoff || hasParallelBackgroundWork || hasOrchestratedFanout;
++    hasMultiStep || hasManagerHandoff || (hasAutonomy && hasPlanning);
+   if (
+     scale4Score >= 3 ||
+     (hasAction && scale4Score >= 2 && hasStructuralScale4Signal) ||
+diff --git a/src/workspace-context.js b/src/workspace-context.js
+index 513a4dc..970b410 100644
+--- a/src/workspace-context.js
++++ b/src/workspace-context.js
+@@ -38,6 +38,7 @@ const WHATSAPP_OPERATION_HINTS = /\b(whatsapp link|whatsapp group|social media t
+ const GENERIC_RESEARCH_HINTS = /\b(research a product|research a competitor|research a tool|research .* if it(?:'s| is) useful|tell me if it(?:'s| is) useful)\b/;
+ const ROUTING_COMPLAINT_RE = /\b(bad routing error|routing is messed up|routing.*wrong|wrong route|not reading the whole context|not asking for a link|fix (?:this )?in the routing|fix your routing|log your mistake)\b/;
+ const GENERIC_PROJECT_TERMS = new Set([
++  "alumni",
+   "book",
+   "household",
+   "logistics",
+@@ -311,6 +312,7 @@ function loadProjectIndex() {
+ 
+ function toWorkspacePath(relativePath) {
+   if (!relativePath || typeof relativePath !== "string") return "";
++  if (path.isAbsolute(relativePath)) return relativePath;
+   if (relativePath.startsWith("~")) return relativePath.replace(/^~(?=\/)/, HOME);
+   return path.join(WORKSPACE, relativePath);
+ }
+diff --git a/test/generate-index.test.js b/test/generate-index.test.js
+index f78aace..781da18 100644
+--- a/test/generate-index.test.js
++++ b/test/generate-index.test.js
+@@ -160,3 +160,12 @@ test("output index is consumable by capability-router loadCapabilityIndex", () =
+   assert.strictEqual(loaded.capabilities[0].id, "recipe:deploy-site");
+   fs.rmSync(scanDir, { recursive: true, force: true });
+ });
++
++test("parseFrontmatter handles exact YAML block scalars | and > with CRLF and paragraph breaks", () => {
++  const { parseFrontmatter } = require("../scripts/generate-index.js");
++  const content = "---\r\nname: test-skill\r\ndescription: |\r\n  First line\r\n  Second line\r\n\r\n  Paragraph two\r\nsummary: >\r\n  This is folded\r\n  into a single line.\r\n\r\n  New paragraph.\r\n---\r\nBody text\r\n";
++  const fm = parseFrontmatter(content);
++  assert.strictEqual(fm.name, "test-skill");
++  assert.strictEqual(fm.description, "First line\nSecond line\n\nParagraph two");
++  assert.strictEqual(fm.summary, "This is folded into a single line.\n\nNew paragraph.");
++});
+diff --git a/test/goal-scale.test.js b/test/goal-scale.test.js
+index d800c32..b2fbedc 100644
+--- a/test/goal-scale.test.js
++++ b/test/goal-scale.test.js
+@@ -88,3 +88,27 @@ test("goal scale can see significant background fanout before final posture", ()
+   assert.equal(goal.goalMode, "ultragoal");
+   assert.match(goal.goalReasons.join(","), /parallel_background_work/);
+ });
++
++test("planner-generated fanout does not independently promote simple actionable work to Goal Scale 4", () => {
++  const goal = inferGoalScale("draft a bug report", {
++    actionType: "write",
++    parallelizationPlan: {
++      mode: "read_only",
++      blockedReasons: [],
++      backgroundTasks: [
++        { id: "context-map", kind: "source_index_scan" },
++        { id: "verification-plan", kind: "verification_review" },
++      ],
++      joinPolicy: "require_before_final",
++    },
++  });
++
++  assert.equal(goal.goalScale, 3);
++  assert.equal(goal.goalMode, "ralph");
++});
++
++test("is everything ok is classified at most Scale 2", () => {
++  const goal = inferGoalScale("is everything ok");
++  assert.ok(goal.goalScale <= 2);
++  assert.equal(goal.requiresPlan, false);
++});
+diff --git a/test/workspace-context.test.js b/test/workspace-context.test.js
+index 59d936a..a4d68b0 100644
+--- a/test/workspace-context.test.js
++++ b/test/workspace-context.test.js
+@@ -904,3 +904,68 @@ test("dispatch plans expose automatic scale 4 metadata for durable multi-system
+   assert.match(bundle, /Requires plan: yes/);
+   assert.match(bundle, /Stop rules: done_verified/);
+ });
++
++test("shortlistCapabilities propagates scan_dir through candidates and resolves relative source_path", () => {
++  const { shortlistCapabilities } = require("../src/capability-router.js");
++  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "workspace-context-scan-"));
++  const indexPath = path.join(tmpDir, "capabilities-index.json");
++  const externalScanDir = path.join(tmpDir, "external-repo");
++  fs.writeFileSync(
++    indexPath,
++    JSON.stringify({
++      schema_version: 1,
++      scan_dir: externalScanDir,
++      lanes: {},
++      capabilities: [
++        {
++          id: "recipe:external-deploy",
++          execution_lane: "recipe_dispatcher",
++          aliases: ["external deploy"],
++          use_when: ["external deploy"],
++          source_path: "recipes/deploy.recipe.json",
++          priority: 50,
++        },
++      ],
++    }),
++    "utf8"
++  );
++
++  const results = shortlistCapabilities("external deploy", "recipe_dispatcher", 5, { indexPath });
++  assert.equal(results.length, 1);
++  assert.equal(results[0].scan_dir, externalScanDir);
++  assert.equal(results[0].capability.scan_dir, externalScanDir);
++  assert.equal(results[0].capability.source_path, path.resolve(externalScanDir, "recipes/deploy.recipe.json"));
++});
++
++test("suppresses generic single-word alumni project capture while preserving explicit Alumni Circle", () => {
++  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "workspace-context-alumni-"));
++  const workspaceRoot = path.join(tmpDir, ".myos", "workspace");
++  fs.mkdirSync(path.join(workspaceRoot, "projects"), { recursive: true });
++  fs.mkdirSync(path.join(workspaceRoot, "data"), { recursive: true });
++  writeDefaultDataSourcesConfig(workspaceRoot);
++
++  fs.writeFileSync(path.join(workspaceRoot, "DISPATCH-FASTPATHS.json"), JSON.stringify({ fastpaths: [] }), "utf8");
++  fs.writeFileSync(
++    path.join(workspaceRoot, "projects", "_index.json"),
++    JSON.stringify({
++      projects: {
++        alumni: {
++          slug: "alumni",
++          name: "Alumni Circle",
++          aliases: ["alumni", "alumni circle"],
++          path: "alumni",
++        },
++      },
++    }),
++    "utf8",
++  );
++  fs.writeFileSync(path.join(workspaceRoot, "capabilities-index.json"), JSON.stringify({ capabilities: [], lanes: {} }), "utf8");
++
++  const { resolveDispatchPlan } = loadWorkspaceContextWithHome(tmpDir);
++
++  const genericPlan = resolveDispatchPlan("I am an alumni of Stanford");
++  assert.notEqual(genericPlan.projectSlug, "alumni");
++
++  const explicitPlan = resolveDispatchPlan("Tell me about Alumni Circle");
++  assert.equal(explicitPlan.projectSlug, "alumni");
++});
