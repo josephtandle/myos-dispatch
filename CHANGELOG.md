@@ -2,6 +2,16 @@
 
 All notable changes to MyOS Dispatch are documented here.
 
+## v3.5.2 - 2026-08-21
+
+### Fixed
+
+- **Background provider mismatch (reported by Nicola Harvey).** The fan-out availability gate checked one command while the sidecar spawned another: on a Claude Code surface the gate ran `which claude` and the sidecar defaulted to `codex`, so a machine with `claude` and no `codex` passed the gate and every lane failed with `spawn codex ENOENT`. Both now use one resolver that returns the first installed provider (`codex`, `claude`, `antigravity`, `gemini`), and the hook passes it to the sidecar explicitly. With no provider installed, lanes are advised only, as before background execution existed.
+
+### Added
+
+- **`docs/BACKGROUND-WORKERS.md`** documenting what background scouts run on, the preference order, how to pin a provider, how to disable fan-out, and that scouts are read-only and capped.
+
 ## v3.5.1 - 2026-08-20
 
 ### Fixed
