@@ -12,6 +12,23 @@ const path = require("node:path");
 
 const { runBackgroundTask, normalizeWorkerKind } = require("../src/background/background-agent-runner");
 
+
+// Kept in step with BACKGROUND_PROVIDER_PREFERENCE in bin/myos-dispatch-hook.
+// codex first because it is strongest at bounded read-only scouting; the rest are
+// used when that is what the machine has.
+const PROVIDER_PREFERENCE = ["codex", "claude", "antigravity", "gemini"];
+
+function resolveAvailableProvider() {
+  const { spawnSync } = require("node:child_process");
+  for (const candidate of PROVIDER_PREFERENCE) {
+    try {
+      const res = spawnSync("which", [candidate], { encoding: "utf8", timeout: 1000 });
+      if (res.status === 0 && res.stdout.trim()) return candidate;
+    } catch {}
+  }
+  return null;
+}
+
 function parseArgs(argv) {
   const args = {
     prompt: "",
@@ -88,10 +105,23 @@ async function main() {
     } catch {}
   }
 
+  // Falling back to a bare "codex" meant a machine without it failed at spawn time
+  // with ENOENT, after the caller's gate had already said yes. Resolve to something
+  // this machine actually has, and say so clearly when it has nothing.
   const command = args.provider
     || process.env.MYOS_BACKGROUND_PROVIDER
     || process.env.MYOS_LOCAL_WORKER
-    || "codex";
+    || resolveAvailableProvider();
+  if (!command) {
+    console.error(JSON.stringify({
+      status: "skipped",
+      reason: "no_background_provider_available",
+      summary: "No background worker CLI found on this machine. Looked for: " +
+        PROVIDER_PREFERENCE.join(", ") +
+        ". Install one, or set MYOS_BACKGROUND_PROVIDER to the command you use.",
+    }));
+    process.exit(0);
+  }
   const scope = args.scope || process.cwd();
   const task = {
     id: args.id || `midtask-${Date.now()}`,
