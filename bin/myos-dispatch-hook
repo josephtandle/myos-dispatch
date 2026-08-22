@@ -475,11 +475,11 @@ function collectAndMarkDeliveredResults(sidecarResultsDir, manifestPath) {
   return lines.join("\n");
 }
 
-function isWorkerCliAvailable(surface) {
-  if (process.env.MYOS_SIDECAR_BIN) {
-    return fs.existsSync(process.env.MYOS_SIDECAR_BIN);
-  }
-  const cmd = process.env.MYOS_BACKGROUND_PROVIDER || process.env.MYOS_LOCAL_WORKER || (surface === "claude" ? "claude" : "codex");
+// Preference order when nothing is pinned. codex first because it is the strongest
+// at bounded read-only scouting; the rest are used if that is what the machine has.
+const BACKGROUND_PROVIDER_PREFERENCE = ["codex", "claude", "antigravity", "gemini"];
+
+function commandExists(cmd) {
   if (!cmd) return false;
   if (path.isAbsolute(cmd)) return fs.existsSync(cmd);
   try {
@@ -488,6 +488,33 @@ function isWorkerCliAvailable(surface) {
   } catch {
     return false;
   }
+}
+
+// Resolve the provider that will ACTUALLY be spawned, and return null when the
+// machine has none.
+//
+// This used to guess from the surface: on Claude Code it checked `which claude`,
+// while bin/myos-sidecar.js separately defaulted to codex. Anyone with claude and
+// no codex therefore passed the gate and had every lane die with
+// `spawn codex ENOENT`. Two independent defaults that were free to disagree, and
+// they did. Reported from the field by Nicola Harvey against v3.5.1.
+//
+// The resolved value is passed to the sidecar explicitly with --provider, so the
+// thing that was checked is the thing that runs.
+function resolveBackgroundProvider() {
+  const pinned = process.env.MYOS_BACKGROUND_PROVIDER || process.env.MYOS_LOCAL_WORKER;
+  if (pinned) return commandExists(pinned) ? pinned : null;
+  for (const candidate of BACKGROUND_PROVIDER_PREFERENCE) {
+    if (commandExists(candidate)) return candidate;
+  }
+  return null;
+}
+
+function isWorkerCliAvailable() {
+  if (process.env.MYOS_SIDECAR_BIN) {
+    return fs.existsSync(process.env.MYOS_SIDECAR_BIN);
+  }
+  return resolveBackgroundProvider() !== null;
 }
 
 function countDispatchedInLastHour(manifest) {
@@ -557,6 +584,12 @@ function spawnSidecarTask(task, sidecarResultsDir, cwd) {
         "--out",
         resultFile,
       ];
+      // Pass the provider the gate actually verified. Without this the sidecar
+      // falls back to its own default and can spawn a binary this machine does
+      // not have, which is how every lane died with ENOENT on a machine that had
+      // claude but not codex.
+      const resolvedProvider = resolveBackgroundProvider();
+      if (resolvedProvider) args.push("--provider", resolvedProvider);
       if (task.executionEnvelope) {
         args.push("--envelope", JSON.stringify(task.executionEnvelope));
       }
@@ -1013,7 +1046,7 @@ function handleUserPromptSubmit(payload, surface, options = {}) {
     autoFanoutEnabled &&
     goalScale >= 3 &&
     readOnlyTasks.length > 0 &&
-    isWorkerCliAvailable(surface)
+    isWorkerCliAvailable()
   ) {
     const dispatchedInLastHour = countDispatchedInLastHour(manifest);
     const availableCap = Math.min(3, 6 - dispatchedInLastHour);
