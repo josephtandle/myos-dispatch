@@ -244,8 +244,10 @@ test("dispatchTask executes deterministic data lookup lanes without worker fallb
   fs.writeFileSync(path.join(workspaceRoot, "data", "entities.md"), "# Entities\nExample Holdings LLC\nEIN: 12-3456789\n", "utf8");
 
   const previousHome = process.env.HOME;
+  const previousHomeRoot = process.env.MYOS_HOME_ROOT;
   const previousDataSourcesConfig = process.env.MYOS_DATA_SOURCES_CONFIG;
   process.env.HOME = homeDir;
+  process.env.MYOS_HOME_ROOT = homeDir;
   process.env.MYOS_DATA_SOURCES_CONFIG = dataSourcesConfig;
   const dispatcherModulePath = require.resolve("../src/task-dispatcher");
   const workspaceContextPath = require.resolve("../src/workspace-context");
@@ -253,6 +255,8 @@ test("dispatchTask executes deterministic data lookup lanes without worker fallb
   delete require.cache[dispatcherModulePath];
   delete require.cache[workspaceContextPath];
   delete require.cache[dataLookupPath];
+  delete require.cache[require.resolve("../src/data-source-registry")];
+  delete require.cache[require.resolve("../src/myos-compat")];
   const freshDispatcher = require("../src/task-dispatcher");
 
   try {
@@ -283,6 +287,8 @@ test("dispatchTask executes deterministic data lookup lanes without worker fallb
     assert.match(result.reply, /EIN: 12-3456789/);
   } finally {
     process.env.HOME = previousHome;
+    if (previousHomeRoot === undefined) delete process.env.MYOS_HOME_ROOT;
+    else process.env.MYOS_HOME_ROOT = previousHomeRoot;
     if (previousDataSourcesConfig === undefined) delete process.env.MYOS_DATA_SOURCES_CONFIG;
     else process.env.MYOS_DATA_SOURCES_CONFIG = previousDataSourcesConfig;
     delete require.cache[dispatcherModulePath];

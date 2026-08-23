@@ -1,7 +1,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
-const { inferGoalScale } = require("../src/goal-scale");
+const { getGoalPolicy, inferGoalScale } = require("../src/goal-scale");
 
 test("goal scale classifies direct status and lookup requests cheaply", () => {
   const status = inferGoalScale("what is the current status");
@@ -112,3 +112,37 @@ test("is everything ok is classified at most Scale 2", () => {
   assert.ok(goal.goalScale <= 2);
   assert.equal(goal.requiresPlan, false);
 });
+
+test("getGoalPolicy accessor loads policy and default_scale=4 flows through goalMetadata", () => {
+  const policy = getGoalPolicy();
+  assert.equal(policy.version, 1);
+  assert.equal(policy.default_scale, 4);
+  assert.equal(policy.modes[4], "ultragoal");
+  assert.deepEqual(policy.stop_rules, [
+    "done_verified",
+    "explicit_pause",
+    "real_risk",
+    "auth_required",
+    "destructive_action",
+    "material_ambiguity",
+  ]);
+
+  const fallbackGoal = inferGoalScale("overview of the component architecture for the downstream notification handler and telemetry system without specific actions");
+  assert.equal(fallbackGoal.goalScale, 4);
+  assert.equal(fallbackGoal.goalMode, "ultragoal");
+  assert.equal(fallbackGoal.requiresPlan, true);
+});
+
+test("easy-question classification still yields scale 1", () => {
+  const status = inferGoalScale("what is the current status");
+  assert.equal(status.goalScale, 1);
+  assert.equal(status.goalMode, "direct");
+  assert.equal(status.requiresPlan, false);
+});
+
+test("missing-config fallback yields default_scale=3", () => {
+  const missingPolicy = getGoalPolicy({ policyPath: "/nonexistent/config/goal-policy.json" });
+  assert.equal(missingPolicy.default_scale, 3);
+  assert.equal(missingPolicy.modes[3], "ralph");
+});
+

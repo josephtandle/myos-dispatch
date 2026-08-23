@@ -1,5 +1,8 @@
 "use strict";
 
+const fs = require("node:fs");
+const path = require("node:path");
+
 const DEFAULT_STOP_RULES = Object.freeze([
   "done_verified",
   "explicit_pause",
@@ -15,6 +18,57 @@ const GOAL_MODES = Object.freeze({
   3: "ralph",
   4: "ultragoal",
 });
+
+let cachedPolicy = null;
+
+function loadGoalPolicy(overridePath) {
+  const policyPath = overridePath || path.join(__dirname, "..", "config", "goal-policy.json");
+  try {
+    if (fs.existsSync(policyPath)) {
+      const raw = fs.readFileSync(policyPath, "utf8");
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === "object") {
+        const default_scale = typeof parsed.default_scale === "number" ? parsed.default_scale : 3;
+        const modes = parsed.modes && typeof parsed.modes === "object" ? Object.freeze({ ...parsed.modes }) : GOAL_MODES;
+        const stop_rules = Array.isArray(parsed.stop_rules) && parsed.stop_rules.length > 0 ? Object.freeze([...parsed.stop_rules]) : DEFAULT_STOP_RULES;
+        const version = typeof parsed.version === "number" ? parsed.version : 1;
+        const notes = typeof parsed.notes === "string" ? parsed.notes : undefined;
+
+        return Object.freeze({
+          version,
+          default_scale,
+          modes,
+          stop_rules,
+          ...(notes !== undefined ? { notes } : {}),
+        });
+      }
+    }
+  } catch (err) {
+    // Fall back to built-in behavior if missing or invalid
+  }
+
+  return Object.freeze({
+    version: 1,
+    default_scale: 3,
+    modes: GOAL_MODES,
+    stop_rules: DEFAULT_STOP_RULES,
+  });
+}
+
+function getGoalPolicy(options = {}) {
+  if (options && options.forceReload) {
+    cachedPolicy = loadGoalPolicy(options.policyPath);
+    return cachedPolicy;
+  }
+  if (options && options.policyPath) {
+    return loadGoalPolicy(options.policyPath);
+  }
+  if (!cachedPolicy) {
+    cachedPolicy = loadGoalPolicy();
+  }
+  return cachedPolicy;
+}
+
 
 const DIRECT_STATUS_RE = /\b(status|are you awake|are you there|is everything ok|everything ok|bring up|restart|open|show|list|what is|what's|where is|who is|which)\b/;
 const DIRECT_LOOKUP_RE = /\b(link|url|id|status|version|path|file|title|time|date|count)\b/;
@@ -101,13 +155,18 @@ function confidenceFor(scale, reasons) {
 }
 
 function goalMetadata(scale, reasons, blockedBy = []) {
-  const normalizedScale = Math.max(1, Math.min(4, Number(scale) || 3));
+  const policy = getGoalPolicy();
+  const defaultScale = policy.default_scale;
+  const modes = policy.modes || GOAL_MODES;
+  const stopRules = policy.stop_rules || DEFAULT_STOP_RULES;
+
+  const normalizedScale = Math.max(1, Math.min(4, Number(scale) || defaultScale));
   return {
     goalScale: normalizedScale,
-    goalMode: GOAL_MODES[normalizedScale],
+    goalMode: modes[normalizedScale] || GOAL_MODES[normalizedScale],
     goalConfidence: confidenceFor(normalizedScale, reasons),
     goalReasons: [...new Set(reasons)],
-    stopRules: [...DEFAULT_STOP_RULES],
+    stopRules: [...stopRules],
     requiresPlan: normalizedScale >= 4,
     requiresApproval: blockedBy.length > 0,
     blockedBy,
@@ -207,13 +266,19 @@ function inferGoalScale(input, context = {}) {
     return goalMetadata(2, ["bounded_answer"], blockedBy);
   }
 
-  if (hasAction) reasons.push("actionable_goal");
-  return goalMetadata(3, reasons.length > 0 ? reasons : ["default_actionable_goal"], blockedBy);
+  if (hasAction) {
+    reasons.push("actionable_goal");
+    return goalMetadata(3, reasons, blockedBy);
+  }
+
+  const policy = getGoalPolicy();
+  return goalMetadata(policy.default_scale, reasons.length > 0 ? reasons : ["default_actionable_goal"], blockedBy);
 }
 
 module.exports = {
   DEFAULT_STOP_RULES,
   GOAL_MODES,
+  getGoalPolicy,
   inferGoalScale,
   normalizeExistingGoalMetadata,
 };
