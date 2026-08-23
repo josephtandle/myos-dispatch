@@ -4,6 +4,8 @@ All notable changes to MyOS Dispatch are documented here.
 
 ## Unreleased
 
+## v3.7.0 - 2026-08-24
+
 ### Added
 
 - **Intent Fidelity:** every interactive Claude Code and Codex route now carries the same machine-consumable contract: the latest explicit instruction wins, corrections are applied without re-litigation, reversible assumptions replace unnecessary permission loops, and safe action happens before reporting. Exact auth, destructive, external-send, live-production, protected-surface, and material-ambiguity gates remain enforced. Route logs capture the policy and health classifiers flag intent mismatch, needless resistance, unnecessary clarification, and deferred actionable work.
