@@ -2,6 +2,12 @@
 
 All notable changes to MyOS Dispatch are documented here.
 
+## Unreleased
+
+### Added
+
+- **Intent Horizon:** actionable interactive Goal Scale 3 and 4 routes now carry a provider-neutral, machine-bounded completion contract. After the requested outcome verifies, Claude Code and Codex run one exploratory sweep, score a finite candidate set, and implement the strongest safe upgrades within ownership, reversibility, authority, causal-depth, and binary-verification gates. The contract has a kill switch, explicit budgets and stop reasons, route-log evidence, and health classifications for diagnosis-only completion, skipped qualified upgrades, and exhaustion.
+
 ## v3.6.0 - 2026-08-23
 
 ### Added

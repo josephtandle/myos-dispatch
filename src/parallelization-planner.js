@@ -4,6 +4,7 @@ const path = require("node:path");
 
 const { getParallelizationStage } = require("./promotion/parallelization-version-policy");
 const { backgroundAgentsDisabled, isUnattendedContext } = require("./env-context");
+const { inferGoalScale } = require("./goal-scale");
 const {
   buildExecutionEnvelope,
   buildTaskExecutionEnvelope,
@@ -441,9 +442,23 @@ function buildParallelizationPlan(input, basePlan = {}, signals = {}) {
     projectIndexPath: signals.projectIndexPath,
     cwd: signals.cwd,
   });
-  const executionEnvelope = buildExecutionEnvelope(text, basePlan, {
+  // finalizeDispatchPlan computes the authoritative goal metadata after this
+  // planner returns. The execution envelope still needs the same preliminary
+  // scale now so scale-gated contracts are present during hook rendering.
+  const envelopePlan = basePlan.goalScale
+    ? basePlan
+    : { ...basePlan, ...inferGoalScale(text, basePlan) };
+  const taskClass = basePlan.taskClass
+    || signals.taskClass
+    || (basePlan.actionType === "write"
+      ? "default_automation"
+      : basePlan.actionType === "read"
+        ? "cheap_routing"
+        : null);
+  const executionEnvelope = buildExecutionEnvelope(text, envelopePlan, {
     env,
     blockedReasons,
+    taskClass,
   });
   const writableEligible = Boolean(stage.capabilities?.writableGitWorktrees) &&
     repoEligibleForWritable(basePlan, blockedReasons, env, repositoryRouting);

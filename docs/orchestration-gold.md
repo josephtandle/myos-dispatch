@@ -1,6 +1,6 @@
 # MyOS Dispatch Orchestration Gold
 
-This rollout folds five current Codex orchestration capabilities into MyOS Dispatch without making Codex the routing authority.
+This rollout folds six current orchestration capabilities into MyOS Dispatch without making any provider the routing authority.
 
 ## 1. Scheduled dispatch
 
@@ -22,6 +22,14 @@ The capability index can include enabled Codex plugins with `--include-codex-plu
 
 Writable parallel work is runner-owned, repository-scoped, and limited to one writer for an ownership root. Verification remains independently read-only. Changes are staged so new files are included, checked against ownership paths, emitted as a durable binary patch outside the temporary worktree, hashed with SHA-256, and then the worktree is removed.
 
+## 6. Intent Horizon
+
+Actionable interactive work at Goal Scale 3 or 4 receives the same provider-neutral Intent Horizon contract in Claude Code and Codex. The orchestrator must finish and verify the requested outcome, repair related failures it can safely fix, then run exactly one exploratory upgrade sweep across the routed project and its direct call-graph neighborhood.
+
+The sweep is intentionally aggressive and finite. Scale 3 can score four candidates and implement the best two. Scale 4 can score eight and implement the best four. Candidates must remain inside causal depth two, match the assigned ownership path, be reversible, and have binary verification. New authority, live production mutation, external sends, destructive actions, protected surfaces, and unaudited dependencies fail closed. An upgrade may create a required repair, but it cannot start another upgrade sweep.
+
+The machine contract includes required, verification, repair, and upgrade ledger item types; explicit continuation and stop reasons; a ten-point candidate rubric; accepted binary verification types; bounded attempt and wall-time budgets; and health classifications for diagnosis-only completion, skipped qualified upgrades, and budget exhaustion. Route logs preserve the contract for later compliance analysis.
+
 ## Rollout and rollback
 
 The integration is compatibility-first and guarded by independent environment switches:
@@ -31,6 +39,7 @@ The integration is compatibility-first and guarded by independent environment sw
 - `MYOS_BACKGROUND_AGENTS_ENABLED=0`
 - `MYOS_CODEX_PLUGIN_ROUTING_ENABLED=0`
 - `MYOS_WRITABLE_SIDECARS_ENABLED=0`
+- `MYOS_INTENT_HORIZON_ENABLED=0`
 
 Scheduled mutation and external sends remain disabled until a separate audited canary proves sandboxing, repository targeting, idempotency, and delivery safety. `compile-schedule-spec.js` validates and compiles the contract but does not register or launch an operating-system or Codex schedule.
 

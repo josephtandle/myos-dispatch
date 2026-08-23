@@ -76,3 +76,32 @@ test("gold feature kill switches are enforced independently", () => {
   assert.equal(envelope.features.skillsAndPlugins.selected, false);
   assert.equal(envelope.features.worktrees.selected, false);
 });
+
+test("actionable interactive work carries the aggressive Intent Horizon contract", () => {
+  const envelope = buildExecutionEnvelope(
+    "Fix the dispatch failure and verify the result",
+    {
+      actionType: "write",
+      goalScale: 3,
+      goalMode: "ralph",
+      blockedBy: [],
+      taskClass: "coding_implementation",
+    },
+    { env: { MYOS_INITIATOR: "human" } },
+  );
+
+  assert.equal(envelope.features.intentHorizon.enabled, true);
+  assert.equal(envelope.features.intentHorizon.sweep.maxCandidates, 4);
+  assert.equal(envelope.features.intentHorizon.sweep.maxAutoApply, 2);
+  assert.equal(envelope.features.intentHorizon.exploration.routedProjectOnly, true);
+});
+
+test("direct envelope construction fails closed without a declared task class", () => {
+  const envelope = buildExecutionEnvelope("Implement and verify the fix", {
+    goalScale: 3,
+    actionType: "write",
+  });
+
+  assert.equal(envelope.features.intentHorizon.enabled, false);
+  assert.equal(envelope.features.intentHorizon.stopReason, "missing_task_class");
+});
