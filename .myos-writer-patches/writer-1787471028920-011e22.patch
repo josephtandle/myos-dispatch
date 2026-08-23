@@ -1,0 +1,497 @@
+diff --git a/bin/myos-dispatch-hook b/bin/myos-dispatch-hook
+index e8900c7..061b04f 100755
+--- a/bin/myos-dispatch-hook
++++ b/bin/myos-dispatch-hook
+@@ -116,6 +116,75 @@ function readSessionId(payload) {
+   return cleaned || "default-session";
+ }
+ 
++function getRawSessionId(payload) {
++  if (!payload || typeof payload !== "object") return "";
++  const raw = safeString(
++    payload.session_id ||
++    payload.sessionId ||
++    payload.conversation_id ||
++    payload.conversationId
++  ).trim();
++  if (!raw) return "";
++  const cleaned = raw.replace(/[^A-Za-z0-9._-]/g, "_").replace(/^\.+/, "_").slice(0, 128);
++  return cleaned;
++}
++
++function getRouteContextStateDir() {
++  return path.join(preferredHomeRoot(), "state", "route-context");
++}
++
++function pruneOldRouteContextStateFiles(dir) {
++  try {
++    if (!fs.existsSync(dir)) return;
++    const files = fs.readdirSync(dir);
++    const now = Date.now();
++    const maxAgeMs = 7 * 24 * 60 * 60 * 1000;
++    for (const file of files) {
++      if (!file.endsWith(".json")) continue;
++      const fullPath = path.join(dir, file);
++      try {
++        const stat = fs.statSync(fullPath);
++        if (now - stat.mtimeMs > maxAgeMs) {
++          fs.unlinkSync(fullPath);
++        }
++      } catch {}
++    }
++  } catch {}
++}
++
++function loadRouteContextState(sessionId) {
++  if (!sessionId) return null;
++  const dir = getRouteContextStateDir();
++  const filePath = path.join(dir, `${sessionId}.json`);
++  try {
++    if (fs.existsSync(filePath)) {
++      const raw = fs.readFileSync(filePath, "utf8");
++      const parsed = JSON.parse(raw);
++      if (parsed && typeof parsed === "object") {
++        return {
++          turn: typeof parsed.turn === "number" ? parsed.turn : 0,
++          footerEmittedInTurn: Boolean(parsed.footerEmittedInTurn),
++          lastEmittedHash: typeof parsed.lastEmittedHash === "string" ? parsed.lastEmittedHash : null,
++        };
++      }
++    }
++  } catch {}
++  return null;
++}
++
++function saveRouteContextState(sessionId, state) {
++  if (!sessionId || !state) return;
++  const dir = getRouteContextStateDir();
++  try {
++    fs.mkdirSync(dir, { recursive: true });
++    pruneOldRouteContextStateFiles(dir);
++    const filePath = path.join(dir, `${sessionId}.json`);
++    const tmpPath = path.join(dir, `${sessionId}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`);
++    fs.writeFileSync(tmpPath, JSON.stringify(state, null, 2), "utf8");
++    fs.renameSync(tmpPath, filePath);
++  } catch {}
++}
++
+ function readToolName(payload) {
+   return safeString(payload.tool_name || payload.toolName || payload.tool || "").trim();
+ }
+@@ -249,27 +318,36 @@ function fanoutMandateLines(surface, parallel, autoDispatchedTasks = []) {
+ 
+ function formatLaneAssignments(surface, parallel) {
+   if (!Array.isArray(parallel.tasks) || parallel.tasks.length === 0) return [];
+-  const lines = ["Lane assignments:"];
++  const scopes = parallel.tasks.map((task) => safeString(task.scope).trim());
++  const firstScope = scopes[0];
++  const allSameScope = firstScope !== "" && scopes.every((s) => s === firstScope);
++
++  const lines = [];
++  if (allSameScope) {
++    lines.push(`Lane scope: ${firstScope}`);
++  }
++  lines.push("Lane assignments:");
+   for (const task of parallel.tasks) {
+     const owner = task.mode === "workspace_write"
+       ? "runner-owned isolated worktree"
+       : surface === "codex"
+         ? `native:${task.agentProfile || task.fallbackAgentProfile || "explorer"}`
+         : "provider-affine read-only sidecar";
++    const scopeStr = !allSameScope && task.scope ? ` scope=${task.scope}` : "";
+     lines.push(
+       `- ${task.id} role=${task.role || "context"} mode=${task.mode} owner=${owner} ` +
+       `join=${task.joinPolicy}${task.required ? " required" : ""}` +
+-      (task.scope ? ` scope=${task.scope}` : "")
++      scopeStr
+     );
+   }
+   return lines;
+ }
+ 
+-function formatDispatchContext({ surface, hookEventName, targetKind, text, plan, autoDispatchedTasks = [] }) {
++function formatDispatchContext({ surface, hookEventName, targetKind, text, plan, autoDispatchedTasks = [], state = null }) {
+   const route = compactRoute(plan);
+   const parallel = route.parallelization;
+   const goalPolicy = buildGoalPolicy(text, plan);
+-  const lines = [
++  const bodyLines = [
+     "[MyOS Dispatch route]",
+     `Surface: ${surface}`,
+     `Hook event: ${hookEventName}`,
+@@ -299,15 +377,41 @@ function formatDispatchContext({ surface, hookEventName, targetKind, text, plan,
+     `Goal persistence: ${goalPolicy.persistedGoalMutation}; continuation owner: ${goalPolicy.continuationOwner}`,
+     route.typedEvidence.authoritative ? `Typed evidence authority: ${route.typedEvidence.activeStage}` : "",
+     ...formatLaneAssignments(surface, parallel),
+-    "",
+-    "Mandatory behavior:",
+-    "- Treat this route as the first routing pass for the turn.",
+-    "- Follow MyOS Dispatch evaluation order before broad search or provider-specific work.",
+-    "- For non-trivial work, use the maximum safe fanout exposed by the plan, while respecting protected-surface, auth, destructive, and user-visible-send gates.",
+-    ...fanoutMandateLines(surface, parallel, autoDispatchedTasks),
+-    "- If the route is wrong, correct it explicitly and continue through the next practical verification or fix step.",
+-  ];
+-  return lines.filter(Boolean).join("\n");
++  ].filter(Boolean);
++
++  const bodyText = bodyLines.join("\n");
++  const bodyHash = sha256(bodyText);
++
++  if (state && state.lastEmittedHash && state.lastEmittedHash === bodyHash) {
++    return "[MyOS Dispatch route] unchanged from previous injection this turn.";
++  }
++
++  if (state) {
++    state.lastEmittedHash = bodyHash;
++  }
++
++  let footerLines;
++  if (state && state.footerEmittedInTurn) {
++    footerLines = [
++      "",
++      "Mandatory behavior: unchanged (see route block earlier this turn)",
++    ];
++  } else {
++    footerLines = [
++      "",
++      "Mandatory behavior:",
++      "- Treat this route as the first routing pass for the turn.",
++      "- Follow MyOS Dispatch evaluation order before broad search or provider-specific work.",
++      "- For non-trivial work, use the maximum safe fanout exposed by the plan, while respecting protected-surface, auth, destructive, and user-visible-send gates.",
++      ...fanoutMandateLines(surface, parallel, autoDispatchedTasks),
++      "- If the route is wrong, correct it explicitly and continue through the next practical verification or fix step.",
++    ];
++    if (state) {
++      state.footerEmittedInTurn = true;
++    }
++  }
++
++  return `${bodyText}\n${footerLines.join("\n")}`;
+ }
+ 
+ function formatCompactDispatchContext({ surface, plan, autoDispatchedTasks = [] }) {
+@@ -351,10 +455,10 @@ function formatCompactDispatchContext({ surface, plan, autoDispatchedTasks = []
+   return lines.filter(Boolean).join("\n");
+ }
+ 
+-function buildContextForMode({ surface, hookEventName, targetKind, text, plan, contextMode, autoDispatchedTasks = [] }) {
++function buildContextForMode({ surface, hookEventName, targetKind, text, plan, contextMode, autoDispatchedTasks = [], state = null }) {
+   if (contextMode === "none") return "";
+   if (contextMode === "compact") return formatCompactDispatchContext({ surface, plan, autoDispatchedTasks });
+-  return formatDispatchContext({ surface, hookEventName, targetKind, text, plan, autoDispatchedTasks });
++  return formatDispatchContext({ surface, hookEventName, targetKind, text, plan, autoDispatchedTasks, state });
+ }
+ 
+ function resolveHookPlan(text, options = {}) {
+@@ -368,10 +472,10 @@ function resolveHookPlan(text, options = {}) {
+   });
+ }
+ 
+-function buildDispatchContext({ surface, hookEventName, targetKind, text, contextMode = "full", autoDispatchedTasks = [] }) {
++function buildDispatchContext({ surface, hookEventName, targetKind, text, contextMode = "full", autoDispatchedTasks = [], state = null }) {
+   const plan = resolveHookPlan(text, { hookSurface: surface, hookEventName });
+   return {
+-    context: buildContextForMode({ surface, hookEventName, targetKind, text, plan, contextMode, autoDispatchedTasks }),
++    context: buildContextForMode({ surface, hookEventName, targetKind, text, plan, contextMode, autoDispatchedTasks, state }),
+     route: compactRoute(plan),
+   };
+ }
+@@ -1065,6 +1169,17 @@ function handleUserPromptSubmit(payload, surface, options = {}) {
+     }
+   }
+ 
++  const rawSessionId = getRawSessionId(payload);
++  let state = rawSessionId ? loadRouteContextState(rawSessionId) : null;
++  if (rawSessionId) {
++    if (!state) {
++      state = { turn: 0, footerEmittedInTurn: false, lastEmittedHash: null };
++    }
++    state.turn += 1;
++    state.footerEmittedInTurn = false;
++    state.lastEmittedHash = null;
++  }
++
+   let routeContextText = buildContextForMode({
+     surface,
+     hookEventName: "UserPromptSubmit",
+@@ -1073,8 +1188,13 @@ function handleUserPromptSubmit(payload, surface, options = {}) {
+     plan,
+     contextMode: options.contextMode || "full",
+     autoDispatchedTasks,
++    state,
+   });
+ 
++  if (rawSessionId && state) {
++    saveRouteContextState(rawSessionId, state);
++  }
++
+   if (sidecarResultsText) {
+     routeContextText = routeContextText
+       ? `${routeContextText}\n\n${sidecarResultsText}`
+@@ -1112,13 +1232,26 @@ function handlePreToolUse(payload, surface, options = {}) {
+   const command = readCommand(payload);
+   if (toolName && toolName !== "Bash") return null;
+   if (!command) return null;
++
++  const rawSessionId = getRawSessionId(payload);
++  let state = rawSessionId ? loadRouteContextState(rawSessionId) : null;
++  if (rawSessionId && !state) {
++    state = { turn: 1, footerEmittedInTurn: false, lastEmittedHash: null };
++  }
++
+   const route = buildDispatchContext({
+     surface,
+     hookEventName: "PreToolUse",
+     targetKind: "bash_command",
+     text: command,
+     contextMode: options.contextMode || "full",
++    state,
+   });
++
++  if (rawSessionId && state) {
++    saveRouteContextState(rawSessionId, state);
++  }
++
+   appendRouteLog({
+     at: new Date().toISOString(),
+     surface,
+diff --git a/test/route-context-dedupe.test.js b/test/route-context-dedupe.test.js
+new file mode 100644
+index 0000000..cefd282
+--- /dev/null
++++ b/test/route-context-dedupe.test.js
+@@ -0,0 +1,234 @@
++"use strict";
++
++const assert = require("node:assert/strict");
++const fs = require("node:fs");
++const os = require("node:os");
++const path = require("node:path");
++const test = require("node:test");
++
++const {
++  formatDispatchContext,
++  handleHookPayload,
++} = require("../bin/myos-dispatch-hook");
++const { preferredHomeRoot } = require("../src/myos-compat");
++
++test("footer-once-per-turn", () => {
++  const sessionId = `test-footer-${Date.now()}-${Math.random().toString(36).slice(2)}`;
++  const homeRoot = preferredHomeRoot();
++  const stateFile = path.join(homeRoot, "state", "route-context", `${sessionId}.json`);
++
++  try {
++    // Turn 1: UserPromptSubmit
++    const out1 = handleHookPayload(
++      {
++        session_id: sessionId,
++        hook_event_name: "UserPromptSubmit",
++        cwd: process.cwd(),
++        prompt: "Fix dispatch issue",
++      },
++      "claude",
++      { contextMode: "full", rewrite: false }
++    );
++    const ctx1 = out1?.hookSpecificOutput?.additionalContext || "";
++    assert.match(ctx1, /Mandatory behavior:/);
++    assert.match(ctx1, /Treat this route as the first routing pass/);
++
++    // Turn 1: PreToolUse with command changing input hash
++    const out2 = handleHookPayload(
++      {
++        session_id: sessionId,
++        hook_event_name: "PreToolUse",
++        cwd: process.cwd(),
++        tool_name: "Bash",
++        tool_input: { command: "git status" },
++      },
++      "claude",
++      { contextMode: "full", rewrite: false }
++    );
++    const ctx2 = out2?.hookSpecificOutput?.additionalContext || "";
++    assert.match(ctx2, /Mandatory behavior: unchanged \(see route block earlier this turn\)/);
++    assert.doesNotMatch(ctx2, /Treat this route as the first routing pass/);
++
++    // Turn 2: Next UserPromptSubmit resets turn flags
++    const out3 = handleHookPayload(
++      {
++        session_id: sessionId,
++        hook_event_name: "UserPromptSubmit",
++        cwd: process.cwd(),
++        prompt: "Another task in turn 2",
++      },
++      "claude",
++      { contextMode: "full", rewrite: false }
++    );
++    const ctx3 = out3?.hookSpecificOutput?.additionalContext || "";
++    assert.match(ctx3, /Mandatory behavior:/);
++    assert.match(ctx3, /Treat this route as the first routing pass/);
++  } finally {
++    try {
++      if (fs.existsSync(stateFile)) fs.unlinkSync(stateFile);
++    } catch {}
++  }
++});
++
++test("scope dedupe", () => {
++  const sharedScope = "/var/myos/repo/shared";
++  const planShared = {
++    parallelizationPlan: {
++      backgroundTasks: [
++        { id: "lane-1", role: "search", mode: "read_only", joinPolicy: "optional", scope: sharedScope },
++        { id: "lane-2", role: "audit", mode: "read_only", joinPolicy: "optional", scope: sharedScope },
++      ],
++    },
++  };
++  const ctxShared = formatDispatchContext({
++    surface: "claude",
++    hookEventName: "UserPromptSubmit",
++    targetKind: "user_prompt",
++    text: "analyze repo",
++    plan: planShared,
++  });
++
++  assert.match(ctxShared, new RegExp(`Lane scope: ${sharedScope}`));
++  assert.match(ctxShared, /Lane assignments:\n- lane-1 role=search mode=read_only owner=provider-affine read-only sidecar join=optional\n- lane-2 role=audit mode=read_only owner=provider-affine read-only sidecar join=optional/);
++
++  const planDiff = {
++    parallelizationPlan: {
++      backgroundTasks: [
++        { id: "lane-1", role: "search", mode: "read_only", joinPolicy: "optional", scope: "/path/A" },
++        { id: "lane-2", role: "audit", mode: "read_only", joinPolicy: "optional", scope: "/path/B" },
++      ],
++    },
++  };
++  const ctxDiff = formatDispatchContext({
++    surface: "claude",
++    hookEventName: "UserPromptSubmit",
++    targetKind: "user_prompt",
++    text: "analyze repo",
++    plan: planDiff,
++  });
++
++  assert.doesNotMatch(ctxDiff, /Lane scope:/);
++  assert.match(ctxDiff, /scope=\/path\/A/);
++  assert.match(ctxDiff, /scope=\/path\/B/);
++});
++
++test("identical-block suppression", () => {
++  const sessionId = `test-dedupe-${Date.now()}-${Math.random().toString(36).slice(2)}`;
++  const homeRoot = preferredHomeRoot();
++  const stateFile = path.join(homeRoot, "state", "route-context", `${sessionId}.json`);
++
++  try {
++    // 1st call in turn: UserPromptSubmit
++    handleHookPayload(
++      {
++        session_id: sessionId,
++        hook_event_name: "UserPromptSubmit",
++        cwd: process.cwd(),
++        prompt: "Run tests",
++      },
++      "claude",
++      { contextMode: "full", rewrite: false }
++    );
++
++    // 2nd call in turn: PreToolUse (emits context block for git status)
++    const out2 = handleHookPayload(
++      {
++        session_id: sessionId,
++        hook_event_name: "PreToolUse",
++        cwd: process.cwd(),
++        tool_name: "Bash",
++        tool_input: { command: "git status" },
++      },
++      "claude",
++      { contextMode: "full", rewrite: false }
++    );
++    const ctx2 = out2?.hookSpecificOutput?.additionalContext || "";
++    assert.match(ctx2, /\[MyOS Dispatch route\]/);
++    assert.match(ctx2, /Mandatory behavior: unchanged/);
++
++    // 3rd call in SAME turn: PreToolUse with exact same command and route
++    const out3 = handleHookPayload(
++      {
++        session_id: sessionId,
++        hook_event_name: "PreToolUse",
++        cwd: process.cwd(),
++        tool_name: "Bash",
++        tool_input: { command: "git status" },
++      },
++      "claude",
++      { contextMode: "full", rewrite: false }
++    );
++    const ctx3 = out3?.hookSpecificOutput?.additionalContext || "";
++    assert.equal(
++      ctx3,
++      "[MyOS Dispatch route] unchanged from previous injection this turn."
++    );
++  } finally {
++    try {
++      if (fs.existsSync(stateFile)) fs.unlinkSync(stateFile);
++    } catch {}
++  }
++});
++
++test("corrupt-state fallback", () => {
++  const sessionId = `test-corrupt-${Date.now()}-${Math.random().toString(36).slice(2)}`;
++  const homeRoot = preferredHomeRoot();
++  const stateDir = path.join(homeRoot, "state", "route-context");
++  const stateFile = path.join(stateDir, `${sessionId}.json`);
++
++  try {
++    fs.mkdirSync(stateDir, { recursive: true });
++    fs.writeFileSync(stateFile, "{ invalid json content !!!", "utf8");
++
++    const out = handleHookPayload(
++      {
++        session_id: sessionId,
++        hook_event_name: "UserPromptSubmit",
++        cwd: process.cwd(),
++        prompt: "Do work despite corrupt state",
++      },
++      "claude",
++      { contextMode: "full", rewrite: false }
++    );
++
++    const ctx = out?.hookSpecificOutput?.additionalContext || "";
++    assert.match(ctx, /\[MyOS Dispatch route\]/);
++    assert.match(ctx, /Mandatory behavior:/);
++    assert.match(ctx, /Treat this route as the first routing pass/);
++  } finally {
++    try {
++      if (fs.existsSync(stateFile)) fs.unlinkSync(stateFile);
++    } catch {}
++  }
++});
++
++test("missing session_id fallback", () => {
++  // Call UserPromptSubmit without session_id
++  const out1 = handleHookPayload(
++    {
++      hook_event_name: "UserPromptSubmit",
++      cwd: process.cwd(),
++      prompt: "No session ID task",
++    },
++    "claude",
++    { contextMode: "full", rewrite: false }
++  );
++  const ctx1 = out1?.hookSpecificOutput?.additionalContext || "";
++  assert.match(ctx1, /Mandatory behavior:/);
++  assert.match(ctx1, /Treat this route as the first routing pass/);
++
++  // Second call without session_id
++  const out2 = handleHookPayload(
++    {
++      hook_event_name: "UserPromptSubmit",
++      cwd: process.cwd(),
++      prompt: "No session ID task",
++    },
++    "claude",
++    { contextMode: "full", rewrite: false }
++  );
++  const ctx2 = out2?.hookSpecificOutput?.additionalContext || "";
++  // Since session_id is absent, it falls back gracefully to full emission each time.
++  assert.match(ctx2, /Mandatory behavior:/);
++  assert.match(ctx2, /Treat this route as the first routing pass/);
++});

@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "default_scale": 4,
+  "modes": {
+    "1": "direct",
+    "2": "bounded_goal",
+    "3": "ralph",
+    "4": "ultragoal"
+  },
+  "stop_rules": [
+    "done_verified",
+    "explicit_pause",
+    "real_risk",
+    "auth_required",
+    "destructive_action",
+    "material_ambiguity"
+  ],
+  "notes": "Single source of truth for Goal Scale policy. Prose in ~/.myos/workspace/MYOS-DISPATCH.md mirrors this file."
+}
