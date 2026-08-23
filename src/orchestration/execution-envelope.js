@@ -1,5 +1,6 @@
 "use strict";
 
+const { buildIntentFidelityPolicy } = require("./intent-fidelity");
 const { buildIntentHorizonPolicy } = require("./intent-horizon");
 
 const ORCHESTRATION_VERSION = "myos-orchestration-gold-v1";
@@ -131,6 +132,12 @@ function buildExecutionEnvelope(input, basePlan = {}, options = {}) {
     maxWallTimeMs: options.maxWallTimeMs,
     maxContinuationAttempts: options.maxContinuationAttempts,
   }, { env });
+  const intentFidelity = buildIntentFidelityPolicy({
+    text,
+    trustClass: scheduleIntent ? "scheduled_read" : "interactive",
+    taskClass: basePlan.taskClass || options.taskClass,
+    blockedBy: allBlockedReasons,
+  }, { env });
 
   return {
     version: ORCHESTRATION_VERSION,
@@ -165,6 +172,7 @@ function buildExecutionEnvelope(input, basePlan = {}, options = {}) {
         killSwitch: "MYOS_BACKGROUND_AGENTS_ENABLED=0",
       },
       goalMode: buildGoalPolicy(text, basePlan),
+      intentFidelity,
       intentHorizon,
       skillsAndPlugins: {
         selected: reusable && featureEnabled("MYOS_CODEX_PLUGIN_ROUTING_ENABLED"),

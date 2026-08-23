@@ -261,6 +261,7 @@ Copy `.env.example` to your own local `.env`. Common toggles:
 | `MYOS_DISPATCH_HOOK_CONTEXT` | `full` / `compact` / `none` route verbosity. |
 | `MYOS_DATA_SOURCES_CONFIG` | Path to your data-sources JSON. |
 | `MYOS_BACKGROUND_AGENTS_ENABLED` | `0` is the background kill switch: the planner emits no fan-out lanes, the hook tells the model not to spawn background subagents, and the sidecar runner refuses to execute tasks. |
+| `MYOS_INTENT_FIDELITY_ENABLED` | `0` disables the interactive latest-intent, reversible-assumption, and execute-before-report contract. Hard gates are preserved whether this feature is enabled or disabled. |
 | `MYOS_INTENT_HORIZON_ENABLED` | `0` disables the bounded post-verification upgrade sweep for actionable interactive Goal Scale 3 and 4 work. |
 | `MYOS_PARALLELIZATION_VERSION` / `_AUTO_PROMOTE` | Pin / disable fan-out stage promotion. |
 | `MYOS_DISPATCH_HEALTH_VERSION` / `_AUTO_PROMOTE` / `_AUTO_REPAIR` | Dispatcher-health self-promotion controls. |

@@ -105,3 +105,32 @@ test("direct envelope construction fails closed without a declared task class", 
   assert.equal(envelope.features.intentHorizon.enabled, false);
   assert.equal(envelope.features.intentHorizon.stopReason, "missing_task_class");
 });
+
+test("interactive work carries a machine-consumable Intent Fidelity contract", () => {
+  const envelope = buildExecutionEnvelope("Actually, use the current design and finish it", {
+    goalScale: 3,
+    actionType: "write",
+    taskClass: "default_automation",
+  });
+
+  assert.equal(envelope.features.intentFidelity.version, "intent-fidelity-v1");
+  assert.equal(envelope.features.intentFidelity.enabled, true);
+  assert.equal(envelope.features.intentFidelity.correctionDetected, true);
+  assert.equal(envelope.features.intentFidelity.precedence[0], "latest_explicit_instruction");
+  assert.equal(envelope.features.intentFidelity.defaultDecision, "execute_next_safe_step");
+});
+
+test("Intent Fidelity stays off outside interactive work and honors its kill switch", () => {
+  const scheduled = buildExecutionEnvelope("Run this scheduled audit every day", {
+    actionType: "read",
+    taskClass: "scheduled_maintenance",
+  });
+  const disabled = buildExecutionEnvelope("Fix this now", {
+    actionType: "write",
+    taskClass: "coding_implementation",
+  }, { env: { MYOS_INTENT_FIDELITY_ENABLED: "0" } });
+
+  assert.equal(scheduled.features.intentFidelity.enabled, false);
+  assert.equal(scheduled.features.intentFidelity.stopReason, "non_interactive");
+  assert.equal(disabled.features.intentFidelity.enabled, false);
+});

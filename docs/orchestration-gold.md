@@ -1,6 +1,6 @@
 # MyOS Dispatch Orchestration Gold
 
-This rollout folds six current orchestration capabilities into MyOS Dispatch without making any provider the routing authority.
+This rollout folds seven current orchestration capabilities into MyOS Dispatch without making any provider the routing authority.
 
 ## 1. Scheduled dispatch
 
@@ -22,7 +22,15 @@ The capability index can include enabled Codex plugins with `--include-codex-plu
 
 Writable parallel work is runner-owned, repository-scoped, and limited to one writer for an ownership root. Verification remains independently read-only. Changes are staged so new files are included, checked against ownership paths, emitted as a durable binary patch outside the temporary worktree, hashed with SHA-256, and then the worktree is removed.
 
-## 6. Intent Horizon
+## 6. Intent Fidelity
+
+Every interactive route receives the same provider-neutral Intent Fidelity contract in Claude Code and Codex. The latest explicit instruction outranks an earlier interpretation, an inferred preference, and stale session context. A correction is applied without defending or re-litigating the superseded interpretation.
+
+When a safe path exists, the orchestrator makes the smallest reasonable reversible assumption, executes the next step, verifies it, and reports afterward. It asks at most one targeted question only when material ambiguity has no reversible safe path. Recommendations, policy recaps, and permission-seeking cannot replace safe in-scope action.
+
+The contract does not weaken authority boundaries. For authentication, destructive actions, external sends, live production mutation, protected surfaces, and material ambiguity, the orchestrator completes safe prework, names the exact gate, and requests only the minimum unblock. Route logs preserve the policy and correction signal for parity and health analysis.
+
+## 7. Intent Horizon
 
 Actionable interactive work at Goal Scale 3 or 4 receives the same provider-neutral Intent Horizon contract in Claude Code and Codex. The orchestrator must finish and verify the requested outcome, repair related failures it can safely fix, then run exactly one exploratory upgrade sweep across the routed project and its direct call-graph neighborhood.
 
@@ -39,6 +47,7 @@ The integration is compatibility-first and guarded by independent environment sw
 - `MYOS_BACKGROUND_AGENTS_ENABLED=0`
 - `MYOS_CODEX_PLUGIN_ROUTING_ENABLED=0`
 - `MYOS_WRITABLE_SIDECARS_ENABLED=0`
+- `MYOS_INTENT_FIDELITY_ENABLED=0`
 - `MYOS_INTENT_HORIZON_ENABLED=0`
 
 Scheduled mutation and external sends remain disabled until a separate audited canary proves sandboxing, repository targeting, idempotency, and delivery safety. `compile-schedule-spec.js` validates and compiles the contract but does not register or launch an operating-system or Codex schedule.

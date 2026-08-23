@@ -6,6 +6,7 @@ All notable changes to MyOS Dispatch are documented here.
 
 ### Added
 
+- **Intent Fidelity:** every interactive Claude Code and Codex route now carries the same machine-consumable contract: the latest explicit instruction wins, corrections are applied without re-litigation, reversible assumptions replace unnecessary permission loops, and safe action happens before reporting. Exact auth, destructive, external-send, live-production, protected-surface, and material-ambiguity gates remain enforced. Route logs capture the policy and health classifiers flag intent mismatch, needless resistance, unnecessary clarification, and deferred actionable work.
 - **Intent Horizon:** actionable interactive Goal Scale 3 and 4 routes now carry a provider-neutral, machine-bounded completion contract. After the requested outcome verifies, Claude Code and Codex run one exploratory sweep, score a finite candidate set, and implement the strongest safe upgrades within ownership, reversibility, authority, causal-depth, and binary-verification gates. The contract has a kill switch, explicit budgets and stop reasons, route-log evidence, and health classifications for diagnosis-only completion, skipped qualified upgrades, and exhaustion.
 
 ## v3.6.0 - 2026-08-23

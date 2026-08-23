@@ -285,6 +285,7 @@ function compactRoute(plan) {
       repositoryRouting: parallel.repositoryRouting || null,
       orchestrationLevel: parallel.executionEnvelope?.level || "",
       orchestrationEnabled,
+      intentFidelity: parallel.executionEnvelope?.features?.intentFidelity || null,
       intentHorizon: parallel.executionEnvelope?.features?.intentHorizon || null,
     },
     typedEvidence: {
@@ -397,6 +398,9 @@ function formatDispatchContext({ surface, hookEventName, targetKind, text, plan,
       ? `Repository routing: ${parallel.repositoryRouting.reason}, writableSafe=${parallel.repositoryRouting.writableSafe ? "yes" : "no"}`
       : "",
     `Goal persistence: ${goalPolicy.persistedGoalMutation}; continuation owner: ${goalPolicy.continuationOwner}`,
+    parallel.intentFidelity?.enabled
+      ? `[Intent Fidelity contract] version=${parallel.intentFidelity.version} precedence=${parallel.intentFidelity.precedence[0]} default=${parallel.intentFidelity.defaultDecision} correction=${parallel.intentFidelity.correctionDetected ? "yes" : "no"}`
+      : "",
     parallel.intentHorizon?.enabled
       ? `[Intent Horizon contract] version=${parallel.intentHorizon.version} sweep=required-once candidates=${parallel.intentHorizon.sweep.maxCandidates} auto_apply=${parallel.intentHorizon.sweep.maxAutoApply} causal_depth=${parallel.intentHorizon.sweep.maxCausalDepth}`
       : "",
@@ -429,6 +433,12 @@ function formatDispatchContext({ surface, hookEventName, targetKind, text, plan,
       "- Follow MyOS Dispatch evaluation order before broad search or provider-specific work.",
       "- For non-trivial work, use the maximum safe fanout exposed by the plan, while respecting protected-surface, auth, destructive, and user-visible-send gates.",
       ...fanoutMandateLines(surface, parallel, autoDispatchedTasks),
+      ...(parallel.intentFidelity?.enabled ? [
+        "- The latest explicit instruction overrides earlier interpretations, inferred preferences, and stale context. Apply corrections without defending or re-litigating the superseded interpretation.",
+        "- Make the smallest reasonable reversible assumption and execute. Ask at most one targeted question only when ambiguity creates material risk and no reversible safe path exists.",
+        "- Do not substitute explanation, policy recap, recommendations, or permission-seeking for a safe action. Execute first, verify, then report.",
+        "- A hard gate is not disagreement. Complete safe prework, name the exact gate, and ask only for the minimum unblock.",
+      ] : []),
       ...(parallel.intentHorizon?.enabled ? [
         "- After the requested outcome verifies, run the required one-time Intent Horizon exploratory sweep across the routed project and direct call-graph neighborhood.",
         `- Generate up to ${parallel.intentHorizon.sweep.maxCandidates} concrete upgrades and implement the highest-scoring ${parallel.intentHorizon.sweep.maxAutoApply} that pass the ownership, reversibility, authority, and binary-verification gates.`,
@@ -460,6 +470,9 @@ function formatCompactDispatchContext({ surface, plan, autoDispatchedTasks = [] 
       (route.blockedBy.length ? ` blocked=${formatList(route.blockedBy)}` : "") +
       (parallel.blockedReasons.length ? ` fanout_blocked=${formatList(parallel.blockedReasons)}` : ""),
     "Route through MyOS Dispatch evaluation order before broad search; respect protected-surface/auth/destructive/send gates.",
+    parallel.intentFidelity?.enabled
+      ? `[Intent Fidelity contract] ${parallel.intentFidelity.version} precedence=${parallel.intentFidelity.precedence[0]} default=${parallel.intentFidelity.defaultDecision} correction=${parallel.intentFidelity.correctionDetected ? "yes" : "no"}`
+      : "",
     parallel.intentHorizon?.enabled
       ? `[Intent Horizon contract] ${parallel.intentHorizon.version} sweep=required-once candidates=${parallel.intentHorizon.sweep.maxCandidates} auto_apply=${parallel.intentHorizon.sweep.maxAutoApply} depth=${parallel.intentHorizon.sweep.maxCausalDepth}`
       : "",
@@ -1255,6 +1268,7 @@ function handleUserPromptSubmit(payload, surface, options = {}) {
     capabilityId: routeObj.capabilityId || null,
     branch: routeObj.branch || null,
     intentHorizon: routeObj.parallelization?.intentHorizon || null,
+    intentFidelity: routeObj.parallelization?.intentFidelity || null,
     lanesAutoDispatched: autoDispatchedTasks.length,
     agentCallsObserved,
     ...(routeObj.fastpaths ? { fastpaths: routeObj.fastpaths } : {}),
@@ -1298,6 +1312,7 @@ function handlePreToolUse(payload, surface, options = {}) {
     cwd: safeString(payload.cwd || process.cwd()),
     route: route.route,
     intentHorizon: route.route?.parallelization?.intentHorizon || null,
+    intentFidelity: route.route?.parallelization?.intentFidelity || null,
     ...(route.route?.fastpaths ? { fastpaths: route.route.fastpaths } : {}),
   });
   const updatedInput = options.rewrite ? buildRtkRewrite(payload) : null;
