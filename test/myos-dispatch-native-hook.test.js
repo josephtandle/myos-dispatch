@@ -44,6 +44,51 @@ test("UserPromptSubmit (Codex surface) emits full route with fanout mandate and 
   assert.match(context, /myos_code_mapper|myos_lane_lead/);
   assert.match(context, /read-only lane\(s\) listed above/i);
   assert.match(context, /runner-owned writable lane/i);
+  assert.match(context, /\[Intent Horizon contract\]/);
+});
+
+test("Claude and Codex receive the same Intent Horizon contract for the same actionable request", () => {
+  const payload = {
+    hook_event_name: "UserPromptSubmit",
+    cwd: process.cwd(),
+    prompt: "Implement the report pipeline, verify the behavior, and update its documentation",
+  };
+  const getContract = (surface) => {
+    const output = handleHookPayload(payload, surface, { contextMode: "full", rewrite: false });
+    const context = output?.hookSpecificOutput?.additionalContext || "";
+    return context.match(/\[Intent Horizon contract\][^\n]*/)?.[0] || null;
+  };
+
+  assert.equal(getContract("claude"), getContract("codex"));
+  assert.match(getContract("codex") || "", /sweep=required-once candidates=8 auto_apply=4 causal_depth=2/);
+});
+
+test("Claude and Codex receive the same Intent Fidelity contract for a correction", () => {
+  const payload = {
+    hook_event_name: "UserPromptSubmit",
+    cwd: process.cwd(),
+    prompt: "No, I said keep the current design and finish the implementation",
+  };
+  const getContract = (surface) => {
+    const output = handleHookPayload(payload, surface, { contextMode: "full", rewrite: false });
+    const context = output?.hookSpecificOutput?.additionalContext || "";
+    return context.match(/\[Intent Fidelity contract\][^\n]*/)?.[0] || null;
+  };
+
+  assert.equal(getContract("claude"), getContract("codex"));
+  assert.match(getContract("codex") || "", /precedence=latest_explicit_instruction/);
+  assert.match(getContract("codex") || "", /correction=yes/);
+});
+
+test("Intent Horizon stays off for trivial and hard-gated requests", () => {
+  for (const prompt of ["What is the version?", "Send this email to the client"]) {
+    const output = handleHookPayload({
+      hook_event_name: "UserPromptSubmit",
+      cwd: process.cwd(),
+      prompt,
+    }, "codex", { contextMode: "full", rewrite: false });
+    assert.doesNotMatch(output?.hookSpecificOutput?.additionalContext || "", /\[Intent Horizon contract\]/);
+  }
 });
 
 test("UserPromptSubmit emits compact MyOS Dispatch route context", () => {
@@ -210,6 +255,75 @@ test("compactRoute omits fastpaths field when fastpathMatches is missing, empty,
   assert.equal(compactRoute({ fastpathMatches: [{}, null, { fastpath: {} }] }).fastpaths, undefined);
 });
 
+test("compactRoute preserves the machine-consumable Intent Horizon contract", () => {
+  const intentHorizon = {
+    version: "intent-horizon-v1",
+    enabled: true,
+    sweep: { maxCandidates: 8, maxAutoApply: 4, maxCausalDepth: 2, maxRuns: 1 },
+  };
+  const route = compactRoute({
+    parallelizationPlan: {
+      executionEnvelope: { level: "gold", features: { intentHorizon } },
+    },
+  });
+
+  assert.deepEqual(route.parallelization.intentHorizon, intentHorizon);
+});
+
+test("compactRoute preserves the machine-consumable Intent Fidelity contract", () => {
+  const intentFidelity = {
+    version: "intent-fidelity-v1",
+    enabled: true,
+    correctionDetected: true,
+    precedence: ["latest_explicit_instruction"],
+    defaultDecision: "execute_next_safe_step",
+  };
+  const route = compactRoute({
+    parallelizationPlan: {
+      executionEnvelope: { level: "gold", features: { intentFidelity } },
+    },
+  });
+
+  assert.deepEqual(route.parallelization.intentFidelity, intentFidelity);
+});
+
+test("UserPromptSubmit and PreToolUse route logs carry the Intent Fidelity contract", () => {
+  const tmpLogDir = fs.mkdtempSync(path.join(os.tmpdir(), "myos-dispatch-hook-intent-fidelity-"));
+  const origLogDir = process.env.MYOS_DISPATCH_HOOK_LOG_DIR;
+  process.env.MYOS_DISPATCH_HOOK_LOG_DIR = tmpLogDir;
+
+  try {
+    handleHookPayload({
+      hook_event_name: "UserPromptSubmit",
+      cwd: process.cwd(),
+      prompt: "Actually, use the current design and finish it",
+    }, "codex");
+
+    handleHookPayload({
+      hook_event_name: "PreToolUse",
+      cwd: process.cwd(),
+      tool_name: "Bash",
+      tool_input: { command: "git status" },
+    }, "codex", { contextMode: "compact", rewrite: false });
+
+    const logFile = path.join(tmpLogDir, "myos-dispatch-hooks.jsonl");
+    const lines = fs.readFileSync(logFile, "utf8").trim().split("\n");
+    const userPromptRecord = JSON.parse(lines[0]);
+    const preToolRecord = JSON.parse(lines[1]);
+
+    assert.equal(userPromptRecord.intentFidelity?.version, "intent-fidelity-v1");
+    assert.equal(userPromptRecord.intentFidelity?.correctionDetected, true);
+    assert.equal(preToolRecord.intentFidelity?.version, "intent-fidelity-v1");
+    assert.equal(preToolRecord.intentFidelity?.enabled, true);
+  } finally {
+    if (origLogDir !== undefined) {
+      process.env.MYOS_DISPATCH_HOOK_LOG_DIR = origLogDir;
+    } else {
+      delete process.env.MYOS_DISPATCH_HOOK_LOG_DIR;
+    }
+  }
+});
+
 test("formatDispatchContext injected context text is byte-identical whether fastpaths are present or omitted", () => {
   const basePlan = {
     branch: "fastpath",
@@ -280,6 +394,8 @@ test("appendRouteLog records fastpaths on UserPromptSubmit and PreToolUse callsi
       assert.ok(Array.isArray(userPromptRecord.fastpaths));
       assert.ok(userPromptRecord.fastpaths.length <= 5);
     }
+    assert.equal(userPromptRecord.intentHorizon?.version, "intent-horizon-v1");
+    assert.equal(userPromptRecord.intentFidelity?.version, "intent-fidelity-v1");
 
     const preToolRecord = JSON.parse(lines[1]);
     assert.equal(preToolRecord.hookEventName, "PreToolUse");
@@ -295,5 +411,3 @@ test("appendRouteLog records fastpaths on UserPromptSubmit and PreToolUse callsi
     }
   }
 });
-
-

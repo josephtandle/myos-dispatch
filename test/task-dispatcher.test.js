@@ -222,6 +222,34 @@ test("runRecipe normalizes route metadata for a core recipe", async () => {
   assert.equal(result.metadata.route.owner, "shared");
 });
 
+test("dispatchTask persists compact capability adoption evidence", async () => {
+  const chatId = `capability-adoption-${Date.now()}`;
+
+  await dispatchTask({
+    chatId,
+    text: "make a note that says hello world",
+    dispatchPlan: {
+      branch: "capability",
+      capabilityId: "agent:example",
+      route: { lane: "recipe_dispatcher" },
+    },
+  });
+
+  const events = fs.readFileSync(process.env.MYOS_DISPATCHER_EVENTS_FILE, "utf8")
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line));
+  const event = events.find((candidate) => candidate.chatId === chatId);
+
+  assert.deepEqual(event.outcome.dispatchPlan, {
+    branch: "capability",
+    route: {
+      lane: "recipe_dispatcher",
+      capabilityId: "agent:example",
+    },
+  });
+});
+
 test("dispatchTask executes deterministic data lookup lanes without worker fallback", async () => {
   const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "task-dispatcher-data-"));
   const workspaceRoot = path.join(homeDir, ".myos", "workspace");
@@ -236,7 +264,13 @@ test("dispatchTask executes deterministic data lookup lanes without worker fallb
     JSON.stringify({
       version: 1,
       dataSources: [
-        { id: "entities", label: "entities.md", mode: "content", path: "data/entities.md", matchTerms: ["ein", "entity info"] },
+        {
+          id: "entities",
+          label: "entities.md",
+          mode: "content",
+          path: path.join(workspaceRoot, "data", "entities.md"),
+          matchTerms: ["ein", "entity info"],
+        },
       ],
     }),
     "utf8",

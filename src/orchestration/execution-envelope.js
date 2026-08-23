@@ -1,5 +1,8 @@
 "use strict";
 
+const { buildIntentFidelityPolicy } = require("./intent-fidelity");
+const { buildIntentHorizonPolicy } = require("./intent-horizon");
+
 const ORCHESTRATION_VERSION = "myos-orchestration-gold-v1";
 
 const AGENT_PROFILES = Object.freeze({
@@ -115,9 +118,26 @@ function buildExecutionEnvelope(input, basePlan = {}, options = {}) {
   const scheduleIntent = SCHEDULE_RE.test(text) || unattended;
   const actionType = String(basePlan.actionType || "read").toLowerCase();
   const blockedReasons = Array.isArray(options.blockedReasons) ? options.blockedReasons : [];
+  const goalBlockedReasons = Array.isArray(basePlan.blockedBy) ? basePlan.blockedBy : [];
+  const allBlockedReasons = [...new Set([...blockedReasons, ...goalBlockedReasons])];
   const writeRequested = actionType === "write";
   const reusable = REUSABLE_RE.test(text) || scheduleIntent;
   const featureEnabled = (key) => !disabled && String(env[key] ?? "1") !== "0";
+  const intentHorizon = buildIntentHorizonPolicy({
+    goalScale: basePlan.goalScale,
+    actionType,
+    trustClass: scheduleIntent ? "scheduled_read" : "interactive",
+    taskClass: basePlan.taskClass || options.taskClass,
+    blockedBy: allBlockedReasons,
+    maxWallTimeMs: options.maxWallTimeMs,
+    maxContinuationAttempts: options.maxContinuationAttempts,
+  }, { env });
+  const intentFidelity = buildIntentFidelityPolicy({
+    text,
+    trustClass: scheduleIntent ? "scheduled_read" : "interactive",
+    taskClass: basePlan.taskClass || options.taskClass,
+    blockedBy: allBlockedReasons,
+  }, { env });
 
   return {
     version: ORCHESTRATION_VERSION,
@@ -152,6 +172,8 @@ function buildExecutionEnvelope(input, basePlan = {}, options = {}) {
         killSwitch: "MYOS_BACKGROUND_AGENTS_ENABLED=0",
       },
       goalMode: buildGoalPolicy(text, basePlan),
+      intentFidelity,
+      intentHorizon,
       skillsAndPlugins: {
         selected: reusable && featureEnabled("MYOS_CODEX_PLUGIN_ROUTING_ENABLED"),
         maturity: "gold_inventory_canary_execution",
