@@ -1,6 +1,6 @@
 "use strict";
 
-const CORRECTION_RE = /(?:\b(?:actually|instead|i said|i want|correction|change that|undo that|not that)\b|(?:^|\s)no\b[\s,:-]*)/i;
+const CORRECTION_RE = /(?:\b(?:actually|instead|i said|correction|change that|undo that|not that)\b|(?:^|\s)no\b[\s,:-]*)/i;
 
 function buildIntentFidelityPolicy(input = {}, options = {}) {
   const env = options.env || process.env;

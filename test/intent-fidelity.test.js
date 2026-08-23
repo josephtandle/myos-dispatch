@@ -42,6 +42,20 @@ test("interactive fallback routes still receive Intent Fidelity without a task c
   assert.equal(policy.hardGateResponse.weakenGate, false);
 });
 
+test("an ordinary first-pass preference is not mislabeled as a correction", () => {
+  const firstPass = buildIntentFidelityPolicy({
+    text: "I want the logo bigger",
+    trustClass: "interactive",
+  });
+  const correction = buildIntentFidelityPolicy({
+    text: "No, I want the logo bigger instead",
+    trustClass: "interactive",
+  });
+
+  assert.equal(firstPass.correctionDetected, false);
+  assert.equal(correction.correctionDetected, true);
+});
+
 test("a real hard gate is named exactly after safe prework, without turning it into disagreement", () => {
   const policy = buildIntentFidelityPolicy({
     text: "Send the final email to the customer",
