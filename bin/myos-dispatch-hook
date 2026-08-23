@@ -202,8 +202,27 @@ function sha256(value) {
   return crypto.createHash("sha256").update(String(value || "")).digest("hex");
 }
 
+function extractFastpaths(plan) {
+  if (!plan || !Array.isArray(plan.fastpathMatches) || plan.fastpathMatches.length === 0) {
+    return undefined;
+  }
+  const identifiers = [];
+  for (const match of plan.fastpathMatches) {
+    if (!match) continue;
+    const fp = match.fastpath || match;
+    const capId = typeof fp.capability_id === "string" ? fp.capability_id.trim() : "";
+    const intent = typeof fp.intent === "string" ? fp.intent.trim() : "";
+    const id = capId || intent;
+    if (id && !identifiers.includes(id)) {
+      identifiers.push(id);
+      if (identifiers.length >= 5) break;
+    }
+  }
+  return identifiers.length > 0 ? identifiers : undefined;
+}
+
 function compactRoute(plan) {
-  const parallel = plan.parallelizationPlan || {};
+  const parallel = plan?.parallelizationPlan || {};
   const tasks = Array.isArray(parallel.backgroundTasks)
     ? parallel.backgroundTasks.map((task) => ({
         id: task.id || "",
@@ -226,26 +245,28 @@ function compactRoute(plan) {
       task.agentProfile = task.fallbackAgentProfile;
     }
   }
+  const fastpaths = extractFastpaths(plan);
   return {
-    branch: plan.branch || "",
-    intentType: plan.intentType || "",
-    actionType: plan.actionType || "",
-    goalScale: plan.goalScale || null,
-    goalMode: plan.goalMode || "",
-    requiresPlan: Boolean(plan.requiresPlan),
-    requiresApproval: Boolean(plan.requiresApproval),
-    blockedBy: Array.isArray(plan.blockedBy) ? plan.blockedBy : [],
-    stopAfterMatch: Boolean(plan.stopAfterMatch),
-    allowBroadSearch: Boolean(plan.allowBroadSearch),
-    projectSlug: plan.projectSlug || null,
-    searchScope: plan.searchScope || "",
+    branch: plan?.branch || "",
+    intentType: plan?.intentType || "",
+    actionType: plan?.actionType || "",
+    goalScale: plan?.goalScale || null,
+    goalMode: plan?.goalMode || "",
+    requiresPlan: Boolean(plan?.requiresPlan),
+    requiresApproval: Boolean(plan?.requiresApproval),
+    blockedBy: Array.isArray(plan?.blockedBy) ? plan.blockedBy : [],
+    stopAfterMatch: Boolean(plan?.stopAfterMatch),
+    allowBroadSearch: Boolean(plan?.allowBroadSearch),
+    projectSlug: plan?.projectSlug || null,
+    searchScope: plan?.searchScope || "",
     // Logged so the evolver can count what actually matched. Without it the log
     // records a lane, and no faithful bridge from log to observer is possible.
-    capabilityId: plan.capabilityId || null,
-    dataSources: Array.isArray(plan.dataSources) ? plan.dataSources : [],
+    capabilityId: plan?.capabilityId || null,
+    ...(fastpaths ? { fastpaths } : {}),
+    dataSources: Array.isArray(plan?.dataSources) ? plan.dataSources : [],
     route: {
-      lane: plan.route?.lane || "",
-      reason: plan.route?.reason || "",
+      lane: plan?.route?.lane || "",
+      reason: plan?.route?.reason || "",
     },
     parallelization: {
       version: parallel.version || "",
@@ -266,8 +287,8 @@ function compactRoute(plan) {
       orchestrationEnabled,
     },
     typedEvidence: {
-      authoritative: Boolean(plan.shadowDispatch?.authoritative),
-      activeStage: plan.shadowDispatch?.activeStage || "",
+      authoritative: Boolean(plan?.shadowDispatch?.authoritative),
+      activeStage: plan?.shadowDispatch?.activeStage || "",
     },
   };
 }
@@ -1222,6 +1243,7 @@ function handleUserPromptSubmit(payload, surface, options = {}) {
     branch: routeObj.branch || null,
     lanesAutoDispatched: autoDispatchedTasks.length,
     agentCallsObserved,
+    ...(routeObj.fastpaths ? { fastpaths: routeObj.fastpaths } : {}),
   });
 
   return outputHookContext("UserPromptSubmit", routeContextText);
@@ -1261,6 +1283,7 @@ function handlePreToolUse(payload, surface, options = {}) {
     inputLength: command.length,
     cwd: safeString(payload.cwd || process.cwd()),
     route: route.route,
+    ...(route.route?.fastpaths ? { fastpaths: route.route.fastpaths } : {}),
   });
   const updatedInput = options.rewrite ? buildRtkRewrite(payload) : null;
   // Route evidence is already logged above. When there is nothing actionable
