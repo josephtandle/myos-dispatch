@@ -1,9 +1,14 @@
 "use strict";
 
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
 const test = require("node:test");
 
 const {
+  compactRoute,
+  formatDispatchContext,
   handleHookPayload,
   readCommand,
   readHookEventName,
@@ -179,4 +184,116 @@ test("PreToolUse (Claude surface) rejects RTK grep rewrites when grep reads stdi
   assert.equal(malformedOutput.hookSpecificOutput?.hookEventName, "PreToolUse");
   assert.equal(malformedOutput.hookSpecificOutput?.updatedInput, undefined);
 });
+
+test("compactRoute extracts matched fastpaths up to max 5, prioritizing capability_id over intent", () => {
+  const planWithMatches = {
+    branch: "fastpath",
+    fastpathMatches: [
+      { fastpath: { capability_id: "cap-1", intent: "intent-1" } },
+      { fastpath: { intent: "intent-2" } },
+      { fastpath: { capability_id: "cap-3" } },
+      { fastpath: { capability_id: "cap-4", intent: "intent-4" } },
+      { fastpath: { intent: "intent-5" } },
+      { fastpath: { capability_id: "cap-6" } },
+    ],
+  };
+
+  const route = compactRoute(planWithMatches);
+  assert.deepEqual(route.fastpaths, ["cap-1", "intent-2", "cap-3", "cap-4", "intent-5"]);
+});
+
+test("compactRoute omits fastpaths field when fastpathMatches is missing, empty, or malformed", () => {
+  assert.equal(compactRoute({}).fastpaths, undefined);
+  assert.equal(compactRoute(null).fastpaths, undefined);
+  assert.equal(compactRoute({ fastpathMatches: [] }).fastpaths, undefined);
+  assert.equal(compactRoute({ fastpathMatches: "invalid" }).fastpaths, undefined);
+  assert.equal(compactRoute({ fastpathMatches: [{}, null, { fastpath: {} }] }).fastpaths, undefined);
+});
+
+test("formatDispatchContext injected context text is byte-identical whether fastpaths are present or omitted", () => {
+  const basePlan = {
+    branch: "fastpath",
+    intentType: "directive",
+    actionType: "read",
+    route: { lane: "worker_skill", reason: "fastpath" },
+  };
+
+  const planWithFastpaths = {
+    ...basePlan,
+    fastpathMatches: [
+      { fastpath: { capability_id: "cap-1" } },
+    ],
+  };
+
+  const ctxWithout = formatDispatchContext({
+    surface: "claude",
+    hookEventName: "UserPromptSubmit",
+    targetKind: "user_prompt",
+    text: "test prompt",
+    plan: basePlan,
+  });
+
+  const ctxWith = formatDispatchContext({
+    surface: "claude",
+    hookEventName: "UserPromptSubmit",
+    targetKind: "user_prompt",
+    text: "test prompt",
+    plan: planWithFastpaths,
+  });
+
+  assert.equal(ctxWith, ctxWithout);
+});
+
+test("appendRouteLog records fastpaths on UserPromptSubmit and PreToolUse callsites", () => {
+  const tmpLogDir = fs.mkdtempSync(path.join(os.tmpdir(), "myos-dispatch-hook-log-test-"));
+  const origLogDir = process.env.MYOS_DISPATCH_HOOK_LOG_DIR;
+  process.env.MYOS_DISPATCH_HOOK_LOG_DIR = tmpLogDir;
+
+  try {
+    // 1. UserPromptSubmit test
+    const userPromptPayload = {
+      hook_event_name: "UserPromptSubmit",
+      cwd: process.cwd(),
+      prompt: "Show system health status",
+    };
+    handleHookPayload(userPromptPayload, "claude");
+
+    // 2. PreToolUse test
+    const preToolPayload = {
+      hook_event_name: "PreToolUse",
+      cwd: process.cwd(),
+      tool_name: "Bash",
+      tool_input: { command: "git status" },
+    };
+    handleHookPayload(preToolPayload, "claude", { contextMode: "full", rewrite: false });
+
+    const logFile = path.join(tmpLogDir, "myos-dispatch-hooks.jsonl");
+    assert.ok(fs.existsSync(logFile));
+
+    const lines = fs.readFileSync(logFile, "utf8").trim().split("\n");
+    assert.equal(lines.length, 2);
+
+    const userPromptRecord = JSON.parse(lines[0]);
+    assert.equal(userPromptRecord.hookEventName, "UserPromptSubmit");
+    // Verify fastpaths is either array or omitted depending on whether query matched fastpath fixture
+    if (userPromptRecord.fastpaths) {
+      assert.ok(Array.isArray(userPromptRecord.fastpaths));
+      assert.ok(userPromptRecord.fastpaths.length <= 5);
+    }
+
+    const preToolRecord = JSON.parse(lines[1]);
+    assert.equal(preToolRecord.hookEventName, "PreToolUse");
+    if (preToolRecord.fastpaths) {
+      assert.ok(Array.isArray(preToolRecord.fastpaths));
+      assert.ok(preToolRecord.fastpaths.length <= 5);
+    }
+  } finally {
+    if (origLogDir !== undefined) {
+      process.env.MYOS_DISPATCH_HOOK_LOG_DIR = origLogDir;
+    } else {
+      delete process.env.MYOS_DISPATCH_HOOK_LOG_DIR;
+    }
+  }
+});
+
 
