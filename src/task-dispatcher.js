@@ -571,6 +571,16 @@ function summarizeGoalRoute(goalMetadata = {}) {
   };
 }
 
+function summarizeAdoptionRoute(dispatchPlan = {}) {
+  return {
+    branch: dispatchPlan.branch || null,
+    route: {
+      lane: dispatchPlan.route?.lane || null,
+      capabilityId: dispatchPlan.capabilityId || dispatchPlan.route?.capabilityId || null,
+    },
+  };
+}
+
 async function dispatchTask(request = {}) {
   const startedAt = Date.now();
   const eventId = `dispatch-${Date.now()}-${randomUUID().slice(0, 8)}`;
@@ -597,6 +607,7 @@ async function dispatchTask(request = {}) {
     ...goalMetadata,
   };
   const routeLane = dispatchPlan.route?.lane || null;
+  const adoptionRoute = summarizeAdoptionRoute(dispatchPlan);
 
   if (dispatchPlan.branch === "data" && routeLane !== "data_lookup") {
     appendDispatcherEvent({
@@ -613,6 +624,7 @@ async function dispatchTask(request = {}) {
       goal: goalMetadata,
       outcome: {
         type: "data_lookup_skipped",
+        dispatchPlan: adoptionRoute,
         routeLane,
         fallbackReason: dispatchPlan.dataLookupCanary?.reason || "lane_not_data_lookup",
         dataSources: Array.isArray(dispatchPlan.dataSources) ? dispatchPlan.dataSources : [],
@@ -649,6 +661,7 @@ async function dispatchTask(request = {}) {
       goal: goalMetadata,
       outcome: {
         type: "data_lookup",
+        dispatchPlan: adoptionRoute,
         recipeId: "data/lookup",
         dataSources: result.metadata?.dataLookup?.dataSources || [],
         searchScope: result.metadata?.dataLookup?.searchScope || null,
@@ -694,6 +707,7 @@ async function dispatchTask(request = {}) {
         goal: goalMetadata,
         outcome: {
           type: "recipe",
+          dispatchPlan: adoptionRoute,
           recipeId: candidate.recipe.id,
           layer: candidate.recipe.layer,
           owner: candidate.recipe.owner,
@@ -717,6 +731,7 @@ async function dispatchTask(request = {}) {
           goal: goalMetadata,
           outcome: {
             type: "error",
+            dispatchPlan: adoptionRoute,
             recipeId: candidate.recipe.id,
             errorCode: error?.code || "DISPATCH_ERROR",
             errorMessage: error?.message || "Unknown dispatch error",
@@ -776,6 +791,7 @@ async function dispatchTask(request = {}) {
       goal: goalMetadata,
       outcome: {
         type: "worker",
+        dispatchPlan: adoptionRoute,
         recipeId: "fallback/worker",
         fallbackFromRecipeId: candidates[0]?.recipe?.id || null,
         artifactCount: Array.isArray(result.artifacts) ? result.artifacts.length : 0,
@@ -799,6 +815,7 @@ async function dispatchTask(request = {}) {
     goal: goalMetadata,
     outcome: {
       type: "error",
+      dispatchPlan: adoptionRoute,
       errorCode: "NO_ROUTE",
       errorMessage: "No matching recipe and no fallback configured",
     },

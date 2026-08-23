@@ -2,6 +2,23 @@
 
 All notable changes to MyOS Dispatch are documented here.
 
+## v3.6.0 - 2026-08-23
+
+### Added
+
+- **Capability adoption telemetry.** Every task-dispatcher outcome now persists the compact branch, lane, and capability ID supplied by its precomputed Dispatch plan in `outcome.dispatchPlan`. Direct callers without a precomputed plan remain explicitly unattributed. This closes the gap between capability selection and the append-only event ledger, so downstream usefulness loops can measure actual adoption without changing route scoring, health classification, quarantine, or promotion behavior.
+
+## v3.5.3 - 2026-08-22
+
+### Added
+
+- **FastPath hit telemetry.** Hook route records include the matched FastPath IDs needed by the lifecycle loop.
+- **Goal policy single source of truth.** Goal-scale defaults load from the canonical policy file instead of drifting across callers.
+
+### Fixed
+
+- **Route-context deduplication.** Repeated hook context is emitted once per turn and suppressed when the block is unchanged.
+
 ## v3.5.2 - 2026-08-21
 
 ### Fixed
