@@ -1,0 +1,240 @@
+diff --git a/bin/myos-dispatch-hook b/bin/myos-dispatch-hook
+index 061b04f..600ce2d 100755
+--- a/bin/myos-dispatch-hook
++++ b/bin/myos-dispatch-hook
+@@ -202,8 +202,27 @@ function sha256(value) {
+   return crypto.createHash("sha256").update(String(value || "")).digest("hex");
+ }
+ 
++function extractFastpaths(plan) {
++  if (!plan || !Array.isArray(plan.fastpathMatches) || plan.fastpathMatches.length === 0) {
++    return undefined;
++  }
++  const identifiers = [];
++  for (const match of plan.fastpathMatches) {
++    if (!match) continue;
++    const fp = match.fastpath || match;
++    const capId = typeof fp.capability_id === "string" ? fp.capability_id.trim() : "";
++    const intent = typeof fp.intent === "string" ? fp.intent.trim() : "";
++    const id = capId || intent;
++    if (id && !identifiers.includes(id)) {
++      identifiers.push(id);
++      if (identifiers.length >= 5) break;
++    }
++  }
++  return identifiers.length > 0 ? identifiers : undefined;
++}
++
+ function compactRoute(plan) {
+-  const parallel = plan.parallelizationPlan || {};
++  const parallel = plan?.parallelizationPlan || {};
+   const tasks = Array.isArray(parallel.backgroundTasks)
+     ? parallel.backgroundTasks.map((task) => ({
+         id: task.id || "",
+@@ -226,26 +245,28 @@ function compactRoute(plan) {
+       task.agentProfile = task.fallbackAgentProfile;
+     }
+   }
++  const fastpaths = extractFastpaths(plan);
+   return {
+-    branch: plan.branch || "",
+-    intentType: plan.intentType || "",
+-    actionType: plan.actionType || "",
+-    goalScale: plan.goalScale || null,
+-    goalMode: plan.goalMode || "",
+-    requiresPlan: Boolean(plan.requiresPlan),
+-    requiresApproval: Boolean(plan.requiresApproval),
+-    blockedBy: Array.isArray(plan.blockedBy) ? plan.blockedBy : [],
+-    stopAfterMatch: Boolean(plan.stopAfterMatch),
+-    allowBroadSearch: Boolean(plan.allowBroadSearch),
+-    projectSlug: plan.projectSlug || null,
+-    searchScope: plan.searchScope || "",
++    branch: plan?.branch || "",
++    intentType: plan?.intentType || "",
++    actionType: plan?.actionType || "",
++    goalScale: plan?.goalScale || null,
++    goalMode: plan?.goalMode || "",
++    requiresPlan: Boolean(plan?.requiresPlan),
++    requiresApproval: Boolean(plan?.requiresApproval),
++    blockedBy: Array.isArray(plan?.blockedBy) ? plan.blockedBy : [],
++    stopAfterMatch: Boolean(plan?.stopAfterMatch),
++    allowBroadSearch: Boolean(plan?.allowBroadSearch),
++    projectSlug: plan?.projectSlug || null,
++    searchScope: plan?.searchScope || "",
+     // Logged so the evolver can count what actually matched. Without it the log
+     // records a lane, and no faithful bridge from log to observer is possible.
+-    capabilityId: plan.capabilityId || null,
+-    dataSources: Array.isArray(plan.dataSources) ? plan.dataSources : [],
++    capabilityId: plan?.capabilityId || null,
++    ...(fastpaths ? { fastpaths } : {}),
++    dataSources: Array.isArray(plan?.dataSources) ? plan.dataSources : [],
+     route: {
+-      lane: plan.route?.lane || "",
+-      reason: plan.route?.reason || "",
++      lane: plan?.route?.lane || "",
++      reason: plan?.route?.reason || "",
+     },
+     parallelization: {
+       version: parallel.version || "",
+@@ -266,8 +287,8 @@ function compactRoute(plan) {
+       orchestrationEnabled,
+     },
+     typedEvidence: {
+-      authoritative: Boolean(plan.shadowDispatch?.authoritative),
+-      activeStage: plan.shadowDispatch?.activeStage || "",
++      authoritative: Boolean(plan?.shadowDispatch?.authoritative),
++      activeStage: plan?.shadowDispatch?.activeStage || "",
+     },
+   };
+ }
+@@ -1222,6 +1243,7 @@ function handleUserPromptSubmit(payload, surface, options = {}) {
+     branch: routeObj.branch || null,
+     lanesAutoDispatched: autoDispatchedTasks.length,
+     agentCallsObserved,
++    ...(routeObj.fastpaths ? { fastpaths: routeObj.fastpaths } : {}),
+   });
+ 
+   return outputHookContext("UserPromptSubmit", routeContextText);
+@@ -1261,6 +1283,7 @@ function handlePreToolUse(payload, surface, options = {}) {
+     inputLength: command.length,
+     cwd: safeString(payload.cwd || process.cwd()),
+     route: route.route,
++    ...(route.route?.fastpaths ? { fastpaths: route.route.fastpaths } : {}),
+   });
+   const updatedInput = options.rewrite ? buildRtkRewrite(payload) : null;
+   // Route evidence is already logged above. When there is nothing actionable
+diff --git a/test/myos-dispatch-native-hook.test.js b/test/myos-dispatch-native-hook.test.js
+index 7a03507..46b92de 100644
+--- a/test/myos-dispatch-native-hook.test.js
++++ b/test/myos-dispatch-native-hook.test.js
+@@ -1,9 +1,14 @@
+ "use strict";
+ 
+ const assert = require("node:assert/strict");
++const fs = require("node:fs");
++const os = require("node:os");
++const path = require("node:path");
+ const test = require("node:test");
+ 
+ const {
++  compactRoute,
++  formatDispatchContext,
+   handleHookPayload,
+   readCommand,
+   readHookEventName,
+@@ -180,3 +185,115 @@ test("PreToolUse (Claude surface) rejects RTK grep rewrites when grep reads stdi
+   assert.equal(malformedOutput.hookSpecificOutput?.updatedInput, undefined);
+ });
+ 
++test("compactRoute extracts matched fastpaths up to max 5, prioritizing capability_id over intent", () => {
++  const planWithMatches = {
++    branch: "fastpath",
++    fastpathMatches: [
++      { fastpath: { capability_id: "cap-1", intent: "intent-1" } },
++      { fastpath: { intent: "intent-2" } },
++      { fastpath: { capability_id: "cap-3" } },
++      { fastpath: { capability_id: "cap-4", intent: "intent-4" } },
++      { fastpath: { intent: "intent-5" } },
++      { fastpath: { capability_id: "cap-6" } },
++    ],
++  };
++
++  const route = compactRoute(planWithMatches);
++  assert.deepEqual(route.fastpaths, ["cap-1", "intent-2", "cap-3", "cap-4", "intent-5"]);
++});
++
++test("compactRoute omits fastpaths field when fastpathMatches is missing, empty, or malformed", () => {
++  assert.equal(compactRoute({}).fastpaths, undefined);
++  assert.equal(compactRoute(null).fastpaths, undefined);
++  assert.equal(compactRoute({ fastpathMatches: [] }).fastpaths, undefined);
++  assert.equal(compactRoute({ fastpathMatches: "invalid" }).fastpaths, undefined);
++  assert.equal(compactRoute({ fastpathMatches: [{}, null, { fastpath: {} }] }).fastpaths, undefined);
++});
++
++test("formatDispatchContext injected context text is byte-identical whether fastpaths are present or omitted", () => {
++  const basePlan = {
++    branch: "fastpath",
++    intentType: "directive",
++    actionType: "read",
++    route: { lane: "worker_skill", reason: "fastpath" },
++  };
++
++  const planWithFastpaths = {
++    ...basePlan,
++    fastpathMatches: [
++      { fastpath: { capability_id: "cap-1" } },
++    ],
++  };
++
++  const ctxWithout = formatDispatchContext({
++    surface: "claude",
++    hookEventName: "UserPromptSubmit",
++    targetKind: "user_prompt",
++    text: "test prompt",
++    plan: basePlan,
++  });
++
++  const ctxWith = formatDispatchContext({
++    surface: "claude",
++    hookEventName: "UserPromptSubmit",
++    targetKind: "user_prompt",
++    text: "test prompt",
++    plan: planWithFastpaths,
++  });
++
++  assert.equal(ctxWith, ctxWithout);
++});
++
++test("appendRouteLog records fastpaths on UserPromptSubmit and PreToolUse callsites", () => {
++  const tmpLogDir = fs.mkdtempSync(path.join(os.tmpdir(), "myos-dispatch-hook-log-test-"));
++  const origLogDir = process.env.MYOS_DISPATCH_HOOK_LOG_DIR;
++  process.env.MYOS_DISPATCH_HOOK_LOG_DIR = tmpLogDir;
++
++  try {
++    // 1. UserPromptSubmit test
++    const userPromptPayload = {
++      hook_event_name: "UserPromptSubmit",
++      cwd: process.cwd(),
++      prompt: "Show system health status",
++    };
++    handleHookPayload(userPromptPayload, "claude");
++
++    // 2. PreToolUse test
++    const preToolPayload = {
++      hook_event_name: "PreToolUse",
++      cwd: process.cwd(),
++      tool_name: "Bash",
++      tool_input: { command: "git status" },
++    };
++    handleHookPayload(preToolPayload, "claude", { contextMode: "full", rewrite: false });
++
++    const logFile = path.join(tmpLogDir, "myos-dispatch-hooks.jsonl");
++    assert.ok(fs.existsSync(logFile));
++
++    const lines = fs.readFileSync(logFile, "utf8").trim().split("\n");
++    assert.equal(lines.length, 2);
++
++    const userPromptRecord = JSON.parse(lines[0]);
++    assert.equal(userPromptRecord.hookEventName, "UserPromptSubmit");
++    // Verify fastpaths is either array or omitted depending on whether query matched fastpath fixture
++    if (userPromptRecord.fastpaths) {
++      assert.ok(Array.isArray(userPromptRecord.fastpaths));
++      assert.ok(userPromptRecord.fastpaths.length <= 5);
++    }
++
++    const preToolRecord = JSON.parse(lines[1]);
++    assert.equal(preToolRecord.hookEventName, "PreToolUse");
++    if (preToolRecord.fastpaths) {
++      assert.ok(Array.isArray(preToolRecord.fastpaths));
++      assert.ok(preToolRecord.fastpaths.length <= 5);
++    }
++  } finally {
++    if (origLogDir !== undefined) {
++      process.env.MYOS_DISPATCH_HOOK_LOG_DIR = origLogDir;
++    } else {
++      delete process.env.MYOS_DISPATCH_HOOK_LOG_DIR;
++    }
++  }
++});
++
++
