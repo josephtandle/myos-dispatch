@@ -342,6 +342,7 @@ function buildWritablePrompt(task = {}) {
     "- Do not authenticate, refresh tokens, read secret material, or mutate external systems.",
     "- Do not spawn background agents, sidecars, myos-sidecar.js, Codex/Claude/Gemini subagents, or nested workers.",
     "- All fan-out is owned by the parent MyOS Dispatch orchestrator; if more lanes are needed, report that as a finding.",
+    "- Do not start background servers, daemons, or detached processes. This is an execution rule, not enforced process containment.",
     "- Do not commit, apply patches to the source checkout, publish, or change Git configuration.",
     "- Do not access the source checkout. Work only in this worktree; one owner per file.",
     "- Report verification commands and their real results. Your report is not independent review.",
@@ -426,10 +427,11 @@ function buildBackgroundWorkerInvocation(task = {}, options = {}) {
 
 function runCommand({ command, args, cwd, input, timeoutMs, env }) {
   // No scoped Windows Job Object implementation is available here. Refuse to
-  // start a process whose descendants we cannot verify and stop safely.
+  // start a process without the owned-process-group cleanup used on POSIX.
   if (process.platform === "win32") {
     return Promise.resolve({ code: null, signal: null, stdout: "",
-      stderr: "Process-tree quiescence is not supported on Windows", cleanupFailed: true });
+      stderr: "Owned-process-group cleanup is not supported on Windows; use WSL", cleanupFailed: true,
+      cleanupScope: "owned-process-group", ownedGroupStopped: null, treeQuiescence: "unverified" });
   }
   return new Promise((resolve) => {
     const child = spawn(command, args, {
@@ -447,6 +449,7 @@ function runCommand({ command, args, cwd, input, timeoutMs, env }) {
     let killAt;
     let deadline;
     let killed = false;
+    let ownedGroupStopped = null;
     let pollTimer;
     const groupExists = () => {
       if (!child.pid) return false;
@@ -466,7 +469,7 @@ function runCommand({ command, args, cwd, input, timeoutMs, env }) {
       clearTimeout(timeout);
       clearTimeout(pollTimer);
       if (cleanupFailed) {
-        stderr += "\nProcess-tree cleanup failed; quiescence could not be verified";
+        stderr += "\nOwned-process-group cleanup failed; tree quiescence could not be verified";
         // Bound this call even if a surviving process holds inherited pipes.
         child.stdin.destroy();
         child.stdout.destroy();
@@ -474,12 +477,14 @@ function runCommand({ command, args, cwd, input, timeoutMs, env }) {
         child.unref();
       }
       resolve({ code: timedOut || cleanupFailed ? null : exitCode,
-        signal: timedOut ? "SIGTERM" : exitSignal, stdout, stderr, cleanupFailed });
+        signal: timedOut ? "SIGTERM" : exitSignal, stdout, stderr, cleanupFailed,
+        cleanupScope: "owned-process-group", ownedGroupStopped, treeQuiescence: "unverified" });
     };
     const checkTeardown = () => {
       if (settled) return;
       try {
         const alive = groupExists();
+        ownedGroupStopped = child.pid ? !alive : null;
         if (!alive && closed) { finish(false); return; }
         if (alive && !killed && Date.now() >= killAt) {
           stop("SIGKILL");
@@ -528,7 +533,7 @@ function runCommand({ command, args, cwd, input, timeoutMs, env }) {
       exitSignal = signal;
       closed = true;
       beginTeardown();
-      // The running poll must still observe ESRCH; close is not quiescence.
+      // The poll must observe group ESRCH; this cannot prove tree quiescence.
     });
     if (input) child.stdin.write(input);
     child.stdin.end();
@@ -724,6 +729,7 @@ function skippedResult(task, reason, extra = {}) {
     usage: null,
     model: null,
     runner: null,
+    ...(task.mode === EXECUTION_MODES.WRITE ? { reviewRequired: true } : {}),
     ...extra,
   };
 }
@@ -907,8 +913,9 @@ async function runBackgroundTask(task, options = {}) {
   let worktree = null;
   if (effectiveMode === EXECUTION_MODES.WRITE) {
     if (process.platform === "win32") {
-      return skippedResult(normalizedTask, "Writable task refused: process-tree quiescence is not supported on Windows.", {
+      return skippedResult(normalizedTask, "Writable task refused: owned-process-group cleanup is not supported on Windows; use WSL.", {
         status: "failed", reviewRequired: true, cleanupFailed: true,
+        cleanupScope: "owned-process-group", ownedGroupStopped: null, treeQuiescence: "unverified",
       });
     }
     try {
@@ -1040,7 +1047,9 @@ async function runBackgroundTask(task, options = {}) {
     status: ok ? (worktree ? "needs-review" : "completed") : "failed",
     summary: summary || result.stderr || (ok ? "Completed with no output" : "Background task failed"),
     findings: structured?.findings || [],
-    risks: structured?.risks || [],
+    risks: [...(structured?.risks || []), ...(worktree ? [
+      "Detached processes may survive owned-process-group cleanup; the retained worktree may change. Independent review and integration cover only the recorded patch hash, not later worktree contents. Group termination does not establish cleanup or deletion safety.",
+    ] : [])],
     checks: structured?.checks || [],
     confidence: ok ? (structured?.confidence || "medium") : "failed",
     artifacts,
@@ -1053,9 +1062,12 @@ async function runBackgroundTask(task, options = {}) {
     parentTaskId: orchestratorContext.parentTaskId || "root",
     stderr: result.stderr || "",
     cleanupFailed: Boolean(result.cleanupFailed),
+    cleanupScope: result.cleanupScope || "owned-process-group",
+    ownedGroupStopped: typeof result.ownedGroupStopped === "boolean" ? result.ownedGroupStopped : null,
+    treeQuiescence: "unverified",
     ownershipPaths: Array.isArray(normalizedTask.ownershipPaths) ? normalizedTask.ownershipPaths : [],
     writeScope: Array.isArray(normalizedTask.writeScope) ? normalizedTask.writeScope : [],
-    reviewRequired: Boolean(worktree),
+    reviewRequired: normalizedTask.mode === EXECUTION_MODES.WRITE,
     requestedModel: normalizedTask.model || null,
     resolvedModel: invocation.model || null,
     providerReportedModel: writerResponse?.reportedModels?.length === 1 ? writerResponse.reportedModels[0] : null,

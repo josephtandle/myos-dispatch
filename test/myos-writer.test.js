@@ -66,6 +66,8 @@ test("one-shot writer returns a reviewable manifest and exact model without touc
   assert.equal(result.requestedModel, "gpt-6-astra");
   assert.equal(result.resolvedModel, "gpt-6-astra");
   assert.equal(result.providerReportedModel, null);
+  assert.equal(result.ownedGroupStopped, null, "injected runners without cleanup evidence remain unknown");
+  assert.equal(result.treeQuiescence, "unverified");
   assert.equal(result.baseSha, base);
   assert.deepEqual(result.changedFiles, ["new.bin", "owned.txt"]);
   assert.equal(crypto.createHash("sha256").update(fs.readFileSync(result.patchArtifact)).digest("hex"), result.patchSha256);
@@ -172,3 +174,114 @@ test("writer timeout is bounded, defaults to fifteen minutes, and declares its t
   assert.equal(badRuntimeOptions.status, "failed");
   assert.match(badRuntimeOptions.summary, /timeout-ms/);
 });
+
+
+for (const detachedKind of ["writer", "server"]) {
+test(`detached ${detachedKind} can outlive owned-group cleanup without changing the hash-pinned proposal`, { skip: process.platform === "win32" }, async () => {
+  const { runCommand, verifyPatchArtifact } = require("../src/background/background-agent-runner");
+  const repo = repoFixture();
+  const artifacts = fs.mkdtempSync(path.join(os.tmpdir(), "myos-detached-boundary-"));
+  const release = path.join(artifacts, "release");
+  const done = path.join(artifacts, "done");
+  const ready = path.join(artifacts, "ready");
+  const startupError = path.join(artifacts, "startup-error");
+  const waitFor = async (file) => {
+    for (let i = 0; i < 500 && !fs.existsSync(file); i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    assert.equal(fs.existsSync(file), true, `fixture did not create ${file}`);
+  };
+  // This intentionally violates the writer execution rule to demonstrate its
+  // containment boundary. A new session escapes the runner-owned group.
+  const server = `const fs = require("node:fs");
+    const server = require("node:http").createServer((req, res) => res.end("fixture"));
+    let closing = false;
+    const finish = () => {
+      if (closing) return;
+      closing = true;
+      clearInterval(poll);
+      clearTimeout(deadline);
+      setTimeout(() => {
+        fs.writeFileSync("owned.txt", "late detached write\\n");
+        fs.writeFileSync("late-marker.txt", "server survived\\n");
+        server.close(() => fs.writeFileSync(${JSON.stringify(done)}, "done"));
+      }, 100);
+    };
+    const poll = setInterval(() => { if (fs.existsSync(${JSON.stringify(release)})) finish(); }, 20);
+    const deadline = setTimeout(finish, 15000);
+    server.on("error", (error) => {
+      fs.writeFileSync(${JSON.stringify(startupError)}, error.stack);
+      clearInterval(poll); clearTimeout(deadline);
+    });
+    ${detachedKind === "server"
+      ? `server.listen(0, "127.0.0.1", () => fs.writeFileSync(${JSON.stringify(ready)}, String(process.pid)));`
+      : `fs.writeFileSync(${JSON.stringify(ready)}, String(process.pid));`}`;
+  const parent = `const fs = require("node:fs");
+    fs.writeFileSync("owned.txt", "captured proposal\\n");
+    const child = require("node:child_process").spawn(process.execPath, ["-e", ${JSON.stringify(server)}], { detached: true, stdio: "ignore" });
+    child.unref();
+    const deadline = setTimeout(() => process.exit(1), 10000);
+    const poll = setInterval(() => {
+      if (fs.existsSync(${JSON.stringify(startupError)})) {
+        process.stderr.write(fs.readFileSync(${JSON.stringify(startupError)}, "utf8"));
+        process.exit(1);
+      }
+      if (!fs.existsSync(${JSON.stringify(ready)})) return;
+      clearInterval(poll); clearTimeout(deadline);
+      process.stdout.write(${JSON.stringify(output())});
+    }, 20);`;
+  let observedCleanup;
+  try {
+    const result = await require(cli).runWriter(writerOptions(repo), {
+      artifactRoot: artifacts, stateFile: path.join(artifacts, "state.json"),
+      env: { MYOS_BACKGROUND_BACKPRESSURE_ENABLED: "0", MYOS_BACKGROUND_MIN_FREE_DISK_GIB: "0" },
+      runCommand: async ({ cwd, input }) => {
+        assert.match(input, /Do not start background servers, daemons, or detached processes/);
+        observedCleanup = await runCommand({ command: process.execPath, args: ["-e", parent], cwd,
+          env: { PATH: process.env.PATH }, timeoutMs: 12000 });
+        return observedCleanup;
+      },
+    });
+    assert.equal(result.status, "needs-review", JSON.stringify(result));
+    assert.equal(result.reviewRequired, true);
+    assert.equal(result.cleanupScope, "owned-process-group");
+    assert.equal(result.ownedGroupStopped, true);
+    assert.equal(result.treeQuiescence, "unverified");
+    assert.equal(result.cleanupScope, observedCleanup.cleanupScope);
+    assert.equal(result.ownedGroupStopped, observedCleanup.ownedGroupStopped);
+    assert.equal(result.treeQuiescence, observedCleanup.treeQuiescence);
+    assert.match(result.risks.join(" "), /Detached processes may survive/);
+    assert.match(result.risks.join(" "), /retained worktree may change/);
+    assert.match(result.risks.join(" "), /only the recorded patch hash/);
+    const manifest = fs.readFileSync(result.manifestArtifact);
+    assert.equal(JSON.parse(manifest).treeQuiescence, "unverified");
+    assert.equal(JSON.parse(manifest).ownedGroupStopped, true);
+    const patch = fs.readFileSync(result.patchArtifact);
+    const recordedHash = result.patchSha256;
+    assert.equal(path.relative(result.worktreePath, result.patchArtifact).startsWith(".."), true);
+    const replay = path.join(artifacts, "review");
+    git(["worktree", "add", "--detach", replay, result.baseSha], repo);
+    verifyPatchArtifact(result.patchArtifact, recordedHash);
+    git(["apply", "--check", result.patchArtifact], replay);
+    git(["apply", result.patchArtifact], replay);
+    const replayContents = fs.readFileSync(path.join(replay, "owned.txt"));
+    assert.equal(replayContents.toString(), "captured proposal\n");
+    assert.equal(fs.existsSync(path.join(result.worktreePath, "late-marker.txt")), false);
+    fs.writeFileSync(release, "release");
+    await waitFor(done);
+    assert.equal(fs.readFileSync(path.join(result.worktreePath, "late-marker.txt"), "utf8"), "server survived\n");
+    assert.equal(fs.readFileSync(path.join(result.worktreePath, "owned.txt"), "utf8"), "late detached write\n");
+    assert.deepEqual(fs.readFileSync(result.patchArtifact), patch);
+    assert.deepEqual(fs.readFileSync(result.manifestArtifact), manifest);
+    assert.equal(crypto.createHash("sha256").update(patch).digest("hex"), recordedHash);
+    assert.equal(verifyPatchArtifact(result.patchArtifact, recordedHash), true);
+    assert.deepEqual(fs.readFileSync(path.join(replay, "owned.txt")), replayContents);
+    assert.equal(fs.existsSync(path.join(replay, "late-marker.txt")), false);
+    assert.equal(git(["status", "--porcelain"], repo), "");
+  } finally {
+    // Let the real detached fixture finish itself; retain both worktrees.
+    fs.writeFileSync(release, "release");
+    if (fs.existsSync(ready)) await waitFor(done);
+  }
+});
+}

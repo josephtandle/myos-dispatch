@@ -47,6 +47,13 @@ hooks.
   no code changes.
 - **Typed-evidence shadow routing** and **dispatcher-health** self-promotion
   state machines (all observe-only by default; see the `MYOS_*` toggles).
+- **Setup previews** for Claude and Codex hooks, plus a read-only local model report.
+- **Exact model management** with explicit add/select and catalog-only undo; see
+  [models](docs/models.md).
+- **Claude-to-Codex coauthoring** through `myos-writer`: one bounded interactive
+  task, owned paths, an exact model, and a retained hash-pinned patch that requires
+  independent review. See [coauthoring](docs/coauthoring.md). The writer requires
+  macOS, Linux, or WSL; Windows-native writable execution is refused.
 - **Provider-agnostic**: Claude, Codex, Gemini and others follow the same route.
 
 ---
@@ -78,8 +85,11 @@ With Git and Node.js 20+ installed:
 ```sh
 git clone https://github.com/josephtandle/myos-dispatch.git "$HOME/myos-dispatch"
 cd "$HOME/myos-dispatch"
-bash "bin/install.sh" --runtime codex --yes
+bash "bin/install.sh" --runtime codex
 ```
+
+Review the printed hook merge before accepting; `--yes` explicitly accepts it
+without the interactive prompt. The registrar uses `--dry-run` for this preview.
 
 Choose `--runtime claude`, `--runtime codex`, or `--runtime both`. The default is
 `claude` for compatibility. Restart the selected host. **In Codex, open `/hooks`,
@@ -109,13 +119,15 @@ Useful options:
 ```powershell
 git clone https://github.com/josephtandle/myos-dispatch.git "$env:USERPROFILE\myos-dispatch"
 Set-Location "$env:USERPROFILE\myos-dispatch"
-& ".\bin\install.ps1" -Runtime codex -Yes
+& ".\bin\install.ps1" -Runtime codex
 ```
 
 Use `-Runtime claude`, `codex`, or `both`. Optional project indexing uses
 `-IndexDir "C:\path to your projects"`. Follow your organization's script execution
 policy. This installer does not disable it. Windows execution has not been
 verified by the macOS implementation run; a native Windows rehearsal is required.
+The `myos-writer` command requires WSL on Windows; native hook registration does
+not enable native writable workers.
 
 ### What gets registered and verified
 

@@ -1,11 +1,12 @@
 {
   "name": "myos-dispatch",
-  "version": "3.7.0",
+  "version": "4.0.0",
   "description": "Standalone MyOS Dispatch routing and execution core.",
   "type": "commonjs",
   "main": "src/workspace-context.js",
   "bin": {
-    "myos-dispatch-hook": "bin/myos-dispatch-hook"
+    "myos-dispatch-hook": "bin/myos-dispatch-hook",
+    "myos-writer": "bin/myos-writer.js"
   },
   "engines": {
     "node": ">=20"

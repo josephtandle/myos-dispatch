@@ -390,7 +390,7 @@ test("human Codex invocation pins OAuth and sandbox policy while loading host ho
 });
 
 for (const parentExit of ["timeout", "normal"]) {
-  test(`runner quiesces a stdio-ignore grandchild after ${parentExit} parent exit`, { skip: process.platform === "win32" }, async () => {
+  test(`runner stops a same-group stdio-ignore grandchild after ${parentExit} parent exit`, { skip: process.platform === "win32" }, async () => {
     const { runCommand } = require("../src/background/background-agent-runner");
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "myos-grandchild-test-"));
     // unref plus ignored stdio lets the direct parent close independently.
@@ -414,8 +414,11 @@ for (const parentExit of ["timeout", "normal"]) {
       const bytes = () => fs.existsSync(path.join(dir, "late.txt")) ? fs.readFileSync(path.join(dir, "late.txt"), "utf8") : "";
       const captured = bytes();
       await new Promise((resolve) => setTimeout(resolve, 1200));
-      assert.equal(bytes(), captured, "no descendant may write after the terminal result");
+      assert.equal(bytes(), captured, "no same-group descendant may write after the terminal result");
       assert.equal(result.cleanupFailed, false);
+      assert.equal(result.cleanupScope, "owned-process-group");
+      assert.equal(result.ownedGroupStopped, true);
+      assert.equal(result.treeQuiescence, "unverified");
       assert.equal(result.code, parentExit === "normal" ? 0 : null);
       assert.equal(result.signal, parentExit === "timeout" ? "SIGTERM" : null);
       const pgid = Number(fs.readFileSync(path.join(dir, "group.pid"), "utf8"));
@@ -435,11 +438,16 @@ test("unverified process cleanup retains work without capturing or accepting a p
   const artifacts = fs.mkdtempSync(path.join(os.tmpdir(), "myos-cleanup-failed-"));
   const result = await runBackgroundTask(taskFor(repo), optionsFor(artifacts, async ({ cwd }) => {
     fs.writeFileSync(path.join(cwd, "allowed", "seed.txt"), "possibly still changing\n");
-    return { code: 0, stdout: writerOutput(), cleanupFailed: true };
+    return { code: 0, stdout: writerOutput(), cleanupFailed: true,
+      cleanupScope: "owned-process-group", ownedGroupStopped: false, treeQuiescence: "unverified" };
   }));
   assert.equal(result.status, "failed");
   assert.equal(result.cleanupFailed, true);
   assert.equal(result.verificationResult, "process_cleanup_failed");
+  assert.equal(result.cleanupScope, "owned-process-group");
+  assert.equal(result.ownedGroupStopped, false);
+  assert.equal(result.treeQuiescence, "unverified");
+  assert.equal(result.reviewRequired, true);
   assert.equal(result.patchArtifact, null);
   assert.deepEqual(result.artifacts, []);
   assert.equal(fs.readFileSync(path.join(result.worktreePath, "allowed", "seed.txt"), "utf8"), "possibly still changing\n");
@@ -477,6 +485,9 @@ test("Windows writable execution fails before allocation or invocation without s
     assert.equal(invoked, false);
     assert.equal(result.status, "failed");
     assert.equal(result.cleanupFailed, true);
+    assert.equal(result.cleanupScope, "owned-process-group");
+    assert.equal(result.ownedGroupStopped, process.platform === "win32" ? null : false);
+    assert.equal(result.treeQuiescence, "unverified");
     assert.match(result.summary, /Windows/);
     assert.equal(result.worktreePath == null, true);
     assert.deepEqual(fs.readdirSync(artifacts), []);
@@ -503,6 +514,9 @@ test("runner bounds unverifiable cleanup and reports failure instead of success"
     const result = await runCommand({ command: process.execPath, args: ["-e", script], cwd: dir,
       env: { PATH: process.env.PATH }, timeoutMs: 300 });
     assert.equal(result.cleanupFailed, true);
+    assert.equal(result.cleanupScope, "owned-process-group");
+    assert.equal(result.ownedGroupStopped, process.platform === "win32" ? null : false);
+    assert.equal(result.treeQuiescence, "unverified");
     assert.equal(result.code, null);
     assert.match(result.stderr, /quiescence could not be verified/);
     assert.ok(Date.now() - start < 7000, "cleanup must have a bounded wait");
@@ -522,4 +536,15 @@ test("runner bounds unverifiable cleanup and reports failure instead of success"
     }
     fs.rmSync(dir, { recursive: true, force: true });
   }
+});
+
+
+test("a spawn failure does not claim that an owned group was stopped", { skip: process.platform === "win32" }, async () => {
+  const { runCommand } = require("../src/background/background-agent-runner");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "myos-no-process-"));
+  const result = await runCommand({ command: path.join(dir, "missing-command"), args: [], cwd: dir, env: {}, timeoutMs: 1000 });
+  assert.equal(result.cleanupScope, "owned-process-group");
+  assert.equal(result.ownedGroupStopped, null);
+  assert.equal(result.treeQuiescence, "unverified");
+  assert.match(result.stderr, /ENOENT/);
 });
