@@ -749,7 +749,26 @@ function validateOwnershipPaths(repoRoot, paths) {
     if (typeof entry !== "string" || !entry || /[\\\x00-\x1f]/.test(entry) || entry.split("/").includes("..")) {
       throw new Error(`invalid ownership path: ${entry}`);
     }
-    const relative = path.relative(root, path.resolve(root, entry)).split(path.sep).join("/");
+    let absolute = path.resolve(root, entry);
+    if (path.isAbsolute(entry)) {
+      // Resolve aliases only up to the repository boundary (e.g. /var versus
+      // /private/var). Keep the owned suffix lexical so symlinks below the root
+      // still reach the lstat checks, including links back to the root itself.
+      let prefix = path.parse(absolute).root;
+      for (const part of absolute.slice(prefix.length).split(path.sep)) {
+        prefix = path.join(prefix, part);
+        try {
+          if (fs.realpathSync(prefix) === root) {
+            absolute = path.resolve(root, path.relative(prefix, absolute));
+            break;
+          }
+        } catch (error) {
+          if (error.code !== "ENOENT") throw error;
+          break;
+        }
+      }
+    }
+    const relative = path.relative(root, absolute).split(path.sep).join("/");
     if (!relative || relative === ".." || relative.startsWith("../") || relative.split("/").some((part) => part.toLowerCase() === ".git")) {
       throw new Error(`ownership_scope_outside_repository:${entry}`);
     }

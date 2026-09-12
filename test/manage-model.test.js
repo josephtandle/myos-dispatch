@@ -7,6 +7,26 @@ const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 const source = path.resolve(__dirname, "../data/models/openai-model-catalog.json");
 
+test("undo refuses catalog drift and preserves an unrelated later model entry", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "manage-model-drift-"));
+  try {
+    const catalogPath = path.join(home, "openai-model-catalog.json");
+    fs.copyFileSync(source, catalogPath);
+    const run = (...args) => spawnSync(process.execPath, [path.resolve(__dirname, "../scripts/manage-model.js"), ...args, "--provider", "openai", "--catalog", catalogPath], { encoding: "utf8" });
+    const added = run("add", "--model", "first-addition");
+    assert.equal(added.status, 0, added.stderr);
+    const backup = JSON.parse(added.stdout).backup;
+    const later = run("add", "--model", "unrelated-later-entry");
+    assert.equal(later.status, 0, later.stderr);
+    const bytes = fs.readFileSync(catalogPath, "utf8");
+    const undone = run("undo", "--backup", backup);
+    assert.notEqual(undone.status, 0, "undo must not erase a later model");
+    assert.match(undone.stderr, /changed since.*refusing undo/i);
+    assert.equal(fs.readFileSync(catalogPath, "utf8"), bytes);
+    assert.ok(JSON.parse(bytes).models.some(model => model.model === "unrelated-later-entry"));
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
 test("Astra has official metadata and does not replace profile defaults", () => {
   const catalog = JSON.parse(fs.readFileSync(source));
   const astra = catalog.models.find(m => m.model === "gpt-6-astra");

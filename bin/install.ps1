@@ -204,16 +204,21 @@ try {
   }
 } catch {
   foreach ($transaction in $Transactions) {
-    if ((Get-Item $transaction.Record).Length -gt 0) {
+    if ((Test-Path $transaction.Record) -and (Get-Item $transaction.Record).Length -gt 0) {
       & $NodeBin (Join-Path $RepoDir "scripts\register-hook.js") --settings $transaction.Target --rollback $transaction.Record
-      if ($LASTEXITCODE -ne 0) { Warn "Rollback refused; inspect $($transaction.Target) and backups." }
+      if ($LASTEXITCODE -ne 0) {
+        $transaction.Retain = $true
+        Warn "Rollback refused; inspect $($transaction.Target), backups, and $($transaction.Record)."
+      }
     }
   }
   throw
 } finally {
   $env:MYOS_AUTO_FANOUT = $PreviousFanout
   $env:MYOS_BACKGROUND_AGENTS_ENABLED = $PreviousBackground
-  foreach ($transaction in $Transactions) { Remove-Item $transaction.Record -ErrorAction SilentlyContinue }
+  foreach ($transaction in $Transactions) {
+    if (-not $transaction.Retain) { Remove-Item $transaction.Record -ErrorAction SilentlyContinue }
+  }
 }
 
 # --- 7. Local model catalog report ----------------------------------------
@@ -221,7 +226,7 @@ Step "7/7  Building the local model catalog report"
 try {
   & $NodeBin (Join-Path $RepoDir "scripts\setup-model-catalog.js") --home $HomeRoot --report
   if ($LASTEXITCODE -ne 0) { throw "Model report failed." }
-  Ok "Read-only report complete; run setup-model-catalog.js without --report to save."
+  Ok "Read-only report complete. To save: node `"$(Join-Path $RepoDir 'scripts\setup-model-catalog.js')`" --home `"$HomeRoot`""
 } catch {
   Warn "Model catalog report failed; continuing without blocking install."
 }

@@ -380,6 +380,59 @@ test("registration transaction rolls back exact prior bytes, refuses concurrent 
   assert.strictEqual(read(settings), "{\"concurrent\":true}");
 });
 
+for (const scenario of ["foreign-update", "write-failure"]) {
+  test(`optional transaction ${scenario} preserves the correct rollback boundary`, () => {
+    const { home, settings } = sandbox();
+    try {
+      const transaction = path.join(home, "transaction.json");
+      const original = '{ "model": "keep" }\n';
+      fs.writeFileSync(settings, original);
+      assert.strictEqual(add(settings, ["--transaction", transaction]).status, 0);
+      const titleArgs = ["--settings", settings, "--optional-hook", "title", "--hook", "/opt/dispatch/myos-title-hook", "--transaction", transaction];
+      assert.strictEqual(runReg(titleArgs).status, 0);
+      const afterTitle = read(settings);
+      const priorRecord = read(transaction);
+      const rabbitArgs = [SCRIPT, "--settings", settings, "--optional-hook", "rabbit-hole", "--hook", "/opt/dispatch/myos-rabbithole-hook", "--node", NODE, "--transaction", transaction];
+      let result;
+      if (scenario === "foreign-update") {
+        fs.writeFileSync(settings, '{"foreign":true}');
+        result = spawnSync(NODE, rabbitArgs, { encoding: "utf8" });
+        assert.notStrictEqual(result.status, 0);
+        assert.match(result.stderr, /refusing transaction update/);
+        assert.strictEqual(read(transaction), priorRecord, "must not adopt foreign bytes as owned state");
+      } else {
+        const preload = path.join(home, "fail-write.cjs");
+        fs.writeFileSync(preload, `const fs = require('node:fs'); const rename = fs.renameSync; fs.renameSync = (from, to) => { if (to === ${JSON.stringify(settings)}) throw new Error('injected optional write failure'); return rename(from, to); };\n`);
+        result = spawnSync(NODE, ["--require", preload, ...rabbitArgs], { encoding: "utf8" });
+        assert.notStrictEqual(result.status, 0);
+        assert.match(result.stderr, /injected optional write failure/);
+        assert.strictEqual(read(settings), afterTitle);
+      }
+      const rollback = runReg(["--settings", settings, "--rollback", transaction]);
+      if (scenario === "foreign-update") {
+        assert.notStrictEqual(rollback.status, 0);
+        assert.strictEqual(read(settings), '{"foreign":true}');
+      } else {
+        assert.strictEqual(rollback.status, 0, rollback.stderr);
+        assert.strictEqual(read(settings), original);
+      }
+    } finally { fs.rmSync(home, { recursive: true, force: true }); }
+  });
+}
+
+test("shell title dry-run preserves rc bytes and creates no transaction", () => {
+  const { home } = sandbox();
+  try {
+    const rc = path.join(home, ".zshrc");
+    const record = path.join(home, "rc-transaction.json");
+    fs.writeFileSync(rc, "# keep rc bytes");
+    const result = runReg(["--settings", rc, "--shell-title-source", "/opt/dispatch/title.zsh", "--transaction", record, "--dry-run"]);
+    assert.strictEqual(result.status, 0, result.stderr);
+    assert.strictEqual(read(rc), "# keep rc bytes");
+    assert.strictEqual(fs.existsSync(record), false);
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
 test("foreign empty hook groups and their metadata survive a merge", () => {
   const { settings } = sandbox();
   const group = { matcher: "special", custom: { keep: true }, hooks: [] };

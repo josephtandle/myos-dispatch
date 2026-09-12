@@ -252,6 +252,51 @@ test("ownership is validated before invoking a writer", async () => {
   }
 });
 
+test("ownership accepts the real macOS /var temporary-directory alias", { skip: process.platform !== "darwin" }, () => {
+  const { validateOwnershipPaths } = require("../src/background/background-agent-runner");
+  const root = fs.realpathSync("/var/tmp");
+  assert.equal(root, "/private/var/tmp");
+  // Validate a future file without needing write access to this system directory.
+  assert.deepEqual(validateOwnershipPaths(root, ["/var/tmp/myos-owned/new.txt"]), ["myos-owned/new.txt"]);
+});
+
+test("repository aliases preserve ownership boundaries and produce a reviewable patch", { skip: process.platform === "win32" }, async () => {
+  const { validateOwnershipPaths } = require("../src/background/background-agent-runner");
+  const repo = makeRepo();
+  const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "myos-ownership-alias-"));
+  const alias = path.join(fixture, "repo-alias");
+  fs.symlinkSync(repo, alias, "dir");
+  try {
+    for (const root of [repo, fs.realpathSync(repo), alias]) {
+      assert.deepEqual(validateOwnershipPaths(root, [path.join(alias, "allowed"), "allowed"]), ["allowed"]);
+      assert.deepEqual(validateOwnershipPaths(root, [path.join(alias, "future", "file.txt")]), ["future/file.txt"]);
+      for (const entry of [alias, repo, path.join(fixture, "outside"), `${alias}/../escape`, `${alias}/.git/config`]) {
+        assert.throws(() => validateOwnershipPaths(root, [entry]), /ownership/, entry);
+      }
+    }
+    fs.symlinkSync(repo, path.join(repo, "allowed", "root-link"), "dir");
+    fs.symlinkSync(fixture, path.join(repo, "allowed", "escape-link"), "dir");
+    for (const prefix of [repo, alias]) {
+      for (const link of ["root-link", "escape-link"]) {
+        assert.throws(() => validateOwnershipPaths(repo, [path.join(prefix, "allowed", link, "new.txt")]), /ownership_symlink_refused/);
+      }
+    }
+    git(["add", "-A"], repo);
+    git(["commit", "-qm", "ownership symlink fixtures"], repo);
+    const result = await runBackgroundTask(taskFor(alias), optionsFor(path.join(fixture, "artifacts"), async ({ cwd }) => {
+      fs.writeFileSync(path.join(cwd, "allowed", "new.txt"), "alias-owned change\n");
+      return { code: 0, stdout: writerOutput() };
+    }));
+    assert.equal(result.status, "needs-review", JSON.stringify(result));
+    assert.deepEqual(result.changedFiles, ["allowed/new.txt"]);
+    assert.equal(result.verificationResult, "patch_reverse_check_passed");
+    assert.equal(git(["status", "--porcelain"], repo), "");
+  } finally {
+    fs.rmSync(repo, { recursive: true, force: true });
+    fs.rmSync(fixture, { recursive: true, force: true });
+  }
+});
+
 test("unreviewed orphan folders are never deleted based on age", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "myos-sidecar-orphan-test-"));
   fs.writeFileSync(path.join(dir, "partial.txt"), "keep me");

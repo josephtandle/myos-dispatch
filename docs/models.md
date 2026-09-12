@@ -11,8 +11,8 @@ spaces. The commands use only Node built-ins.
 ## Inspect and set up this machine
 
 ```sh
-node "scripts/setup-model-catalog.js" --report
-node "scripts/setup-model-catalog.js" --report --json
+node "scripts/setup-model-catalog.js" --home "path/to/dispatch-data" --report
+node "scripts/setup-model-catalog.js" --home "path/to/dispatch-data" --report --json
 ```
 
 Reports do not create or rewrite the local catalog or configuration. They separate
@@ -83,10 +83,14 @@ Undo using that exact path (replace the placeholder below):
 node "scripts/manage-model.js" undo --provider openai --backup "data/models/openai-model-catalog.json.bak-REPLACE_WITH_RETURNED_SUFFIX"
 ```
 
-Undo restores the whole chosen provider catalog from that snapshot, including any
-later edits to that same catalog; inspect the backup first. It also backs up the
-current catalog. It refuses a backup outside the target directory or belonging to
-another catalog/provider. No host configuration or other provider file is touched.
+Undo restores the whole chosen provider catalog from that snapshot only if the
+current bytes still match the result of that operation. Later changes, including
+unrelated model additions, cause undo to refuse without writing. Undo also backs
+up the current catalog, so that restore can itself be undone. Keep the sibling
+`.undo.json` hash record with each backup; older backups without that record are
+refused. Backups outside the target directory, from another catalog/provider, or
+changed since creation are refused. No host configuration or other provider file
+is touched.
 
 ## GPT-6 Astra
 

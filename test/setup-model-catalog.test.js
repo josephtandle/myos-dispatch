@@ -366,6 +366,24 @@ test("auth status parsing distinguishes OAuth, API login, logged out, error and 
   assert.equal(setup.probeLoginStatus("gemini", () => assert.fail("unsupported CLI must not be invoked")), "unknown");
 });
 
+test("Claude subscription CLI schema enables OAuth only for a successful logged-in subscription", () => {
+  for (const [status, body, expected] of [
+    [0, { loggedIn: true, authMethod: "claude.ai" }, true],
+    [0, { loggedIn: true, authMethod: "api_key" }, false],
+    [0, { loggedIn: false, authMethod: "claude.ai" }, false],
+    [1, { loggedIn: true, authMethod: "claude.ai" }, false],
+    [0, { loggedIn: true, authMethod: "unknown" }, false],
+  ]) {
+    const login = setup.probeLoginStatus("claude", (command, args) => {
+      assert.equal(command, "claude");
+      assert.deepEqual(args, ["auth", "status", "--json"]);
+      return { status, stdout: JSON.stringify(body) };
+    });
+    const providers = setup.normalizeProviderAvailability({ cliAvailable: cli => cli === "claude", loginStatus: () => login, envHas: () => false });
+    assert.equal(providers.anthropic.oauth, expected);
+  }
+});
+
 test("CLI detection does not source shell startup files during report", () => {
   const home = tempDir("report-no-startup-");
   const marker = path.join(home, "profile-ran");

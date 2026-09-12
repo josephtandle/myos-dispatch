@@ -72,6 +72,8 @@ function parseArgs(argv) {
     else if (a === "--settings") args.settings = take();
     else if (a === "--transaction") args.transaction = take();
     else if (a === "--rollback") args.rollback = take();
+    else if (a === "--optional-hook") args.optionalHook = take();
+    else if (a === "--shell-title-source") args.shellTitleSource = take();
     else if (a === "--node") args.node = take();
     else if (a === "--hook") args.hook = take();
     else if (a === "--home") args.home = take();
@@ -280,6 +282,47 @@ function atomicWrite(settingsPath, content) {
   }
 }
 
+function readBytes(target) {
+  return fs.existsSync(target) ? fs.readFileSync(target, "utf8") : null;
+}
+
+function readTransaction(recordPath, target) {
+  const record = JSON.parse(fs.readFileSync(recordPath, "utf8"));
+  if (record.settings !== path.resolve(target) || typeof record.after !== "string"
+    || (record.before !== null && typeof record.before !== "string")
+    || (record.previous !== undefined && record.previous !== null && typeof record.previous !== "string")) {
+    throw new Error("Invalid rollback record");
+  }
+  return record;
+}
+
+// Extend one transaction across all selected registrars, keeping its original
+// bytes. Never adopt a foreign edit as an installer-owned intermediate state.
+function writeRegistration(args, serialized, previous) {
+  if (readBytes(args.settings) !== previous) throw new Error("Settings changed while preparing registration; refusing write");
+  let record;
+  if (args.transaction) {
+    if (path.resolve(args.transaction) === path.resolve(args.settings)) throw new Error("Transaction must be separate from settings");
+    if (fs.existsSync(args.transaction) && fs.statSync(args.transaction).size > 0) {
+      record = readTransaction(args.transaction, args.settings);
+      if (previous !== record.after) throw new Error("Settings changed since registration; refusing transaction update");
+    }
+  }
+  if (previous === serialized) {
+    process.stdout.write(`register-hook: unchanged ${args.settings}\n`);
+    return;
+  }
+  fs.mkdirSync(path.dirname(args.settings), { recursive: true });
+  const bak = backupExisting(args.settings);
+  if (bak) process.stdout.write(`register-hook: backed up ${args.settings} -> ${bak}\n`);
+  if (args.transaction) {
+    // Both expected states are rollback-safe if the following atomic write fails.
+    atomicWrite(args.transaction, JSON.stringify({ settings: path.resolve(args.settings), before: record ? record.before : previous, previous, after: serialized }));
+  }
+  if (readBytes(args.settings) !== previous) throw new Error("Settings changed before registration write; refusing write");
+  atomicWrite(args.settings, serialized);
+}
+
 function main() {
   const args = parseArgs(process.argv.slice(2));
   if (args.runHook) {
@@ -295,15 +338,32 @@ function main() {
     process.exit(2);
   }
   if (args.rollback) {
-    const record = JSON.parse(fs.readFileSync(args.rollback, "utf8"));
-    if (record.settings !== path.resolve(args.settings) || typeof record.after !== "string"
-      || (record.before !== null && typeof record.before !== "string")) throw new Error("Invalid rollback record");
-    if (fs.readFileSync(args.settings, "utf8") !== record.after) throw new Error("Settings changed since registration; refusing rollback");
+    const record = readTransaction(args.rollback, args.settings);
+    const current = readBytes(args.settings);
+    if (current !== record.after && current !== record.previous) throw new Error("Settings changed since registration; refusing rollback");
     backupExisting(args.settings);
-    if (record.before === null) fs.unlinkSync(args.settings);
+    if (readBytes(args.settings) !== current) throw new Error("Settings changed during rollback; refusing write");
+    if (record.before === null) { if (current !== null) fs.unlinkSync(args.settings); }
     else atomicWrite(args.settings, record.before);
+    fs.unlinkSync(args.rollback);
     process.stdout.write("register-hook: restored exact prior settings\n");
     return;
+  }
+  if (args.shellTitleSource) {
+    if (!args.transaction) throw new Error("Shell rc registration requires --transaction");
+    const previous = readBytes(args.settings);
+    const begin = "# >>> myos-dispatch shell-title hook >>>";
+    const serialized = (previous || "").includes(begin) ? previous
+      : `${previous || ""}\n${begin}\nsource ${quote(args.shellTitleSource)}\n# <<< myos-dispatch shell-title hook <<<\n`;
+    if (args.dryRun) {
+      process.stdout.write(`register-hook: shell title source ${args.shellTitleSource} -> ${args.settings} (dry run)\n`);
+      return;
+    }
+    writeRegistration(args, serialized, previous);
+    return;
+  }
+  if (args.optionalHook && (!["title", "rabbit-hole"].includes(args.optionalHook) || args.surface !== "claude" || args.remove)) {
+    throw new Error("Optional hook registration requires title or rabbit-hole on Claude");
   }
   if (!args.remove && (!args.hook || !args.node)) {
     process.stderr.write("register-hook: --hook and --node are required when adding\n");
@@ -377,6 +437,7 @@ function main() {
     }
   }
 
+  const previous = readBytes(args.settings);
   let existing;
   try {
     existing = readSettings(args.settings);
@@ -389,7 +450,9 @@ function main() {
   let settings;
   let command;
   try {
-    ({ settings, command } = merge(existing, args));
+    const merger = args.optionalHook === "title" ? require("./register-title-hook").merge
+      : args.optionalHook === "rabbit-hole" ? require("./register-rabbithole-hook").merge : merge;
+    ({ settings, command } = merger(existing, args));
   } catch (error) {
     // B1 validation failure (or any merge failure) — refuse, do not rewrite.
     process.stderr.write(`register-hook: ${error.message}\n`);
@@ -411,19 +474,7 @@ function main() {
     return;
   }
 
-  if (fs.existsSync(args.settings) && fs.readFileSync(args.settings, "utf8") === serialized) {
-    process.stdout.write(`register-hook: unchanged ${args.settings}\n`);
-    return;
-  }
-  fs.mkdirSync(path.dirname(args.settings), { recursive: true });
-  // B2: back up any existing file before the write (add AND remove).
-  const bak = backupExisting(args.settings);
-  if (bak) process.stdout.write(`register-hook: backed up ${args.settings} -> ${bak}\n`);
-  if (args.transaction) {
-    if (path.resolve(args.transaction) === path.resolve(args.settings)) throw new Error("Transaction must be separate from settings");
-    fs.writeFileSync(args.transaction, JSON.stringify({ settings: path.resolve(args.settings), before: fs.existsSync(args.settings) ? fs.readFileSync(args.settings, "utf8") : null, after: serialized }), { mode: 0o600 });
-  }
-  atomicWrite(args.settings, serialized);
+  writeRegistration(args, serialized, previous);
   process.stdout.write(
     args.remove
       ? `register-hook: removed MyOS Dispatch hook from ${args.settings}\n`

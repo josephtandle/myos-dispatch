@@ -3,7 +3,7 @@
 
 const fs = require("node:fs");
 const path = require("node:path");
-const { randomUUID } = require("node:crypto");
+const { randomUUID, createHash } = require("node:crypto");
 const { CATALOG_PATHS } = require("../src/model-catalog");
 
 function exactId(value) {
@@ -34,14 +34,21 @@ function validateCatalog(catalog, provider) {
 }
 
 // A catalog-only replacement: no auth/config/team files or provider calls.
-function replaceCatalog(target, content) {
+function catalogHash(content) {
+  return createHash("sha256").update(content).digest("hex");
+}
+
+function replaceCatalog(target, content, expected = fs.readFileSync(target, "utf8")) {
   const previous = fs.readFileSync(target, "utf8");
+  if (previous !== expected) throw new Error("Catalog changed while preparing operation; refusing write");
   if (previous === content) return { changed: false, backup: null };
   const backup = `${target}.bak-${Date.now()}-${randomUUID()}`;
   fs.copyFileSync(target, backup, fs.constants.COPYFILE_EXCL);
+  fs.writeFileSync(`${backup}.undo.json`, JSON.stringify({ target: path.resolve(target), before: catalogHash(previous), after: catalogHash(content) }), { flag: "wx", mode: 0o600 });
   const tmp = `${target}.tmp-${randomUUID()}`;
   try {
     fs.writeFileSync(tmp, content, { flag: "wx", mode: fs.statSync(target).mode & 0o777 });
+    if (fs.readFileSync(target, "utf8") !== expected) throw new Error("Catalog changed before operation write; refusing write");
     fs.renameSync(tmp, target);
   } finally { if (fs.existsSync(tmp)) fs.unlinkSync(tmp); }
   return { changed: true, backup };
@@ -79,6 +86,11 @@ function main(argv = process.argv.slice(2)) {
     if (path.dirname(backup) !== path.dirname(target) || !path.basename(backup).startsWith(`${path.basename(target)}.bak-`) || fs.lstatSync(backup).isSymbolicLink()) throw new Error("Backup must belong to this catalog");
     content = fs.readFileSync(backup, "utf8");
     validateCatalog(JSON.parse(content), provider);
+    const guardPath = `${backup}.undo.json`;
+    if (!fs.existsSync(guardPath) || fs.lstatSync(guardPath).isSymbolicLink()) throw new Error("Backup has no safe undo record; refusing undo");
+    const guard = JSON.parse(fs.readFileSync(guardPath, "utf8"));
+    if (guard.target !== target || guard.before !== catalogHash(content)) throw new Error("Backup does not match its undo record; refusing undo");
+    if (guard.after !== catalogHash(original)) throw new Error("Catalog changed since this operation; refusing undo");
   } else {
     const modelId = exactId(args["--model"]);
     let model = catalog.models.find(m => m.model === modelId);
@@ -96,7 +108,7 @@ function main(argv = process.argv.slice(2)) {
     validateCatalog(catalog, provider);
     content = `${JSON.stringify(catalog, null, 2)}\n`;
   }
-  process.stdout.write(`${JSON.stringify(replaceCatalog(target, content))}\n`);
+  process.stdout.write(`${JSON.stringify(replaceCatalog(target, content, original))}\n`);
 }
 
 if (require.main === module) {

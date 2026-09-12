@@ -291,18 +291,23 @@ step "5/9  Registering selected runtime hooks"
 
 TRANSACTION_DIR="$(mktemp -d)"
 finish_registration() {
-  local status=$? surface target record
+  local status=$? surface target record retain=0
   if [ "$status" -ne 0 ]; then
     for surface in "${RUNTIMES[@]}"; do
       target="$SETTINGS"; [ "$surface" = codex ] && target="$CODEX_SETTINGS"
       record="$TRANSACTION_DIR/$surface.json"
       if [ -s "$record" ]; then
-        "$NODE_BIN" "$REPO_DIR/scripts/register-hook.js" --settings "$target" --rollback "$record" || warn "Rollback refused; inspect $target and backups."
+        "$NODE_BIN" "$REPO_DIR/scripts/register-hook.js" --settings "$target" --rollback "$record" || { retain=1; warn "Rollback refused; inspect $target, backups, and $record."; }
       fi
     done
   fi
-  rm -f "$TRANSACTION_DIR/claude.json" "$TRANSACTION_DIR/codex.json"
+  if [ "$status" -ne 0 ] && [ -s "$TRANSACTION_DIR/shell-rc.json" ]; then
+    "$NODE_BIN" "$REPO_DIR/scripts/register-hook.js" --settings "$RC_FILE" --rollback "$TRANSACTION_DIR/shell-rc.json" || { retain=1; warn "Rollback refused; inspect $RC_FILE, backups, and $TRANSACTION_DIR/shell-rc.json."; }
+  fi
+  [ "$retain" -eq 1 ] && return "$status"
+  rm -f "$TRANSACTION_DIR/claude.json" "$TRANSACTION_DIR/codex.json" "$TRANSACTION_DIR/shell-rc.json"
   rmdir "$TRANSACTION_DIR" 2>/dev/null || true
+  return "$status"
 }
 trap finish_registration EXIT
 if [ "$NO_HOOK" -eq 1 ]; then
@@ -333,28 +338,9 @@ else
 fi
 
 # --------------------------------------------------------------------------
-# 8. Smoke test
-# --------------------------------------------------------------------------
-step "6/9  Smoke test"
-for surface in "${RUNTIMES[@]}"; do
-if [ "${MYOS_TEST_FAIL_SMOKE:-0}" -eq 1 ]; then
-  SMOKE_OUT=""
-else
-  SMOKE_OUT="$(printf '%s' '{"prompt":"test","hookEventName":"UserPromptSubmit"}' | MYOS_BACKGROUND_AGENTS_ENABLED=0 MYOS_AUTO_FANOUT=0 MYOS_HOME_ROOT="$HOME_ROOT" "$NODE_BIN" "$HOOK_PATH" --surface="$surface" 2>/dev/null || true)"
-fi
-if printf '%s' "$SMOKE_OUT" | grep -q '"additionalContext"'; then
-  ok "$surface binary smoke: emitted hookSpecificOutput.additionalContext (direct invocation)."
-else
-  warn "Smoke test failed: auto-reverting additions from this invocation…"
-  fail "Smoke test failed — hook did not emit additionalContext. Output was: $SMOKE_OUT"
-fi
-
-done
-
-# --------------------------------------------------------------------------
 # 6. Optional: shell-title hook (rename the terminal tab per-project + recap)
 # --------------------------------------------------------------------------
-step "7/9  Shell-title hook"
+step "6/9  Shell-title hook"
 SHELL_TITLE_DONE=0
 SHELL_TITLE_RC_DONE=0
 if [ "$WITH_SHELL_TITLE" -eq 1 ]; then
@@ -363,25 +349,15 @@ if [ "$WITH_SHELL_TITLE" -eq 1 ]; then
   else
     mkdir -p "$CLAUDE_DIR"
     TITLE_HOOK_PATH="$REPO_DIR/bin/myos-title-hook"
-    "$NODE_BIN" "$REPO_DIR/scripts/register-title-hook.js" --settings "$SETTINGS" --node "$NODE_BIN" --hook "$TITLE_HOOK_PATH"
+    "$NODE_BIN" "$REPO_DIR/scripts/register-hook.js" --optional-hook title --transaction "$TRANSACTION_DIR/claude.json" --settings "$SETTINGS" --node "$NODE_BIN" --hook "$TITLE_HOOK_PATH"
     ok "Registered SessionStart + Stop title hooks (idempotent; unrelated settings untouched)."
     SHELL_TITLE_DONE=1
 
     if rc_pair="$(shell_title_rc_file)"; then
       RC_FILE="${rc_pair%%|*}"
       SOURCE_FILE="${rc_pair##*|}"
-      mkdir -p "$(dirname "$RC_FILE")"
-      touch "$RC_FILE"
-      if grep -qF "$SHELL_TITLE_MARKER_BEGIN" "$RC_FILE" 2>/dev/null; then
-        info "Shell rc already has the source line ($RC_FILE); leaving it as-is."
-      else
-        {
-          printf '\n%s\n' "$SHELL_TITLE_MARKER_BEGIN"
-          printf 'source "%s"\n' "$SOURCE_FILE"
-          printf '%s\n' "$SHELL_TITLE_MARKER_END"
-        } >> "$RC_FILE"
-        ok "Appended one source line to $RC_FILE (restart your shell, or open a new tab, to pick it up)"
-      fi
+      "$NODE_BIN" "$REPO_DIR/scripts/register-hook.js" --settings "$RC_FILE" --shell-title-source "$SOURCE_FILE" --transaction "$TRANSACTION_DIR/shell-rc.json"
+      ok "Shell title source line ready in $RC_FILE (existing integration preserved)."
       SHELL_TITLE_RC_DONE=1
     else
       warn "Unrecognized \$SHELL (${SHELL:-unset}); only zsh and bash are supported for --with-shell-title. Hooks registered, but the tab title won't persist across prompts without a paired shell rc integration."
@@ -394,7 +370,7 @@ fi
 # --------------------------------------------------------------------------
 # 7. Optional: rabbit-hole self-check nudge
 # --------------------------------------------------------------------------
-step "8/9  Rabbit-hole self-check hook"
+step "7/9  Rabbit-hole self-check hook"
 RABBITHOLE_DONE=0
 if [ "$WITH_RABBIT_HOLE" -eq 1 ]; then
   if [ "$NO_HOOK" -eq 1 ]; then
@@ -402,7 +378,7 @@ if [ "$WITH_RABBIT_HOLE" -eq 1 ]; then
   else
     mkdir -p "$CLAUDE_DIR"
     RABBITHOLE_HOOK_PATH="$REPO_DIR/bin/myos-rabbithole-hook"
-    "$NODE_BIN" "$REPO_DIR/scripts/register-rabbithole-hook.js" --settings "$SETTINGS" --node "$NODE_BIN" --hook "$RABBITHOLE_HOOK_PATH"
+    "$NODE_BIN" "$REPO_DIR/scripts/register-hook.js" --optional-hook rabbit-hole --transaction "$TRANSACTION_DIR/claude.json" --settings "$SETTINGS" --node "$NODE_BIN" --hook "$RABBITHOLE_HOOK_PATH"
     ok "Registered the rabbit-hole self-check hook (idempotent; unrelated settings untouched)."
     RABBITHOLE_DONE=1
   fi
@@ -411,11 +387,32 @@ else
 fi
 
 # --------------------------------------------------------------------------
+# 8. Smoke test
+# --------------------------------------------------------------------------
+step "8/9  Post-registration smoke test"
+for surface in "${RUNTIMES[@]}"; do
+if [ "${MYOS_TEST_FAIL_SMOKE:-0}" -eq 1 ]; then
+  SMOKE_OUT=""
+  SMOKE_STATUS=1
+else
+  SMOKE_STATUS=0
+  SMOKE_OUT="$(printf '%s' '{"prompt":"test","hookEventName":"UserPromptSubmit"}' | MYOS_BACKGROUND_AGENTS_ENABLED=0 MYOS_AUTO_FANOUT=0 MYOS_HOME_ROOT="$HOME_ROOT" "$NODE_BIN" "$HOOK_PATH" --surface="$surface" 2>/dev/null)" || SMOKE_STATUS=$?
+fi
+if [ "$SMOKE_STATUS" -eq 0 ] && printf '%s' "$SMOKE_OUT" | grep -q '"additionalContext"'; then
+  ok "$surface binary smoke: emitted hookSpecificOutput.additionalContext (direct invocation)."
+else
+  warn "Smoke test failed: auto-reverting additions from this invocation…"
+  fail "Smoke test failed — hook did not emit additionalContext. Output was: $SMOKE_OUT"
+fi
+
+done
+
+# --------------------------------------------------------------------------
 # 7. Local model catalog report
 # --------------------------------------------------------------------------
 step "9/9  Building the local model catalog report"
 if MYOS_HOME_ROOT="$HOME_ROOT" "$NODE_BIN" "$REPO_DIR/scripts/setup-model-catalog.js" --home "$HOME_ROOT" --report; then
-  ok "Read-only model report complete; run setup-model-catalog.js without --report to save."
+  ok "Read-only model report complete. To save: node \"$REPO_DIR/scripts/setup-model-catalog.js\" --home \"$HOME_ROOT\""
 else
   warn "Model catalog report failed; continuing without blocking install."
 fi
