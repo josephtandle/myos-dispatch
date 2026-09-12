@@ -140,3 +140,35 @@ test("bounded prompt files and explicit model/provider mismatches fail closed", 
   assert.equal(result.providerReportedModel, "substituted-model");
   assert.equal(fs.existsSync(result.patchArtifact), true);
 });
+
+test("writer timeout is bounded, defaults to fifteen minutes, and declares its task class", async () => {
+  const repo = repoFixture();
+  const base = ["--scope", repo, "--paths", "owned.txt", "--provider", "codex", "--model", "gpt-6-astra", "--caller-provider", "claude", "--prompt", "Edit owned file"];
+  const { parseArgs, runWriter } = require(cli);
+  assert.equal(parseArgs(base).timeoutMs, 900000);
+  for (const value of ["0", "-1", "1800001", "1.5", "NaN", "Infinity", "1e3", "1000ms"]) {
+    assert.throws(() => parseArgs([...base, "--timeout-ms", value]), /timeout-ms/);
+  }
+  assert.throws(() => parseArgs([...base, "--timeout-ms", "1000", "--timeout-ms", "2000"]), /duplicate/);
+  assert.equal(parseArgs([...base, "--timeout-ms", "1"]).timeoutMs, 1);
+  assert.equal(parseArgs([...base, "--timeout-ms", "1800000"]).timeoutMs, 1800000);
+  for (const timeoutMs of [900000, 1200000]) {
+    const artifacts = fs.mkdtempSync(path.join(os.tmpdir(), "myos-writer-timeout-"));
+    let observed;
+    const options = parseArgs(timeoutMs === 900000 ? base : [...base, "--timeout-ms", String(timeoutMs)]);
+    const result = await runWriter(options, {
+      artifactRoot: artifacts, stateFile: path.join(artifacts, "state.json"),
+      env: { MYOS_BACKGROUND_BACKPRESSURE_ENABLED: "0", MYOS_BACKGROUND_MIN_FREE_DISK_GIB: "0" },
+      runCommand: async ({ cwd, task, invocation, timeoutMs: actualTimeout }) => {
+        observed = { taskClass: task.taskClass, model: invocation.model, timeoutMs: actualTimeout };
+        fs.writeFileSync(path.join(cwd, "owned.txt"), "edit");
+        return { code: 0, stdout: output() };
+      },
+    });
+    assert.equal(result.status, "needs-review", JSON.stringify(result));
+    assert.deepEqual(observed, { taskClass: "heavy_synthesis", model: "gpt-6-astra", timeoutMs });
+  }
+  const badRuntimeOptions = await runWriter({ ...parseArgs(base), timeoutMs: 1800001 });
+  assert.equal(badRuntimeOptions.status, "failed");
+  assert.match(badRuntimeOptions.summary, /timeout-ms/);
+});

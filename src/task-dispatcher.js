@@ -831,8 +831,10 @@ async function dispatchTaskWithBackground(request = {}, options = {}) {
   const backgroundController = startBackgroundTasks(parallelizationPlan, {
     enabled: options.backgroundAgentsEnabled !== false,
     command: options.backgroundWorkerCommand || options.workerCommand || "codex",
-    callerProvider: options.callerProvider
-      || (options.backgroundWorkerCommand ? undefined : (options.workerCommand || "codex")),
+    // A sidecar command says nothing about the root caller. The worker fallback
+    // below runs request.fallback.command; use it only when explicitly supplied.
+    callerProvider: options.callerProvider ?? options.workerCommand
+      ?? (request.fallback?.type === "worker" ? request.fallback.command : undefined),
     cwd: options.cwd || HOME,
     provider: options.provider,
     runCommand: options.backgroundRunCommand,

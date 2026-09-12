@@ -343,3 +343,138 @@ test("human Codex invocation pins OAuth and sandbox policy while loading host ho
   assert.ok(invocation.args.includes("sandbox_workspace_write.writable_roots=[]"));
   assert.equal(invocation.args.includes("--ignore-user-config"), false);
 });
+
+for (const parentExit of ["timeout", "normal"]) {
+  test(`runner quiesces a stdio-ignore grandchild after ${parentExit} parent exit`, { skip: process.platform === "win32" }, async () => {
+    const { runCommand } = require("../src/background/background-agent-runner");
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "myos-grandchild-test-"));
+    // unref plus ignored stdio lets the direct parent close independently.
+    // The grandchild stays in the runner-owned process group and ignores TERM.
+    const grandchild = `const fs = require("node:fs");
+      process.on("SIGTERM", () => {});
+      fs.writeFileSync("ready.pid", String(process.pid));
+      setInterval(() => fs.appendFileSync("late.txt", "write\\n"), 1000);`;
+    const parent = `const fs = require("node:fs");
+      fs.writeFileSync("group.pid", String(process.pid));
+      const child = require("node:child_process").spawn(process.execPath, ["-e", ${JSON.stringify(grandchild)}], { stdio: "ignore" });
+      child.unref();
+      const ready = setInterval(() => {
+        if (!fs.existsSync("ready.pid")) return;
+        ${parentExit === "normal" ? "clearInterval(ready);" : "// Wait for the runner timeout."}
+      }, 10);`;
+    try {
+      const result = await runCommand({ command: process.execPath, args: ["-e", parent], cwd: dir,
+        env: { PATH: process.env.PATH }, timeoutMs: parentExit === "timeout" ? 300 : 5000 });
+      assert.equal(fs.existsSync(path.join(dir, "ready.pid")), true, "grandchild reached its signal handler");
+      const bytes = () => fs.existsSync(path.join(dir, "late.txt")) ? fs.readFileSync(path.join(dir, "late.txt"), "utf8") : "";
+      const captured = bytes();
+      await new Promise((resolve) => setTimeout(resolve, 1200));
+      assert.equal(bytes(), captured, "no descendant may write after the terminal result");
+      assert.equal(result.cleanupFailed, false);
+      assert.equal(result.code, parentExit === "normal" ? 0 : null);
+      assert.equal(result.signal, parentExit === "timeout" ? "SIGTERM" : null);
+      const pgid = Number(fs.readFileSync(path.join(dir, "group.pid"), "utf8"));
+      assert.throws(() => process.kill(-pgid, 0), { code: "ESRCH" });
+    } finally {
+      if (fs.existsSync(path.join(dir, "group.pid"))) {
+        const pgid = Number(fs.readFileSync(path.join(dir, "group.pid"), "utf8"));
+        try { process.kill(-pgid, "SIGKILL"); } catch (error) { if (error.code !== "ESRCH") throw error; }
+      }
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+}
+
+test("unverified process cleanup retains work without capturing or accepting a patch", async () => {
+  const repo = makeRepo();
+  const artifacts = fs.mkdtempSync(path.join(os.tmpdir(), "myos-cleanup-failed-"));
+  const result = await runBackgroundTask(taskFor(repo), optionsFor(artifacts, async ({ cwd }) => {
+    fs.writeFileSync(path.join(cwd, "allowed", "seed.txt"), "possibly still changing\n");
+    return { code: 0, stdout: writerOutput(), cleanupFailed: true };
+  }));
+  assert.equal(result.status, "failed");
+  assert.equal(result.cleanupFailed, true);
+  assert.equal(result.verificationResult, "process_cleanup_failed");
+  assert.equal(result.patchArtifact, null);
+  assert.deepEqual(result.artifacts, []);
+  assert.equal(fs.readFileSync(path.join(result.worktreePath, "allowed", "seed.txt"), "utf8"), "possibly still changing\n");
+  assert.equal(fs.readdirSync(result.artifactRoot).some((file) => file.endsWith(".patch")), false);
+  fs.rmSync(repo, { recursive: true, force: true });
+  fs.rmSync(artifacts, { recursive: true, force: true });
+});
+
+test("caller affinity accepts recognized executable paths and aliases and refuses unknown callers", () => {
+  const { buildBackgroundWorkerInvocation } = require("../src/background/background-agent-runner");
+  for (const [command, callerProvider] of [
+    ["codex", "/usr/local/bin/codex"], ["codex", "codex.exe"],
+    ["claude", "claude-code"], ["claude", "/usr/local/bin/claude_code"],
+    ["gemini", "gemini-cli"], ["gemini", "C:\\tools\\gemini.cmd"],
+  ]) {
+    assert.equal(buildBackgroundWorkerInvocation({ effectiveMode: "read_only" }, { command, callerProvider, env: {} }).kind, command);
+  }
+  for (const callerProvider of [undefined, null, "", "unknown", "/bin/not-codex", "codex --model x", "codex/", 42]) {
+    assert.throws(() => buildBackgroundWorkerInvocation({ effectiveMode: "read_only" }, { command: "codex", callerProvider, env: {} }), /callerProvider/);
+  }
+  assert.throws(() => buildBackgroundWorkerInvocation({ effectiveMode: "read_only" }, { command: "codex", callerProvider: "/bin/claude-code", env: {} }), /cross-provider/);
+});
+
+test("Windows writable execution fails before allocation or invocation without scoped tree control", async () => {
+  const platform = Object.getOwnPropertyDescriptor(process, "platform");
+  const repo = makeRepo();
+  const artifacts = fs.mkdtempSync(path.join(os.tmpdir(), "myos-windows-refusal-"));
+  let invoked = false;
+  try {
+    Object.defineProperty(process, "platform", { value: "win32" });
+    const result = await runBackgroundTask(taskFor(repo), optionsFor(artifacts, async () => {
+      invoked = true;
+      return { code: 0, stdout: writerOutput() };
+    }));
+    assert.equal(invoked, false);
+    assert.equal(result.status, "failed");
+    assert.equal(result.cleanupFailed, true);
+    assert.match(result.summary, /Windows/);
+    assert.equal(result.worktreePath == null, true);
+    assert.deepEqual(fs.readdirSync(artifacts), []);
+  } finally {
+    Object.defineProperty(process, "platform", platform);
+    fs.rmSync(repo, { recursive: true, force: true });
+    fs.rmSync(artifacts, { recursive: true, force: true });
+  }
+});
+
+test("runner bounds unverifiable cleanup and reports failure instead of success", { skip: process.platform === "win32" }, async (t) => {
+  const { runCommand } = require("../src/background/background-agent-runner");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "myos-unquiescent-test-"));
+  const kill = process.kill.bind(process);
+  const script = 'require("node:fs").writeFileSync("group.pid", String(process.pid)); process.on("SIGTERM",()=>{}); setInterval(()=>{},1000);';
+  const signals = [];
+  t.mock.method(process, "kill", (pid, signal) => {
+    const ownedPid = fs.existsSync(path.join(dir, "group.pid")) ? Number(fs.readFileSync(path.join(dir, "group.pid"), "utf8")) : null;
+    if (pid === -ownedPid && signal !== 0) { signals.push(signal); return true; }
+    return kill(pid, signal);
+  });
+  try {
+    const start = Date.now();
+    const result = await runCommand({ command: process.execPath, args: ["-e", script], cwd: dir,
+      env: { PATH: process.env.PATH }, timeoutMs: 300 });
+    assert.equal(result.cleanupFailed, true);
+    assert.equal(result.code, null);
+    assert.match(result.stderr, /quiescence could not be verified/);
+    assert.ok(Date.now() - start < 7000, "cleanup must have a bounded wait");
+    assert.deepEqual(signals, ["SIGTERM", "SIGKILL"]);
+  } finally {
+    t.mock.restoreAll();
+    if (fs.existsSync(path.join(dir, "group.pid"))) {
+      const pgid = Number(fs.readFileSync(path.join(dir, "group.pid"), "utf8"));
+      try { kill(-pgid, "SIGKILL"); } catch (error) { if (error.code !== "ESRCH") throw error; }
+      // Let Node reap this owned test process before deleting its fixture.
+      for (let i = 0; i < 100; i += 1) {
+        try { kill(-pgid, 0); }
+        catch (error) { if (error.code === "ESRCH") break; throw error; }
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      assert.throws(() => kill(-pgid, 0), { code: "ESRCH" });
+    }
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

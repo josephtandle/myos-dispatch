@@ -75,6 +75,17 @@ function normalizeWorkerKind(command = "") {
   return "codex";
 }
 
+function normalizeCallerProvider(command) {
+  if (typeof command !== "string") return null;
+  const value = command.trim();
+  if (!value || /[\\/]$/.test(value)) return null;
+  const base = value.split(/[\\/]/).pop().toLowerCase().replace(/\.(?:exe|cmd|bat)$/, "");
+  if (base === "codex") return "codex";
+  if (["claude", "claude-code", "claude_code"].includes(base)) return "claude";
+  if (["gemini", "gemini-cli", "gemini_cli"].includes(base)) return "gemini";
+  return null;
+}
+
 function findGeminiApiKeyEnv(env = process.env) {
   return ["GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_AI_API_KEY", "GOOGLE_GENERATIVE_AI_API_KEY"]
     .filter((key) => Boolean(env?.[key]));
@@ -189,7 +200,7 @@ function resolveProviderCapabilities(kind, options = {}) {
   const fromFlag = (value) => String(value || "").trim() === "1";
   // Provider-affine fan-out: a sidecar on the caller's own provider inherits
   // the caller's human OAuth lane without needing an explicit enable flag.
-  const callerKind = options.callerProvider ? normalizeWorkerKind(options.callerProvider) : null;
+  const callerKind = normalizeCallerProvider(options.callerProvider);
   const sameProviderAsCaller = callerKind != null && callerKind === kind;
   if (kind === "codex") {
     return {
@@ -216,8 +227,8 @@ function resolveProviderCapabilities(kind, options = {}) {
 }
 
 function assertProviderAffinity(kind, options = {}, task = {}) {
-  const caller = options.callerProvider;
-  if (!["codex", "claude", "gemini"].includes(caller)) {
+  const caller = normalizeCallerProvider(options.callerProvider);
+  if (!caller) {
     throw new Error("Provider-affine fan-out requires an explicit valid callerProvider.");
   }
   const delegation = options.delegation;
@@ -414,46 +425,110 @@ function buildBackgroundWorkerInvocation(task = {}, options = {}) {
 }
 
 function runCommand({ command, args, cwd, input, timeoutMs, env }) {
+  // No scoped Windows Job Object implementation is available here. Refuse to
+  // start a process whose descendants we cannot verify and stop safely.
+  if (process.platform === "win32") {
+    return Promise.resolve({ code: null, signal: null, stdout: "",
+      stderr: "Process-tree quiescence is not supported on Windows", cleanupFailed: true });
+  }
   return new Promise((resolve) => {
     const child = spawn(command, args, {
       cwd, stdio: ["pipe", "pipe", "pipe"], env: env || process.env,
-      detached: process.platform !== "win32",
+      detached: true,
     });
     let stdout = "";
     let stderr = "";
     let settled = false;
     let timedOut = false;
-    let killTimer;
+    let closed = false;
+    let exitCode = null;
+    let exitSignal = null;
+    let teardownStarted = false;
+    let killAt;
+    let deadline;
+    let killed = false;
+    let pollTimer;
+    const groupExists = () => {
+      if (!child.pid) return false;
+      try { process.kill(-child.pid, 0); return true; }
+      catch (error) { if (error.code === "ESRCH") return false; throw error; }
+    };
     const stop = (signal) => {
+      // Only signal the group created by this spawn. Never fall back to a PID
+      // or discover/kill descendants by name after the parent has exited.
+      if (!child.pid) return;
+      try { process.kill(-child.pid, signal); }
+      catch (error) { if (error.code !== "ESRCH") throw error; }
+    };
+    const finish = (cleanupFailed) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      clearTimeout(pollTimer);
+      if (cleanupFailed) {
+        stderr += "\nProcess-tree cleanup failed; quiescence could not be verified";
+        // Bound this call even if a surviving process holds inherited pipes.
+        child.stdin.destroy();
+        child.stdout.destroy();
+        child.stderr.destroy();
+        child.unref();
+      }
+      resolve({ code: timedOut || cleanupFailed ? null : exitCode,
+        signal: timedOut ? "SIGTERM" : exitSignal, stdout, stderr, cleanupFailed });
+    };
+    const checkTeardown = () => {
+      if (settled) return;
       try {
-        if (process.platform !== "win32" && child.pid) process.kill(-child.pid, signal);
-        else child.kill(signal);
-      } catch (error) { if (error.code !== "ESRCH") child.kill(signal); }
+        const alive = groupExists();
+        if (!alive && closed) { finish(false); return; }
+        if (alive && !killed && Date.now() >= killAt) {
+          stop("SIGKILL");
+          killed = true;
+        }
+      } catch (error) {
+        stderr += `\n${error.message}`;
+        finish(true);
+        return;
+      }
+      if (Date.now() >= deadline) { finish(true); return; }
+      pollTimer = setTimeout(checkTeardown, 25);
+    };
+    const beginTeardown = () => {
+      if (settled || teardownStarted) return;
+      teardownStarted = true;
+      clearTimeout(timeout);
+      killAt = Date.now() + 2000;
+      deadline = killAt + 2000;
+      try { stop("SIGTERM"); }
+      catch (error) { stderr += `\n${error.message}`; finish(true); return; }
+      checkTeardown();
     };
     const timeout = setTimeout(() => {
       if (settled) return;
       timedOut = true;
       stderr += `\nTimed out after ${timeoutMs || DEFAULT_TIMEOUT_MS}ms`;
-      stop("SIGTERM");
-      killTimer = setTimeout(() => stop("SIGKILL"), 2000);
+      beginTeardown();
     }, Number(timeoutMs || DEFAULT_TIMEOUT_MS));
     child.stdout.on("data", (chunk) => { stdout += chunk.toString(); });
     child.stderr.on("data", (chunk) => { stderr += chunk.toString(); });
     child.stdin.on("error", (error) => { if (error.code !== "EPIPE") stderr += `\n${error.message}`; });
     child.on("error", (error) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timeout);
-      clearTimeout(killTimer);
-      resolve({ code: null, signal: null, stdout, stderr: error.message });
+      stderr += `\n${error.message}`;
+      if (!child.pid) finish(false);
+      else beginTeardown();
+    });
+    // Exit starts teardown even when descendants hold output pipes open.
+    child.on("exit", (code, signal) => {
+      exitCode = code;
+      exitSignal = signal;
+      beginTeardown();
     });
     child.on("close", (code, signal) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timeout);
-      clearTimeout(killTimer);
-      // Close means inherited output pipes have closed too. Capture only now.
-      resolve({ code: timedOut ? null : code, signal: timedOut ? "SIGTERM" : signal, stdout, stderr });
+      exitCode = code;
+      exitSignal = signal;
+      closed = true;
+      beginTeardown();
+      // The running poll must still observe ESRCH; close is not quiescence.
     });
     if (input) child.stdin.write(input);
     child.stdin.end();
@@ -812,6 +887,11 @@ async function runBackgroundTask(task, options = {}) {
 
   let worktree = null;
   if (effectiveMode === EXECUTION_MODES.WRITE) {
+    if (process.platform === "win32") {
+      return skippedResult(normalizedTask, "Writable task refused: process-tree quiescence is not supported on Windows.", {
+        status: "failed", reviewRequired: true, cleanupFailed: true,
+      });
+    }
     try {
       // Refuse invalid callers before allocating a worktree or running any provider.
       assertProviderAffinity(normalizeWorkerKind(options.command || "codex"), options, normalizedTask);
@@ -902,17 +982,17 @@ async function runBackgroundTask(task, options = {}) {
   const writerResponse = worktree ? validateWriterResponse(result, invocation.kind) : null;
   const summary = extractBackgroundSummary(result.stdout, invocation.kind);
   const structured = parseStructuredFindings(summary);
-  let ok = result.code === 0 && !result.signal && !writerResponse?.error;
+  let ok = result.code === 0 && !result.signal && !result.cleanupFailed && !writerResponse?.error;
   if (writerResponse?.reportedModels?.some((model) => model !== invocation.model)) ok = false;
   const artifacts = [];
   let changedFiles = [];
   let patchArtifact = null;
   let patchSha256 = null;
-  let verificationResult = null;
+  let verificationResult = result.cleanupFailed ? "process_cleanup_failed" : null;
   let ownedChangedFiles = [];
   let ownershipViolations = [];
 
-  if (normalizedTask.effectiveMode === EXECUTION_MODES.WRITE && worktree) {
+  if (normalizedTask.effectiveMode === EXECUTION_MODES.WRITE && worktree && !result.cleanupFailed) {
     try {
       const collected = collectWorktreeArtifacts(worktree, normalizedTask);
       changedFiles = collected.changedFiles;
@@ -953,6 +1033,7 @@ async function runBackgroundTask(task, options = {}) {
     sidecarRunId: orchestratorContext.runId,
     parentTaskId: orchestratorContext.parentTaskId || "root",
     stderr: result.stderr || "",
+    cleanupFailed: Boolean(result.cleanupFailed),
     ownershipPaths: Array.isArray(normalizedTask.ownershipPaths) ? normalizedTask.ownershipPaths : [],
     writeScope: Array.isArray(normalizedTask.writeScope) ? normalizedTask.writeScope : [],
     reviewRequired: Boolean(worktree),

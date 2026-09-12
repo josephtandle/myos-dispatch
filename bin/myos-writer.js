@@ -7,17 +7,29 @@ const crypto = require("node:crypto");
 const { execFileSync } = require("node:child_process");
 const { runBackgroundTasks, validateOwnershipPaths } = require("../src/background/background-agent-runner");
 const MAX_PROMPT_BYTES = 32768;
+const DEFAULT_TIMEOUT_MS = 15 * 60 * 1000;
+const MAX_TIMEOUT_MS = 30 * 60 * 1000;
 
 const HELP = `Usage: myos-writer --scope /repo --paths src/a.js,test/a.test.js
   --provider codex --model gpt-6-astra --caller-provider claude
-  (--prompt "bounded implementation task" | --prompt-file /path/task.txt) [--json]
+  (--prompt "bounded implementation task" | --prompt-file /path/task.txt)
+  [--timeout-ms 900000] [--json]
 One human-interactive delegation. Returns a retained patch for independent review.
 Never applies, commits, or accepts writer self-review. Prompt limit: 32768 bytes.
+Timeout: integer 1..1800000 ms; default 900000 ms (15 minutes).
 `;
+
+function validateTimeoutMs(value = DEFAULT_TIMEOUT_MS) {
+  if (!/^[0-9]+$/.test(String(value)) || !Number.isSafeInteger(Number(value)) ||
+      Number(value) < 1 || Number(value) > MAX_TIMEOUT_MS) {
+    throw new Error("--timeout-ms must be an integer from 1 to 1800000");
+  }
+  return Number(value);
+}
 
 function parseArgs(argv) {
   const values = {};
-  const names = new Set(["scope", "paths", "provider", "model", "caller-provider", "prompt", "prompt-file"]);
+  const names = new Set(["scope", "paths", "provider", "model", "caller-provider", "prompt", "prompt-file", "timeout-ms"]);
   for (let i = 0; i < argv.length; i += 1) {
     const key = argv[i].replace(/^--/, "");
     if (argv[i] !== `--${key}` || Object.hasOwn(values, key)) throw new Error(`Invalid or duplicate argument: ${argv[i]}`);
@@ -46,13 +58,14 @@ function parseArgs(argv) {
   if (!prompt.trim() || Buffer.byteLength(prompt) > MAX_PROMPT_BYTES || prompt.includes("\0")) throw new Error("Prompt must contain 1 to 32768 bytes of text");
   const ownershipPaths = values.paths.split(",").map((entry) => entry.trim());
   if (ownershipPaths.some((entry) => !entry || path.isAbsolute(entry))) throw new Error("--paths requires nonempty repository-relative ownership paths");
-  return { ...values, prompt, ownershipPaths };
+  return { ...values, prompt, ownershipPaths, timeoutMs: validateTimeoutMs(values["timeout-ms"]) };
 }
 
 async function runWriter(options, runtime = {}) {
   let result;
   let artifactRoot;
   try {
+    const timeoutMs = validateTimeoutMs(options.timeoutMs);
     if (options.provider !== "codex" || options["caller-provider"] !== "claude" ||
         !options.model || !options.prompt || Buffer.byteLength(options.prompt) > MAX_PROMPT_BYTES) {
       throw new Error("Explicit bounded Claude to Codex writer arguments are required");
@@ -63,8 +76,8 @@ async function runWriter(options, runtime = {}) {
     const ownershipPaths = validateOwnershipPaths(repoRoot, options.ownershipPaths);
     const id = `writer-${crypto.randomUUID()}`;
     // Runtime injection is for embedding/tests; the CLI exposes no command or env overrides.
-    const task = { id, kind: "implement", role: "implement", required: true,
-      mode: "workspace_write", model: options.model, scope: repoRoot,
+    const task = { id, kind: "implement", role: "implement", taskClass: "heavy_synthesis", required: true,
+      mode: "workspace_write", model: options.model, scope: repoRoot, timeoutMs,
       ownershipPaths, writeScope: ownershipPaths, prompt: options.prompt,
       executionEnvelope: { filesystemProfile: "isolated_git_worktree", networkPolicy: "disabled", goalMutationAllowed: false } };
     const results = await runBackgroundTasks({ mode: "workspace_write", budget: { maxAgents: 1 }, backgroundTasks: [task] }, {

@@ -23,6 +23,8 @@ node bin/myos-writer.js --scope /absolute/path/to/repo \
 
 `--prompt-file /path/task.txt` replaces `--prompt`. Exactly one is required, with a maximum of 32768 bytes. Paths are literal repository-relative files or directories, comma separated; no globs, repository-wide scope, traversal, Git internals, or symlink ownership. Scope must be the repository root. Unknown and duplicate arguments fail. There is no `--apply`, arbitrary command, config, environment override, billing fallback, or model fallback option.
 
+`--timeout-ms` accepts an integer from 1 to 1800000 milliseconds. The default is 900000 (15 minutes); use `--timeout-ms 1800000` for a 30-minute bound. This CLI declares `taskClass: "heavy_synthesis"` while preserving the exact requested model. The timeout bounds provider execution; process cleanup can take up to four additional seconds, followed by artifact collection.
+
 The CLI supplies this runner contract alongside the task's ownership paths:
 
 ```json
@@ -35,6 +37,8 @@ The CLI supplies this runner contract alongside the task's ownership paths:
 ```
 
 For an embedding, pass the object as `options.delegation`, also declare `options.callerProvider`, and request `task.mode: "workspace_write"`. Use `runBackgroundTasks` with an orchestrator context so quarantine and backpressure apply. Every caller must now declare its provider, including ordinary same-provider read-only calls. Omitting the caller cannot bypass affinity. The declaration is a trusted orchestrator assertion, not authentication or proof of a human's identity.
+
+Embedding caller declarations accept the recognized names `codex`, `claude`, and `gemini`, executable paths, and the aliases `claude-code`, `claude_code`, `gemini-cli`, and `gemini_cli` (including `.exe`, `.cmd`, or `.bat` suffixes). Missing or unknown names fail closed. The dispatcher can take a caller from an explicit `callerProvider`, `workerCommand`, or worker `request.fallback.command`; `backgroundWorkerCommand` never establishes the root caller. The public delegation CLI still requires `--caller-provider claude` and `--provider codex`.
 
 Cross-provider research, general sidecars, bot/unattended contexts, protected surfaces, nested workers, and caller/worker mismatches are refused. Existing global/writable disable switches, OAuth environment scrubbing, quarantine, disk/load checks, and concurrency limits remain active. If your environment disables background agents, the command fails; it does not override that policy or install a scheduler.
 
@@ -49,6 +53,8 @@ A successful writer run returns `status: "needs-review"`, never approval to inte
 - `verificationEvidence`: runner patch integrity/applicability evidence, provider response validation, writer-reported checks, and independent review still pending. A reverse-apply check does not prove the feature works.
 
 Patches preserve binary bytes and new files. Capture uses a separate temporary index and leaves the writer's index intact. Every worktree is retained, including failure, timeout, quota, malformed output, and ownership violations; failed patches are evidence only. Ignored files remain in the retained worktree and are not included by Git's ordinary add rules. Artifact directories are unique, outside the source checkout, and default to `~/.myos/state/myos-dispatch/sidecar-artifacts`. Retained worktrees are under the OS temporary directory: preserve them elsewhere before OS/manual cleanup if they contain needed ignored or partial work. There is no age-based deletion.
+
+On POSIX, each provider starts in its own process group. Timeout or normal parent exit starts teardown: TERM, a two-second grace period, then KILL if the group remains. Parent exit and closed output pipes do not prove completion; the runner also waits until the owned group no longer exists. If that cannot be verified within the four-second cleanup bound, the result has `cleanupFailed: true`, status `failed`, and no patch capture. Preserve and inspect the retained worktree; it may still be changing. This controls descendants that remain in the owned group, not processes that deliberately escape into a new session. Windows writable execution is refused before allocation because scoped process-tree control is not implemented.
 
 Codex loads host configuration and hooks and uses its existing ChatGPT OAuth context. The runner pins `forced_login_method="chatgpt"`, `model_provider="openai"`, workspace-write networking off, and no additional writable roots, without `--ignore-user-config`. The authentication restriction is documented in the [Codex configuration reference](https://developers.openai.com/codex/config-reference/). Claude read-only invocations omit `--bare`, which local CLI help documents as disabling hooks and OAuth. Missing authentication, unavailable models, or host hook/trust failures must be resolved by the human; no automatic login or token repair is performed by this command.
 
