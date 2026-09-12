@@ -260,6 +260,7 @@ test("background runner executes V2 read-only tasks when execution is enabled", 
   const results = await runBackgroundTasks(plan, {
     enabled: true,
     command: "codex",
+    callerProvider: "codex",
     stateFile,
     async runCommand({ invocation }) {
       assert.equal(invocation.kind, "codex");
@@ -332,6 +333,7 @@ test("background runner rejects non-Codex workers before provider quarantine che
   const results = await runBackgroundTasks(plan, {
     enabled: true,
     command: "gemini",
+    callerProvider: "codex",
     stateFile,
     env: {
       MYOS_BACKGROUND_AGENTS_ENABLED: "1",
@@ -346,7 +348,7 @@ test("background runner rejects non-Codex workers before provider quarantine che
 
   assert.equal(results.length, plan.backgroundTasks.length);
   assert.equal(results.every((result) => result.status === "skipped"), true);
-  assert.match(results[0].summary, /quarantined|human OAuth support is not enabled/);
+  assert.match(results[0].summary, /quarantined|cross-provider mixing is disabled/);
 });
 
 test("background runner builds read-only Codex invocation and scrubs API-key env", async () => {
@@ -359,13 +361,13 @@ test("background runner builds read-only Codex invocation and scrubs API-key env
   const codex = buildBackgroundWorkerInvocation({
     ...task,
     model: "gpt-5.5",
-  }, { command: "codex", provider: "openai", cwd: "/tmp" });
+  }, { command: "codex", callerProvider: "codex", provider: "openai", cwd: "/tmp" });
 
   assert.deepEqual(codex.args.slice(0, 4), ["-a", "never", "exec", "--json"]);
   assert.ok(codex.args.includes("--ephemeral"));
-  assert.ok(codex.args.includes("--ignore-user-config"));
+  assert.equal(codex.args.includes("--ignore-user-config"), false);
   assert.ok(codex.args.includes("read-only"));
-  assert.equal(codex.model, "gpt-5.4");
+  assert.equal(codex.model, "gpt-5.5");
 
   const prompt = buildReadOnlyPrompt(task);
   assert.match(prompt, /OAuth\/auth lane work is human-driven/);
@@ -394,6 +396,7 @@ test("background runner builds read-only Codex invocation and scrubs API-key env
   }, {
     enabled: true,
     command: "codex",
+    callerProvider: "codex",
     stateFile: tempStateFile(),
     env: {
       MYOS_BACKGROUND_BACKPRESSURE_ENABLED: "0",
@@ -443,6 +446,7 @@ test("background runner blocks nested fan-out from sidecar processes", async () 
   }, {
     enabled: true,
     command: "codex",
+    callerProvider: "codex",
     stateFile: tempStateFile(),
     env: {
       MYOS_BACKGROUND_BACKPRESSURE_ENABLED: "0",
@@ -519,6 +523,7 @@ test("background runner uses API-key env for autonomous/cron callers (MYOS_INITI
   }, {
     enabled: true,
     command: "codex",
+    callerProvider: "codex",
     stateFile: tempStateFile(),
     env: {
       MYOS_BACKGROUND_BACKPRESSURE_ENABLED: "0",
@@ -582,6 +587,7 @@ test("background runner refuses Gemini sidecars when API-key env is visible", as
   }, {
     enabled: true,
     command: "gemini",
+    callerProvider: "gemini",
     env: { MYOS_BACKGROUND_BACKPRESSURE_ENABLED: "0", GEMINI_API_KEY: "test" },
     async runCommand() {
       throw new Error("Gemini API-key sidecar should not execute");
@@ -648,6 +654,7 @@ test("background runner strips all Anthropic keys from child env in both OAuth a
     {
       enabled: true,
       command: "codex",
+      callerProvider: "codex",
       stateFile: tempStateFile(),
       env: { ...dirtyEnv },
       async runCommand({ env: childEnv }) {
@@ -668,6 +675,7 @@ test("background runner strips all Anthropic keys from child env in both OAuth a
     {
       enabled: true,
       command: "codex",
+      callerProvider: "codex",
       stateFile: tempStateFile(),
       env: { ...dirtyEnv, MYOS_INITIATOR: "unattended" },
       async runCommand({ env: childEnv }) {
@@ -766,6 +774,7 @@ test("background runner does not block on optional-only plans", async () => {
   const controller = startBackgroundTasks(plan, {
     enabled: true,
     command: "codex",
+    callerProvider: "codex",
     stateFile: tempStateFile(),
     async runCommand() {
       await gate;
@@ -922,6 +931,7 @@ test("background runner enforces MYOS_BACKGROUND_AGENTS_ENABLED=0 even when call
   const results = await runBackgroundTasks(plan, {
     enabled: true,
     command: "codex",
+    callerProvider: "codex",
     env: { MYOS_BACKGROUND_AGENTS_ENABLED: "0" },
     async runCommand() {
       spawned += 1;

@@ -24,7 +24,6 @@ const DEFAULT_TIMEOUT_MS = 180 * 1000;
 const DEFAULT_MAX_CONCURRENT_SIDECARS = 4;
 const DEFAULT_MAX_LOAD_AVG = 12;
 const DEFAULT_MIN_FREE_DISK_GIB_FOR_WRITABLE = 12;
-const ORPHAN_WORKTREE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const STRUCTURED_RESULT_CONTRACT = '- End your reply with a single line containing only this JSON object: {"findings":[{"file":"...","note":"..."}],"risks":["..."],"checks":["..."],"confidence":"low|medium|high"}';
 const ORCHESTRATOR_NAME = "myos-dispatch";
 const DEFAULT_OPTIONAL_SIDECAR_GRACE_MS = 1000;
@@ -205,7 +204,7 @@ function resolveProviderCapabilities(kind, options = {}) {
       supportsReadOnly: true,
       supportsStructuredJson: true,
       supportsHumanOauth: sameProviderAsCaller || fromFlag(env.MYOS_BACKGROUND_CLAUDE_HUMAN_OAUTH),
-      supportsWritablePatchWorktree: fromFlag(env.MYOS_BACKGROUND_CLAUDE_WRITABLE),
+      supportsWritablePatchWorktree: false,
     };
   }
   return {
@@ -216,13 +215,29 @@ function resolveProviderCapabilities(kind, options = {}) {
   };
 }
 
-function assertProviderAffinity(kind, options = {}) {
-  if (!options.callerProvider) return;
-  const callerKind = normalizeWorkerKind(options.callerProvider);
-  if (callerKind !== kind) {
-    throw new Error(
-      `Provider-affine fan-out refuses ${kind} sidecars for a ${callerKind} caller (cross-provider mixing is disabled).`,
-    );
+function assertProviderAffinity(kind, options = {}, task = {}) {
+  const caller = options.callerProvider;
+  if (!["codex", "claude", "gemini"].includes(caller)) {
+    throw new Error("Provider-affine fan-out requires an explicit valid callerProvider.");
+  }
+  const delegation = options.delegation;
+  if (delegation) {
+    const env = options.env || process.env;
+    const protectedContext = isUnattendedContext(env) || isSidecarProcess(env) ||
+      options.protectedSurface === true || task.protectedSurface === true ||
+      ["bot", "unattended", "scheduler", "cron", "sidecar"].includes(String(env.MYOS_INITIATOR || "").toLowerCase()) ||
+      ["allsorted", "goldenclaw"].includes(String(task.projectSlug || options.projectSlug || "").toLowerCase());
+    if (caller !== "claude" || kind !== "codex" ||
+        delegation.callerProvider !== caller || delegation.workerProvider !== kind ||
+        delegation.purpose !== "code-write" || delegation.context !== "human-interactive" ||
+        task.effectiveMode !== EXECUTION_MODES.WRITE || protectedContext ||
+        !Array.isArray(task.ownershipPaths) || task.ownershipPaths.length === 0) {
+      throw new Error("Explicit delegation refused: requires human-interactive Claude to Codex code-write with ownership and matching caller.");
+    }
+    return;
+  }
+  if (caller !== kind) {
+    throw new Error(`Provider-affine fan-out refuses ${kind} sidecars for a ${caller} caller (cross-provider mixing is disabled).`);
   }
 }
 
@@ -269,7 +284,7 @@ function resolveTaskModel(task = {}, options = {}) {
   const command = options.command || "codex";
   const kind = normalizeWorkerKind(command);
   if (kind === "codex" && task.model) {
-    return resolveCodexOauthModel(task.model);
+    return task.model;
   }
   return task.model || resolveBackgroundModel({
     provider: options.provider,
@@ -316,6 +331,9 @@ function buildWritablePrompt(task = {}) {
     "- Do not authenticate, refresh tokens, read secret material, or mutate external systems.",
     "- Do not spawn background agents, sidecars, myos-sidecar.js, Codex/Claude/Gemini subagents, or nested workers.",
     "- All fan-out is owned by the parent MyOS Dispatch orchestrator; if more lanes are needed, report that as a finding.",
+    "- Do not commit, apply patches to the source checkout, publish, or change Git configuration.",
+    "- Do not access the source checkout. Work only in this worktree; one owner per file.",
+    "- Report verification commands and their real results. Your report is not independent review.",
     "- Keep edits narrow and produce a clean patch artifact.",
     "- Return concise findings, changed files, verification result, and blockers.",
     `Execution envelope: ${JSON.stringify(task.executionEnvelope || {})}.`,
@@ -335,7 +353,8 @@ function buildBackgroundWorkerInvocation(task = {}, options = {}) {
   const readOnly = task.effectiveMode !== EXECUTION_MODES.WRITE;
   const prompt = readOnly ? buildReadOnlyPrompt(task) : buildWritablePrompt(task);
 
-  assertProviderAffinity(kind, options);
+  assertProviderAffinity(kind, options, task);
+  if (kind === "claude" && !readOnly) throw new Error("Claude code authoring is disabled.");
   if (!isUnattendedContext(options.env || process.env)) {
     assertOauthOnlyWorker(kind, options);
   }
@@ -352,7 +371,6 @@ function buildBackgroundWorkerInvocation(task = {}, options = {}) {
       "--permission-mode",
       readOnly ? "plan" : "acceptEdits",
       "--no-session-persistence",
-      "--bare",
       "--tools",
       readOnly ? "Read,Grep,Glob,LS" : "Read,Grep,Glob,LS,Edit,MultiEdit,Write",
     ];
@@ -382,10 +400,13 @@ function buildBackgroundWorkerInvocation(task = {}, options = {}) {
     "--json",
     "--skip-git-repo-check",
     "--ephemeral",
-    "--ignore-user-config",
     "-s",
     readOnly ? "read-only" : "workspace-write",
   ];
+  args.push("-c", "sandbox_workspace_write.network_access=false", "-c", "sandbox_workspace_write.writable_roots=[]");
+  if (!isUnattendedContext(options.env || process.env)) {
+    args.push("-c", 'forced_login_method="chatgpt"', "-c", 'model_provider="openai"');
+  }
   if (cwd) args.push("-C", cwd);
   if (model) args.push("-m", model);
   args.push("-");
@@ -395,45 +416,45 @@ function buildBackgroundWorkerInvocation(task = {}, options = {}) {
 function runCommand({ command, args, cwd, input, timeoutMs, env }) {
   return new Promise((resolve) => {
     const child = spawn(command, args, {
-      cwd,
-      stdio: ["pipe", "pipe", "pipe"],
-      env: env || process.env,
+      cwd, stdio: ["pipe", "pipe", "pipe"], env: env || process.env,
+      detached: process.platform !== "win32",
     });
-
     let stdout = "";
     let stderr = "";
     let settled = false;
+    let timedOut = false;
+    let killTimer;
+    const stop = (signal) => {
+      try {
+        if (process.platform !== "win32" && child.pid) process.kill(-child.pid, signal);
+        else child.kill(signal);
+      } catch (error) { if (error.code !== "ESRCH") child.kill(signal); }
+    };
     const timeout = setTimeout(() => {
       if (settled) return;
-      settled = true;
-      child.kill("SIGTERM");
-      resolve({
-        code: null,
-        signal: "SIGTERM",
-        stdout,
-        stderr: `${stderr}\nTimed out after ${timeoutMs}ms`.trim(),
-      });
+      timedOut = true;
+      stderr += `\nTimed out after ${timeoutMs || DEFAULT_TIMEOUT_MS}ms`;
+      stop("SIGTERM");
+      killTimer = setTimeout(() => stop("SIGKILL"), 2000);
     }, Number(timeoutMs || DEFAULT_TIMEOUT_MS));
-
-    child.stdout.on("data", (chunk) => {
-      stdout += chunk.toString();
-    });
-    child.stderr.on("data", (chunk) => {
-      stderr += chunk.toString();
-    });
+    child.stdout.on("data", (chunk) => { stdout += chunk.toString(); });
+    child.stderr.on("data", (chunk) => { stderr += chunk.toString(); });
+    child.stdin.on("error", (error) => { if (error.code !== "EPIPE") stderr += `\n${error.message}`; });
     child.on("error", (error) => {
       if (settled) return;
       settled = true;
       clearTimeout(timeout);
+      clearTimeout(killTimer);
       resolve({ code: null, signal: null, stdout, stderr: error.message });
     });
     child.on("close", (code, signal) => {
       if (settled) return;
       settled = true;
       clearTimeout(timeout);
-      resolve({ code, signal, stdout, stderr });
+      clearTimeout(killTimer);
+      // Close means inherited output pipes have closed too. Capture only now.
+      resolve({ code: timedOut ? null : code, signal: timedOut ? "SIGTERM" : signal, stdout, stderr });
     });
-
     if (input) child.stdin.write(input);
     child.stdin.end();
   });
@@ -513,6 +534,31 @@ function parseStructuredFindings(summary = "") {
   return null;
 }
 
+function validateWriterResponse(result, kind) {
+  if (!result || result.code !== 0 || result.signal) return { error: "provider_failed" };
+  try {
+    const events = String(result.stdout || "").trim().split(/\r?\n/).filter(Boolean).map(JSON.parse);
+    if (kind !== "codex" || !events.some((event) => event?.type === "turn.completed") ||
+        events.some((event) => !event || typeof event.type !== "string" || ["error", "turn.failed"].includes(event.type))) {
+      return { error: "provider_response_incomplete_or_failed" };
+    }
+    const parsed = parseCodexJsonl(result.stdout);
+    const finalLine = parsed.summary.trim().split(/\r?\n/).filter(Boolean).at(-1);
+    const report = JSON.parse(finalLine);
+    if (!report || !Array.isArray(report.findings) ||
+        !report.findings.every((item) => item && typeof item.file === "string" && typeof item.note === "string") ||
+        !Array.isArray(report.risks) || !report.risks.every((item) => typeof item === "string") ||
+        !Array.isArray(report.checks) || !report.checks.every((item) => typeof item === "string") ||
+        !["low", "medium", "high"].includes(report.confidence)) {
+      return { error: "malformed_writer_report" };
+    }
+    const reportedModels = [...new Set(events.flatMap((event) => typeof event.model === "string" ? [event.model] : []))];
+    return { report, reportedModels };
+  } catch {
+    return { error: "malformed_provider_response" };
+  }
+}
+
 function clampNumber(value, fallback, min, max) {
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) return fallback;
@@ -560,28 +606,10 @@ function detectHostBackpressure(options = {}) {
   return null;
 }
 
-let orphanWorktreeCleanupDone = false;
-
-function cleanupOrphanSidecarWorktrees(repoRoot) {
-  if (orphanWorktreeCleanupDone) return;
-  orphanWorktreeCleanupDone = true;
-  try {
-    const tmpRoot = os.tmpdir();
-    for (const entry of fs.readdirSync(tmpRoot)) {
-      if (!entry.startsWith("myos-sidecar-")) continue;
-      const fullPath = path.join(tmpRoot, entry);
-      try {
-        if (Date.now() - fs.statSync(fullPath).mtimeMs > ORPHAN_WORKTREE_MAX_AGE_MS) {
-          fs.rmSync(fullPath, { recursive: true, force: true });
-        }
-      } catch {}
-    }
-  } catch {}
-  if (repoRoot) {
-    try {
-      gitExec(["worktree", "prune"], repoRoot);
-    } catch {}
-  }
+function cleanupOrphanSidecarWorktrees() {
+  // Age is not proof of review or integration. Only the owning orchestrator
+  // may retire a retained handback after independent review and preservation.
+  return { removed: 0, reason: "explicit_review_required" };
 }
 
 function plannedResult(task, reason = "Background task planned but not executed.") {
@@ -638,12 +666,29 @@ function gitExec(args, cwd) {
   }).trim();
 }
 
-function gitExecRaw(args, cwd) {
-  return execFileSync("git", args, {
-    cwd,
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "pipe"],
-  });
+
+function validateOwnershipPaths(repoRoot, paths) {
+  if (!Array.isArray(paths) || paths.length === 0) throw new Error("ownership paths are required");
+  const root = fs.realpathSync(repoRoot);
+  return [...new Set(paths.map((entry) => {
+    if (typeof entry !== "string" || !entry || /[\\\x00-\x1f]/.test(entry) || entry.split("/").includes("..")) {
+      throw new Error(`invalid ownership path: ${entry}`);
+    }
+    const relative = path.relative(root, path.resolve(root, entry)).split(path.sep).join("/");
+    if (!relative || relative === ".." || relative.startsWith("../") || relative.split("/").some((part) => part.toLowerCase() === ".git")) {
+      throw new Error(`ownership_scope_outside_repository:${entry}`);
+    }
+    let current = root;
+    for (const part of relative.split("/")) {
+      current = path.join(current, part);
+      try {
+        if (fs.lstatSync(current).isSymbolicLink()) throw new Error(`ownership_symlink_refused:${entry}`);
+      } catch (error) {
+        if (error.code !== "ENOENT") throw error;
+      }
+    }
+    return relative;
+  }))];
 }
 
 function resolveWritableWorktree(task = {}, options = {}) {
@@ -654,88 +699,79 @@ function resolveWritableWorktree(task = {}, options = {}) {
   } catch {
     return null;
   }
+  const ownershipPaths = validateOwnershipPaths(repoRoot, task.ownershipPaths);
   cleanupOrphanSidecarWorktrees(repoRoot);
   if (gitExec(["status", "--porcelain"], repoRoot)) return null;
   const baseSha = gitExec(["rev-parse", "HEAD"], repoRoot);
-  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), `myos-sidecar-${task.id}-`));
+  const runId = String(options.orchestratorContext?.runId || "unscoped-run").replace(/[^a-zA-Z0-9_-]/g, "_");
+  const defaultArtifactRoot = path.join(
+    (options.env || process.env).MYOS_HOME_ROOT || path.join(os.homedir(), ".myos"),
+    "state", "myos-dispatch", "sidecar-artifacts", runId,
+  );
+  const requestedRoot = path.resolve(options.artifactRoot || defaultArtifactRoot);
+  let existing = requestedRoot;
+  while (!fs.existsSync(existing)) existing = path.dirname(existing);
+  const canonicalRoot = path.resolve(fs.realpathSync(existing), path.relative(existing, requestedRoot));
+  const relativeRoot = path.relative(fs.realpathSync(repoRoot), canonicalRoot);
+  if (!relativeRoot || (!relativeRoot.startsWith(`..${path.sep}`) && relativeRoot !== ".." && !path.isAbsolute(relativeRoot))) {
+    throw new Error("Artifact root must be outside the source checkout");
+  }
+  fs.mkdirSync(canonicalRoot, { recursive: true });
+  const artifactRoot = fs.mkdtempSync(path.join(canonicalRoot, "handback-"));
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "myos-sidecar-writer-"));
   try {
     gitExec(["worktree", "add", "--detach", tempRoot, baseSha], repoRoot);
-  } catch {
-    fs.rmSync(tempRoot, { recursive: true, force: true });
-    return null;
+  } catch (error) {
+    // Preserve even an incomplete allocation; never assume a failed Git operation wrote nothing.
+    throw new Error(`Cannot create isolated worktree; retained ${tempRoot}: ${error.message}`);
   }
-  const runId = options.orchestratorContext?.runId || "unscoped-run";
-  const defaultArtifactRoot = path.join(
-    process.env.MYOS_HOME_ROOT || path.join(os.homedir(), ".myos"),
-    "state",
-    "myos-dispatch",
-    "sidecar-artifacts",
-    runId,
-    task.id || "task",
-  );
-  const artifactRoot = path.resolve(
-    options.artifactRoot || process.env.MYOS_SIDECAR_ARTIFACT_ROOT || defaultArtifactRoot,
-  );
-  return { repoRoot, baseSha, worktreePath: tempRoot, artifactRoot };
+  return { repoRoot, baseSha, worktreePath: tempRoot, artifactRoot, ownershipPaths };
 }
 
-function cleanupWritableWorktree(context = null) {
-  if (!context?.repoRoot || !context?.worktreePath) return;
-  try {
-    gitExec(["worktree", "remove", "--force", context.worktreePath], context.repoRoot);
-  } catch {}
-  try {
-    fs.rmSync(context.worktreePath, { recursive: true, force: true });
-  } catch {}
+
+function verifyPatchArtifact(file, expectedSha256) {
+  if (!/^[a-f0-9]{64}$/.test(expectedSha256 || "")) throw new Error("Invalid patch SHA256");
+  const actual = crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");
+  if (actual !== expectedSha256) throw new Error("Patch hash mismatch; independent review is invalidated");
+  return true;
 }
 
 function collectWorktreeArtifacts(context, task = {}) {
   if (!context?.worktreePath || !context?.baseSha) {
     return { changedFiles: [], patchArtifact: null, patchSha256: null, verificationResult: null };
   }
-  gitExec(["add", "-A"], context.worktreePath);
-  const changedOutput = gitExec(["diff", "--cached", "--name-only", "-z", context.baseSha, "--"], context.worktreePath);
-  const changedFiles = changedOutput.split("\0").filter(Boolean);
-  const ownershipPaths = Array.isArray(task.ownershipPaths) && task.ownershipPaths.length > 0
-    ? task.ownershipPaths
-    : Array.isArray(task.writeScope)
-      ? task.writeScope
-      : [];
-  const canonicalRepoRoot = fs.realpathSync(context.repoRoot);
-  const allowedRoots = ownershipPaths.map((ownershipPath) => {
-    const absolute = path.resolve(context.repoRoot, ownershipPath);
-    const canonicalAbsolute = fs.existsSync(absolute) ? fs.realpathSync(absolute) : absolute;
-    const relative = path.relative(canonicalRepoRoot, canonicalAbsolute);
-    if (relative === "" || relative === ".") return "";
-    if (relative === ".." || relative.startsWith(`..${path.sep}`)) {
-      throw new Error(`ownership_scope_outside_repository:${ownershipPath}`);
-    }
-    return relative.split(path.sep).join("/");
+  fs.mkdirSync(context.artifactRoot, { recursive: true });
+  const indexPath = path.join(context.artifactRoot, `capture-${crypto.randomUUID()}.index`);
+  const git = (args, encoding = "utf8") => execFileSync("git", args, {
+    cwd: context.worktreePath, encoding, maxBuffer: 64 * 1024 * 1024,
+    env: { ...process.env, GIT_INDEX_FILE: indexPath }, stdio: ["ignore", "pipe", "pipe"],
   });
-  const ownershipViolations = changedFiles.filter((changedFile) => !allowedRoots.some((allowedRoot) => (
-    allowedRoot === "" ||
-    changedFile === allowedRoot ||
-    changedFile.startsWith(`${allowedRoot}/`)
-  )));
-  if (ownershipViolations.length > 0) {
-    throw new Error(`ownership_violation:${ownershipViolations.join(",")}`);
+  try {
+    git(["read-tree", context.baseSha]);
+    git(["add", "-A"]);
+    const changedFiles = git(["diff", "--cached", "--no-renames", "--name-only", "-z", context.baseSha, "--"]).split("\0").filter(Boolean);
+    const allowedRoots = context.ownershipPaths || validateOwnershipPaths(context.repoRoot, task.ownershipPaths);
+    const ownershipViolations = changedFiles.filter((file) => !allowedRoots.some((root) => file === root || file.startsWith(`${root}/`)));
+    const patch = git(["diff", "--cached", "--no-ext-diff", "--no-textconv", "--no-renames", "--binary", "--full-index", context.baseSha, "--"], null);
+    let patchArtifact = null;
+    let patchSha256 = null;
+    let verificationResult = "no_changes";
+    if (changedFiles.length) {
+      patchArtifact = path.join(context.artifactRoot, "changes.patch");
+      fs.writeFileSync(patchArtifact, patch, { flag: "wx", mode: 0o600 });
+      patchSha256 = crypto.createHash("sha256").update(patch).digest("hex");
+      verifyPatchArtifact(patchArtifact, patchSha256);
+      git(["apply", "--check", "--cached", "--reverse", patchArtifact]);
+      verificationResult = "patch_reverse_check_passed";
+    }
+    if (ownershipViolations.length) verificationResult = `ownership_violation:${ownershipViolations.join(",")}`;
+    try { validateOwnershipPaths(context.worktreePath, changedFiles.length ? changedFiles : allowedRoots); }
+    catch (error) { verificationResult = error.message; }
+    return { changedFiles, ownedChangedFiles: changedFiles.filter((file) => !ownershipViolations.includes(file)), ownershipViolations, patchArtifact, patchSha256, verificationResult };
+  } finally {
+    // This is a temporary capture index, never the writer's real index or work.
+    fs.rmSync(indexPath, { force: true });
   }
-  const patchText = gitExecRaw(["diff", "--cached", "--binary", context.baseSha, "--"], context.worktreePath);
-  let patchArtifact = null;
-  let patchSha256 = null;
-  if (changedFiles.length > 0) {
-    fs.mkdirSync(context.artifactRoot, { recursive: true });
-    patchArtifact = path.join(context.artifactRoot, `${task.id}.patch`);
-    fs.writeFileSync(patchArtifact, patchText, "utf8");
-    gitExec(["apply", "--check", "--cached", "--reverse", patchArtifact], context.worktreePath);
-    patchSha256 = crypto.createHash("sha256").update(patchText).digest("hex");
-  }
-  return {
-    changedFiles,
-    patchArtifact,
-    patchSha256,
-    verificationResult: changedFiles.length > 0 ? "patch_reverse_check_passed" : "no_changes",
-  };
 }
 
 function effectiveModeForTask(task = {}, options = {}) {
@@ -776,10 +812,13 @@ async function runBackgroundTask(task, options = {}) {
 
   let worktree = null;
   if (effectiveMode === EXECUTION_MODES.WRITE) {
-    worktree = resolveWritableWorktree(normalizedTask, {
-      ...options,
-      orchestratorContext,
-    });
+    try {
+      // Refuse invalid callers before allocating a worktree or running any provider.
+      assertProviderAffinity(normalizeWorkerKind(options.command || "codex"), options, normalizedTask);
+      worktree = resolveWritableWorktree(normalizedTask, { ...options, orchestratorContext });
+    } catch (error) {
+      return skippedResult(normalizedTask, `Writable task refused: ${error.message}`, { status: "failed", reviewRequired: true });
+    }
     if (!worktree) {
       return skippedResult(normalizedTask, "Writable task refused: repository is dirty, unavailable, or cannot create an isolated worktree.", {
         status: normalizedTask.required ? "failed" : "skipped",
@@ -790,6 +829,11 @@ async function runBackgroundTask(task, options = {}) {
     }
   }
 
+  if (worktree) {
+    normalizedTask.ownershipPaths = worktree.ownershipPaths;
+    normalizedTask.writeScope = worktree.ownershipPaths;
+    normalizedTask.scope = worktree.worktreePath;
+  }
   let invocation;
   try {
     invocation = buildBackgroundWorkerInvocation(normalizedTask, {
@@ -797,8 +841,8 @@ async function runBackgroundTask(task, options = {}) {
       cwd: worktree?.worktreePath || normalizedTask.scope || options.cwd,
     });
   } catch (error) {
-    cleanupWritableWorktree(worktree);
     return skippedResult(normalizedTask, `Skipped: ${error?.message || String(error)}`, {
+      ...(worktree ? { status: "failed", worktreePath: worktree.worktreePath, baseSha: worktree.baseSha, reviewRequired: true } : {}),
       runner: normalizeWorkerKind(options.command || "codex"),
     });
   }
@@ -854,23 +898,31 @@ async function runBackgroundTask(task, options = {}) {
   } finally {
     releaseSidecarSlot();
   }
+  result = result && typeof result === "object" ? result : { code: null, stderr: "Missing provider result" };
+  const writerResponse = worktree ? validateWriterResponse(result, invocation.kind) : null;
   const summary = extractBackgroundSummary(result.stdout, invocation.kind);
   const structured = parseStructuredFindings(summary);
-  let ok = result.code === 0 && !result.signal;
+  let ok = result.code === 0 && !result.signal && !writerResponse?.error;
+  if (writerResponse?.reportedModels?.some((model) => model !== invocation.model)) ok = false;
   const artifacts = [];
   let changedFiles = [];
   let patchArtifact = null;
   let patchSha256 = null;
   let verificationResult = null;
+  let ownedChangedFiles = [];
+  let ownershipViolations = [];
 
   if (normalizedTask.effectiveMode === EXECUTION_MODES.WRITE && worktree) {
     try {
       const collected = collectWorktreeArtifacts(worktree, normalizedTask);
       changedFiles = collected.changedFiles;
+      ownedChangedFiles = collected.ownedChangedFiles;
+      ownershipViolations = collected.ownershipViolations;
       patchArtifact = collected.patchArtifact;
       patchSha256 = collected.patchSha256;
       verificationResult = collected.verificationResult;
       if (patchArtifact) artifacts.push({ kind: "patch", path: patchArtifact, sha256: patchSha256 });
+      if (!changedFiles.length || verificationResult !== "patch_reverse_check_passed") ok = false;
     } catch (error) {
       ok = false;
       changedFiles = [];
@@ -886,7 +938,7 @@ async function runBackgroundTask(task, options = {}) {
     required: Boolean(normalizedTask.required),
     mode: normalizedTask.mode || EXECUTION_MODES.READ_ONLY,
     effectiveMode: normalizedTask.effectiveMode || EXECUTION_MODES.READ_ONLY,
-    status: ok ? "completed" : "failed",
+    status: ok ? (worktree ? "needs-review" : "completed") : "failed",
     summary: summary || result.stderr || (ok ? "Completed with no output" : "Background task failed"),
     findings: structured?.findings || [],
     risks: structured?.risks || [],
@@ -903,19 +955,25 @@ async function runBackgroundTask(task, options = {}) {
     stderr: result.stderr || "",
     ownershipPaths: Array.isArray(normalizedTask.ownershipPaths) ? normalizedTask.ownershipPaths : [],
     writeScope: Array.isArray(normalizedTask.writeScope) ? normalizedTask.writeScope : [],
+    reviewRequired: Boolean(worktree),
+    requestedModel: normalizedTask.model || null,
+    resolvedModel: invocation.model || null,
+    providerReportedModel: writerResponse?.reportedModels?.length === 1 ? writerResponse.reportedModels[0] : null,
+    providerResponseError: writerResponse?.error || null,
     baseSha: worktree?.baseSha || null,
     worktreePath: worktree?.worktreePath || null,
+    artifactRoot: worktree?.artifactRoot || null,
     patchArtifact,
     patchSha256,
     changedFiles,
+    ownedChangedFiles,
+    ownershipViolations,
     verificationResult,
+    verificationEvidence: { patch: verificationResult, providerResponse: writerResponse?.error || (worktree ? "valid_structured_response" : "not_checked"), writerReportedChecks: structured?.checks || [], independentReview: "pending" },
     executionEnvelope: normalizedTask.executionEnvelope || null,
     capabilityEvidence: normalizedTask.effectiveMode === EXECUTION_MODES.WRITE ? "writablePatchWorktree" : "readOnlySidecars",
   };
 
-  if (options.cleanupWritableWorktrees !== false) {
-    cleanupWritableWorktree(worktree);
-  }
 
   return response;
 }
@@ -923,7 +981,7 @@ async function runBackgroundTask(task, options = {}) {
 const DIGEST_SUMMARY_CHARS = 1200;
 
 function buildBackgroundDigest(results = [], options = {}) {
-  const completed = results.filter((result) => result && ["completed", "failed", "skipped"].includes(result.status));
+  const completed = results.filter((result) => result && ["completed", "needs-review", "failed", "skipped"].includes(result.status));
   if (!completed.length) return "";
   const summaryChars = Number(options.summaryChars || DIGEST_SUMMARY_CHARS);
   const lines = completed.map((result) => {
@@ -1079,6 +1137,9 @@ module.exports = {
   resolveBackgroundModel,
   resolveOptionalSidecarGraceMs,
   resolveProviderCapabilities,
+  verifyPatchArtifact,
+  validateOwnershipPaths,
+  runCommand,
   runBackgroundTask,
   runBackgroundTasks,
   startBackgroundTasks,
