@@ -14,6 +14,7 @@
 #   bash bin/install.sh [options]
 #
 # Options:
+#   --runtime <name>      claude (default), codex, or both. Codex requires /hooks trust.
 #   --yes                 Non-interactive; skip the confirm before writing settings.
 #   --with-pretool        Also register a PreToolUse(Bash) hook (default: UserPromptSubmit only).
 #   --with-extras         Build optional deps too (better-sqlite3 native build).
@@ -51,12 +52,14 @@ HOME_ROOT="${MYOS_HOME_ROOT:-$HOME/.myos-dispatch}"
 WORKSPACE_DIR="$HOME_ROOT/workspace"
 CLAUDE_DIR="$HOME/.claude"
 SETTINGS="$CLAUDE_DIR/settings.json"
+CODEX_SETTINGS="${CODEX_HOME:-$HOME/.codex}/hooks.json"
 HOOK_PATH="$REPO_DIR/bin/myos-dispatch-hook"
 INDEX_PATH="$WORKSPACE_DIR/capabilities-index.json"
 
 # --------------------------------------------------------------------------
 # Flags
 # --------------------------------------------------------------------------
+RUNTIME=claude
 ASSUME_YES=0
 WITH_PRETOOL=0
 WITH_EXTRAS=0
@@ -70,6 +73,8 @@ INDEX_DIR=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
+    --runtime) RUNTIME="${2:-}"; shift ;;
+    --runtime=*) RUNTIME="${1#--runtime=}" ;;
     --yes) ASSUME_YES=1 ;;
     --with-pretool) WITH_PRETOOL=1 ;;
     --with-extras) WITH_EXTRAS=1 ;;
@@ -92,6 +97,13 @@ while [ $# -gt 0 ]; do
   esac
   shift
 done
+
+case "$RUNTIME" in claude|codex|both) ;; *) printf "Invalid --runtime: %s\n" "$RUNTIME" >&2; exit 1 ;; esac
+RUNTIMES=("$RUNTIME")
+[ "$RUNTIME" = both ] && RUNTIMES=(claude codex)
+if [ "$RUNTIME" = codex ] && { [ "$WITH_SHELL_TITLE" -eq 1 ] || [ "$WITH_RABBIT_HOLE" -eq 1 ]; }; then
+  printf "Shell-title and rabbit-hole options require --runtime claude or both.\n" >&2; exit 1
+fi
 
 # --------------------------------------------------------------------------
 # Pretty output
@@ -138,9 +150,15 @@ remove_shell_title_rc_line() {
 uninstall() {
   step "Uninstalling MyOS Dispatch"
   local node_bin; node_bin="$(resolve_node)"
-  if [ -n "$node_bin" ] && [ -f "$SETTINGS" ]; then
-    "$node_bin" "$REPO_DIR/scripts/register-hook.js" --settings "$SETTINGS" --remove || warn "hook removal reported an issue"
-    ok "Stripped MyOS Dispatch hook + env key from $SETTINGS"
+  local surface target
+  for surface in "${RUNTIMES[@]}"; do
+    target="$SETTINGS"; [ "$surface" = codex ] && target="$CODEX_SETTINGS"
+    if [ -n "$node_bin" ] && [ -f "$target" ]; then
+      "$node_bin" "$REPO_DIR/scripts/register-hook.js" --settings "$target" --surface "$surface" --remove || return 1
+      ok "Removed $surface Dispatch registration; backups retained."
+    fi
+  done
+  if [ "$RUNTIME" != codex ] && [ -n "$node_bin" ] && [ -f "$SETTINGS" ]; then
     "$node_bin" "$REPO_DIR/scripts/register-title-hook.js" --settings "$SETTINGS" --remove >/dev/null 2>&1 || true
     ok "Stripped shell-title hook (if present) from $SETTINGS"
     "$node_bin" "$REPO_DIR/scripts/register-rabbithole-hook.js" --settings "$SETTINGS" --remove >/dev/null 2>&1 || true
@@ -178,6 +196,7 @@ uninstall() {
 # 1. Preflight
 # --------------------------------------------------------------------------
 step "1/9  Preflight checks"
+if [ -n "${WSL_DISTRO_NAME:-}" ]; then info "WSL: using Linux paths and Linux agent CLIs, separate from Windows native profiles."; fi
 
 NODE_BIN="$(resolve_node)"
 [ -n "$NODE_BIN" ] || fail "Node.js >= 20 is required but not found. Install via nvm (https://github.com/nvm-sh/nvm) or 'brew install node'."
@@ -187,8 +206,9 @@ if [ "$NODE_MAJOR" -lt 20 ]; then
 fi
 ok "node $("$NODE_BIN" -v) ($NODE_BIN)"
 
-command -v npm >/dev/null 2>&1 || fail "npm is required but not found."
-ok "npm $(npm -v)"
+if [ "$WITH_EXTRAS" -eq 1 ]; then
+  command -v npm >/dev/null 2>&1 || fail "npm is required for --with-extras."
+fi
 command -v git >/dev/null 2>&1 || warn "git not found — fine for local installs, needed only for updates."
 
 # Optional tooling (warn, never fail)
@@ -211,9 +231,9 @@ if [ "$WITH_EXTRAS" -eq 1 ]; then
   info "Building optional deps too (better-sqlite3 native build)…"
   npm install
 else
-  npm install --omit=optional
+  info "Core uses Node built-ins; no dependency installation required."
 fi
-ok "Dependencies installed under $REPO_DIR/node_modules"
+ok "Core ready (optional dependency install only with --with-extras)."
 
 # --------------------------------------------------------------------------
 # 3. Optional component bootstrap (opt-in, degrade gracefully)
@@ -267,51 +287,74 @@ ok "Index written to $INDEX_PATH"
 # --------------------------------------------------------------------------
 # 5. Register the Claude Code hook (the careful part)
 # --------------------------------------------------------------------------
-step "5/9  Registering the Claude Code dispatch hook"
-MAIN_HOOK_ADDED=0
-TITLE_HOOK_ADDED=0
-RABBITHOLE_HOOK_ADDED=0
-SHELL_TITLE_RC_ADDED=0
+step "5/9  Registering selected runtime hooks"
 
+TRANSACTION_DIR="$(mktemp -d)"
+finish_registration() {
+  local status=$? surface target record
+  if [ "$status" -ne 0 ]; then
+    for surface in "${RUNTIMES[@]}"; do
+      target="$SETTINGS"; [ "$surface" = codex ] && target="$CODEX_SETTINGS"
+      record="$TRANSACTION_DIR/$surface.json"
+      if [ -s "$record" ]; then
+        "$NODE_BIN" "$REPO_DIR/scripts/register-hook.js" --settings "$target" --rollback "$record" || warn "Rollback refused; inspect $target and backups."
+      fi
+    done
+  fi
+  rm -f "$TRANSACTION_DIR/claude.json" "$TRANSACTION_DIR/codex.json"
+  rmdir "$TRANSACTION_DIR" 2>/dev/null || true
+}
+trap finish_registration EXIT
 if [ "$NO_HOOK" -eq 1 ]; then
-  info "--no-hook set; skipping settings.json registration."
+  info "--no-hook set; skipping host registration."
 else
-  mkdir -p "$CLAUDE_DIR"
-  # register-hook.js backs up (timestamped) before every write — add and remove —
-  # so no separate backup step is needed here.
-  if [ ! -f "$SETTINGS" ]; then
-    info "No existing settings.json; a minimal one will be created."
-  fi
-  PRE_MAIN_HOOK=0
-  if [ -f "$SETTINGS" ] && grep -q "myos-dispatch-hook" "$SETTINGS" 2>/dev/null; then
-    PRE_MAIN_HOOK=1
-  fi
-
-  REG_ARGS=(--settings "$SETTINGS" --node "$NODE_BIN" --hook "$HOOK_PATH" --home "$HOME_ROOT" --surface claude)
-  [ "$WITH_PRETOOL" -eq 1 ] && REG_ARGS+=(--with-pretool)
-
-  # Show the planned merge and confirm (unless --yes).
-  "$NODE_BIN" "$REPO_DIR/scripts/register-hook.js" "${REG_ARGS[@]}" --dry-run
+  # Validate every target before writing either runtime.
+  for surface in "${RUNTIMES[@]}"; do
+    target="$SETTINGS"; [ "$surface" = codex ] && target="$CODEX_SETTINGS"
+    REG_ARGS=(--settings "$target" --node "$NODE_BIN" --hook "$HOOK_PATH" --home "$HOME_ROOT" --surface "$surface")
+    [ "$WITH_PRETOOL" -eq 1 ] && REG_ARGS+=(--with-pretool)
+    "$NODE_BIN" "$REPO_DIR/scripts/register-hook.js" "${REG_ARGS[@]}" --dry-run
+  done
   if [ "$ASSUME_YES" -ne 1 ]; then
-    printf '\nApply this merge to %s? [y/N] ' "$SETTINGS"
+    printf '\nApply these hook merges? [y/N] '
     reply=""
     if [ -r /dev/tty ]; then read -r reply </dev/tty || true; else read -r reply || true; fi
-    case "$reply" in
-      y|Y|yes|YES) ;;
-      *) warn "Aborted at hook registration. Nothing was written to settings.json."; NO_HOOK=1 ;;
-    esac
+    case "$reply" in y|Y|yes|YES) ;; *) NO_HOOK=1 ;; esac
   fi
   if [ "$NO_HOOK" -ne 1 ]; then
-    "$NODE_BIN" "$REPO_DIR/scripts/register-hook.js" "${REG_ARGS[@]}"
-    ok "Hook merged (idempotent; unrelated settings untouched)."
-    [ "$PRE_MAIN_HOOK" -eq 0 ] && MAIN_HOOK_ADDED=1
+    for surface in "${RUNTIMES[@]}"; do
+      target="$SETTINGS"; [ "$surface" = codex ] && target="$CODEX_SETTINGS"
+      REG_ARGS=(--settings "$target" --node "$NODE_BIN" --hook "$HOOK_PATH" --home "$HOME_ROOT" --surface "$surface" --transaction "$TRANSACTION_DIR/$surface.json")
+      [ "$WITH_PRETOOL" -eq 1 ] && REG_ARGS+=(--with-pretool)
+      "$NODE_BIN" "$REPO_DIR/scripts/register-hook.js" "${REG_ARGS[@]}"
+      ok "$surface registration saved: $target; host execution/trust not verified."
+    done
   fi
 fi
 
 # --------------------------------------------------------------------------
+# 8. Smoke test
+# --------------------------------------------------------------------------
+step "6/9  Smoke test"
+for surface in "${RUNTIMES[@]}"; do
+if [ "${MYOS_TEST_FAIL_SMOKE:-0}" -eq 1 ]; then
+  SMOKE_OUT=""
+else
+  SMOKE_OUT="$(printf '%s' '{"prompt":"test","hookEventName":"UserPromptSubmit"}' | MYOS_BACKGROUND_AGENTS_ENABLED=0 MYOS_AUTO_FANOUT=0 MYOS_HOME_ROOT="$HOME_ROOT" "$NODE_BIN" "$HOOK_PATH" --surface="$surface" 2>/dev/null || true)"
+fi
+if printf '%s' "$SMOKE_OUT" | grep -q '"additionalContext"'; then
+  ok "$surface binary smoke: emitted hookSpecificOutput.additionalContext (direct invocation)."
+else
+  warn "Smoke test failed: auto-reverting additions from this invocation…"
+  fail "Smoke test failed — hook did not emit additionalContext. Output was: $SMOKE_OUT"
+fi
+
+done
+
+# --------------------------------------------------------------------------
 # 6. Optional: shell-title hook (rename the terminal tab per-project + recap)
 # --------------------------------------------------------------------------
-step "6/9  Shell-title hook"
+step "7/9  Shell-title hook"
 SHELL_TITLE_DONE=0
 SHELL_TITLE_RC_DONE=0
 if [ "$WITH_SHELL_TITLE" -eq 1 ]; then
@@ -319,15 +362,10 @@ if [ "$WITH_SHELL_TITLE" -eq 1 ]; then
     warn "--no-hook set; skipping shell-title hook registration too."
   else
     mkdir -p "$CLAUDE_DIR"
-    PRE_TITLE_HOOK=0
-    if [ -f "$SETTINGS" ] && grep -q "myos-title-hook" "$SETTINGS" 2>/dev/null; then
-      PRE_TITLE_HOOK=1
-    fi
     TITLE_HOOK_PATH="$REPO_DIR/bin/myos-title-hook"
     "$NODE_BIN" "$REPO_DIR/scripts/register-title-hook.js" --settings "$SETTINGS" --node "$NODE_BIN" --hook "$TITLE_HOOK_PATH"
     ok "Registered SessionStart + Stop title hooks (idempotent; unrelated settings untouched)."
     SHELL_TITLE_DONE=1
-    [ "$PRE_TITLE_HOOK" -eq 0 ] && TITLE_HOOK_ADDED=1
 
     if rc_pair="$(shell_title_rc_file)"; then
       RC_FILE="${rc_pair%%|*}"
@@ -343,7 +381,6 @@ if [ "$WITH_SHELL_TITLE" -eq 1 ]; then
           printf '%s\n' "$SHELL_TITLE_MARKER_END"
         } >> "$RC_FILE"
         ok "Appended one source line to $RC_FILE (restart your shell, or open a new tab, to pick it up)"
-        SHELL_TITLE_RC_ADDED=1
       fi
       SHELL_TITLE_RC_DONE=1
     else
@@ -357,60 +394,20 @@ fi
 # --------------------------------------------------------------------------
 # 7. Optional: rabbit-hole self-check nudge
 # --------------------------------------------------------------------------
-step "7/9  Rabbit-hole self-check hook"
+step "8/9  Rabbit-hole self-check hook"
 RABBITHOLE_DONE=0
 if [ "$WITH_RABBIT_HOLE" -eq 1 ]; then
   if [ "$NO_HOOK" -eq 1 ]; then
     warn "--no-hook set; skipping rabbit-hole hook registration too."
   else
     mkdir -p "$CLAUDE_DIR"
-    PRE_RABBITHOLE_HOOK=0
-    if [ -f "$SETTINGS" ] && grep -q "myos-rabbithole-hook" "$SETTINGS" 2>/dev/null; then
-      PRE_RABBITHOLE_HOOK=1
-    fi
     RABBITHOLE_HOOK_PATH="$REPO_DIR/bin/myos-rabbithole-hook"
     "$NODE_BIN" "$REPO_DIR/scripts/register-rabbithole-hook.js" --settings "$SETTINGS" --node "$NODE_BIN" --hook "$RABBITHOLE_HOOK_PATH"
     ok "Registered the rabbit-hole self-check hook (idempotent; unrelated settings untouched)."
     RABBITHOLE_DONE=1
-    [ "$PRE_RABBITHOLE_HOOK" -eq 0 ] && RABBITHOLE_HOOK_ADDED=1
   fi
 else
   info "rabbit-hole: skipped (pass --with-rabbit-hole to enable the periodic self-check nudge)"
-fi
-
-# --------------------------------------------------------------------------
-# 8. Smoke test
-# --------------------------------------------------------------------------
-step "8/9  Smoke test"
-if [ "${MYOS_TEST_FAIL_SMOKE:-0}" -eq 1 ]; then
-  SMOKE_OUT=""
-else
-  SMOKE_OUT="$(printf '%s' '{"prompt":"test","hookEventName":"UserPromptSubmit"}' | MYOS_HOME_ROOT="$HOME_ROOT" "$NODE_BIN" "$HOOK_PATH" --surface=claude 2>/dev/null || true)"
-fi
-if printf '%s' "$SMOKE_OUT" | grep -q '"additionalContext"'; then
-  ok "Hook emitted hookSpecificOutput.additionalContext"
-else
-  warn "Smoke test failed: auto-reverting additions from this invocation…"
-  if [ "$MAIN_HOOK_ADDED" -eq 1 ]; then
-    if "$NODE_BIN" "$REPO_DIR/scripts/register-hook.js" --settings "$SETTINGS" --remove; then
-      ok "Reverted the MyOS Dispatch hook (settings.json restored; a timestamped backup also remains)."
-    else
-      warn "Auto-revert reported an issue — inspect $SETTINGS and its .bak-* backups."
-    fi
-  fi
-  if [ "$TITLE_HOOK_ADDED" -eq 1 ]; then
-    "$NODE_BIN" "$REPO_DIR/scripts/register-title-hook.js" --settings "$SETTINGS" --remove >/dev/null 2>&1 || true
-    ok "Reverted shell-title hook."
-  fi
-  if [ "$RABBITHOLE_HOOK_ADDED" -eq 1 ]; then
-    "$NODE_BIN" "$REPO_DIR/scripts/register-rabbithole-hook.js" --settings "$SETTINGS" --remove >/dev/null 2>&1 || true
-    ok "Reverted rabbit-hole hook."
-  fi
-  if [ "$SHELL_TITLE_RC_ADDED" -eq 1 ] && [ -n "${RC_FILE:-}" ]; then
-    remove_shell_title_rc_line "$RC_FILE"
-    ok "Reverted shell-title rc line from $RC_FILE."
-  fi
-  fail "Smoke test failed — hook did not emit additionalContext. Output was: $SMOKE_OUT"
 fi
 
 # --------------------------------------------------------------------------
@@ -418,7 +415,7 @@ fi
 # --------------------------------------------------------------------------
 step "9/9  Building the local model catalog report"
 if MYOS_HOME_ROOT="$HOME_ROOT" "$NODE_BIN" "$REPO_DIR/scripts/setup-model-catalog.js" --home "$HOME_ROOT" --report; then
-  ok "Local model catalog written to $HOME_ROOT/config/model-catalog.local.json"
+  ok "Read-only model report complete; run setup-model-catalog.js without --report to save."
 else
   warn "Model catalog report failed; continuing without blocking install."
 fi
@@ -430,14 +427,16 @@ cat <<EOF
   Data home:   $HOME_ROOT  (MYOS_HOME_ROOT)
   Index:       $INDEX_PATH
   Model catalog: $HOME_ROOT/config/model-catalog.local.json
-  Claude hook: $([ "$NO_HOOK" -eq 1 ] && echo 'not registered (--no-hook)' || echo "$SETTINGS")
+  Runtimes:    $RUNTIME
+  Registration: $([ "$NO_HOOK" -eq 1 ] && echo 'not registered (--no-hook)' || echo 'saved; host execution/trust not verified')
   Shell title: $([ "$SHELL_TITLE_DONE" -eq 1 ] && echo "enabled$([ "$SHELL_TITLE_RC_DONE" -eq 0 ] && echo ' (hooks only — unrecognized $SHELL, no rc integration)')" || echo 'not enabled (pass --with-shell-title, without --no-hook, to enable)')
   Rabbit hole: $([ "$RABBITHOLE_DONE" -eq 1 ] && echo 'enabled' || echo 'not enabled (pass --with-rabbit-hole, without --no-hook, to enable)')
 
   Next steps:
-    • Restart Claude Code so it reloads settings.json.
+    • Restart the selected host. In Codex use /hooks to review and trust Dispatch.
+    • On older Codex without /hooks, direct invocation is the verified fallback.
     • Re-run this installer with --index-dir <your projects dir> to index your work.
     $([ "$SHELL_TITLE_RC_DONE" -eq 1 ] && echo '• Open a new terminal tab (or restart your shell) so the tab-title integration takes effect.')
-    • Uninstall any time: bash bin/install.sh --uninstall
+    • Uninstall any time: bash bin/install.sh --runtime "$RUNTIME" --uninstall
 
 EOF

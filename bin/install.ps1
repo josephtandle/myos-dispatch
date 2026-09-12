@@ -14,6 +14,8 @@
 
   Skips Mac-only bits (no launchd, no mlx, no bash hooks).
 
+.PARAMETER Runtime
+  claude (default), codex, or both. Codex requires review in /hooks.
 .PARAMETER Yes
   Non-interactive; skip the confirm before writing settings.json.
 .PARAMETER WithPretool
@@ -37,6 +39,8 @@
 
 [CmdletBinding()]
 param(
+  [ValidateSet("claude", "codex", "both")]
+  [string]$Runtime = "claude",
   [switch]$Yes,
   [switch]$WithPretool,
   [switch]$WithExtras,
@@ -62,6 +66,9 @@ $HomeRoot  = if ($env:MYOS_HOME_ROOT) { $env:MYOS_HOME_ROOT } else { Join-Path $
 $WorkspaceDir = Join-Path $HomeRoot "workspace"
 $ClaudeDir = Join-Path $env:USERPROFILE ".claude"
 $Settings  = Join-Path $ClaudeDir "settings.json"
+$CodexDir = if ($env:CODEX_HOME) { $env:CODEX_HOME } else { Join-Path $env:USERPROFILE ".codex" }
+$CodexSettings = Join-Path $CodexDir "hooks.json"
+$Runtimes = if ($Runtime -eq "both") { @("claude", "codex") } else { @($Runtime) }
 $HookPath  = Join-Path $RepoDir "bin\myos-dispatch-hook"
 $IndexPath = Join-Path $WorkspaceDir "capabilities-index.json"
 
@@ -75,13 +82,13 @@ function Resolve-Node {
 if ($Uninstall) {
   Step "Uninstalling MyOS Dispatch"
   $node = Resolve-Node
-  if ($node -and (Test-Path $Settings)) {
-    & $node (Join-Path $RepoDir "scripts\register-hook.js") --settings $Settings --remove
-    Ok "Stripped MyOS Dispatch hook + env key from $Settings"
-    $bak = Get-ChildItem "$Settings.bak-*" -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
-    if ($bak) { Info "A timestamped backup remains for full restore: $($bak.FullName)" }
-  } else {
-    Info "No node or no settings.json; nothing to strip."
+  foreach ($surface in $Runtimes) {
+    $target = if ($surface -eq "codex") { $CodexSettings } else { $Settings }
+    if ($node -and (Test-Path $target)) {
+      & $node (Join-Path $RepoDir "scripts\register-hook.js") --settings $target --surface $surface --remove
+      if ($LASTEXITCODE -ne 0) { Die "Hook removal failed for $surface; inspect $target." }
+      Ok "Removed $surface Dispatch registration; timestamped backups retained."
+    }
   }
   if (Test-Path $IndexPath) { Remove-Item $IndexPath -Force; Ok "Removed generated index $IndexPath" }
   Info "Repo dir ($RepoDir) and node_modules were left in place. Remove manually if desired."
@@ -91,14 +98,14 @@ if ($Uninstall) {
 
 # --- 1. Preflight ----------------------------------------------------------
 Step "1/6  Preflight checks"
+Info "Windows native profiles selected. WSL uses its own Linux HOME and bash installer."
 $NodeBin = Resolve-Node
 if (-not $NodeBin) { Die "Node.js >= 20 is required but not found. Install from https://nodejs.org/ or 'winget install OpenJS.NodeJS.LTS'." }
 $NodeMajor = [int](& $NodeBin -p "process.versions.node.split('.')[0]")
 if ($NodeMajor -lt 20) { Die "Node.js >= 20 required (found $(& $NodeBin -v))." }
 Ok "node $(& $NodeBin -v) ($NodeBin)"
 
-if (-not (Get-Command npm -ErrorAction SilentlyContinue)) { Die "npm is required but not found." }
-Ok "npm $(npm -v)"
+if ($WithExtras -and -not (Get-Command npm -ErrorAction SilentlyContinue)) { Die "npm is required for -WithExtras." }
 if (-not (Get-Command git -ErrorAction SilentlyContinue)) { Warn "git not found — needed only for updates." }
 
 foreach ($pair in @(@("python","python3 (optional; for --with-graphify)"), @("pipx","pipx (optional, preferred for graphify)"), @("rg","ripgrep (optional)"), @("sqlite3","sqlite3 (optional)"))) {
@@ -114,9 +121,10 @@ if (-not (Test-Path $HookPath)) { Die "Hook not found at $HookPath — run this 
 Step "2/6  Installing node dependencies (scoped to repo, never global)"
 Push-Location $RepoDir
 try {
-  if ($WithExtras) { npm install } else { npm install --omit=optional }
+  if ($WithExtras) { npm install; if ($LASTEXITCODE -ne 0) { Die "Dependency installation failed." } }
+  else { Info "Core uses Node built-ins; no dependency installation required." }
 } finally { Pop-Location }
-Ok "Dependencies installed under $RepoDir\node_modules"
+Ok "Core ready (optional dependency install only with -WithExtras)."
 
 # --- 3. Optional components ------------------------------------------------
 Step "3/6  Optional components"
@@ -149,63 +157,71 @@ if ($IndexDir) {
 }
 $env:MYOS_HOME_ROOT = $HomeRoot
 & $NodeBin @genArgs
+if ($LASTEXITCODE -ne 0) { Die "Index generation failed." }
 Ok "Index written to $IndexPath"
 
-# --- 5. Register the Claude Code hook --------------------------------------
-Step "5/6  Registering the Claude Code dispatch hook"
-$HookRegistered = $false
-if ($NoHook) {
-  Info "-NoHook set; skipping settings.json registration."
-} else {
-  New-Item -ItemType Directory -Force -Path $ClaudeDir | Out-Null
-  # register-hook.js backs up (timestamped) before every write — add and remove —
-  # so no separate backup step is needed here.
-  if (-not (Test-Path $Settings)) {
-    Info "No existing settings.json; a minimal one will be created."
+# --- 5. Register selected hosts --------------------------------------------
+Step "5/7  Registering selected runtime hooks"
+$Transactions = @()
+$PreviousFanout = $env:MYOS_AUTO_FANOUT
+$PreviousBackground = $env:MYOS_BACKGROUND_AGENTS_ENABLED
+try {
+  if ($NoHook) {
+    Info "-NoHook set; skipping host registration."
+  } else {
+    # Validate all hosts before writing either one.
+    foreach ($surface in $Runtimes) {
+      $target = if ($surface -eq "codex") { $CodexSettings } else { $Settings }
+      $regArgs = @((Join-Path $RepoDir "scripts\register-hook.js"), "--settings", $target, "--node", $NodeBin, "--hook", $HookPath, "--home", $HomeRoot, "--surface", $surface)
+      if ($WithPretool) { $regArgs += "--with-pretool" }
+      & $NodeBin @regArgs --dry-run
+      if ($LASTEXITCODE -ne 0) { throw "Hook validation failed for $surface." }
+    }
+    $proceed = $Yes
+    if (-not $Yes) { $proceed = (Read-Host "Apply these hook merges? [y/N]") -in @("y", "Y", "yes", "YES") }
+    if ($proceed) {
+      foreach ($surface in $Runtimes) {
+        $target = if ($surface -eq "codex") { $CodexSettings } else { $Settings }
+        $transaction = [System.IO.Path]::GetTempFileName()
+        $Transactions += @{ Target = $target; Record = $transaction }
+        $regArgs = @((Join-Path $RepoDir "scripts\register-hook.js"), "--settings", $target, "--node", $NodeBin, "--hook", $HookPath, "--home", $HomeRoot, "--surface", $surface, "--transaction", $transaction)
+        if ($WithPretool) { $regArgs += "--with-pretool" }
+        & $NodeBin @regArgs
+        if ($LASTEXITCODE -ne 0) { throw "Hook registration failed for $surface." }
+        Ok "$surface registration saved: $target; host execution/trust not verified."
+      }
+    } else { $NoHook = $true }
   }
 
-  $regArgs = @((Join-Path $RepoDir "scripts\register-hook.js"), "--settings", $Settings, "--node", $NodeBin, "--hook", $HookPath, "--home", $HomeRoot, "--surface", "claude")
-  if ($WithPretool) { $regArgs += "--with-pretool" }
-
-  & $NodeBin @regArgs --dry-run
-  $proceed = $true
-  if (-not $Yes) {
-    $reply = Read-Host "`nApply this merge to $Settings? [y/N]"
-    if ($reply -notin @("y","Y","yes","YES")) { Warn "Aborted at hook registration. Nothing was written."; $proceed = $false }
+  Step "6/7  Direct binary smoke tests"
+  $env:MYOS_AUTO_FANOUT = "0"
+  $env:MYOS_BACKGROUND_AGENTS_ENABLED = "0"
+  foreach ($surface in $Runtimes) {
+    if ($env:MYOS_TEST_FAIL_SMOKE -eq "1") { throw "Smoke test failed (injected)." }
+    $smoke = '{"prompt":"test","hookEventName":"UserPromptSubmit"}' | & $NodeBin $HookPath "--surface=$surface"
+    if ($LASTEXITCODE -ne 0 -or ($smoke -join "`n") -notmatch '"additionalContext"') { throw "Smoke test failed for $surface." }
+    Ok "$surface binary emitted additionalContext (direct invocation)."
   }
-  if ($proceed) {
-    & $NodeBin @regArgs
-    Ok "Hook merged (idempotent; unrelated settings untouched)."
-    $HookRegistered = $true
-  }
-}
-
-# --- 6. Smoke test ---------------------------------------------------------
-Step "6/7  Smoke test"
-$env:MYOS_HOME_ROOT = $HomeRoot
-$smoke = '{"prompt":"test","hookEventName":"UserPromptSubmit"}' | & $NodeBin $HookPath --surface=claude
-if ($smoke -match '"additionalContext"') {
-  Ok "Hook emitted hookSpecificOutput.additionalContext"
-} else {
-  # Auto-revert: if we just wrote a hook, strip it so a failed install never
-  # leaves a broken hook wired into settings.json.
-  if ($HookRegistered) {
-    Warn "Smoke test failed — auto-reverting the hook just added…"
-    try {
-      & $NodeBin (Join-Path $RepoDir "scripts\register-hook.js") --settings $Settings --remove
-      Ok "Reverted the MyOS Dispatch hook (settings.json restored; a timestamped backup also remains)."
-    } catch {
-      Warn "Auto-revert reported an issue — inspect $Settings and its .bak-* backups."
+} catch {
+  foreach ($transaction in $Transactions) {
+    if ((Get-Item $transaction.Record).Length -gt 0) {
+      & $NodeBin (Join-Path $RepoDir "scripts\register-hook.js") --settings $transaction.Target --rollback $transaction.Record
+      if ($LASTEXITCODE -ne 0) { Warn "Rollback refused; inspect $($transaction.Target) and backups." }
     }
   }
-  Die "Smoke test failed — hook did not emit additionalContext. Output: $smoke"
+  throw
+} finally {
+  $env:MYOS_AUTO_FANOUT = $PreviousFanout
+  $env:MYOS_BACKGROUND_AGENTS_ENABLED = $PreviousBackground
+  foreach ($transaction in $Transactions) { Remove-Item $transaction.Record -ErrorAction SilentlyContinue }
 }
 
 # --- 7. Local model catalog report ----------------------------------------
 Step "7/7  Building the local model catalog report"
 try {
   & $NodeBin (Join-Path $RepoDir "scripts\setup-model-catalog.js") --home $HomeRoot --report
-  Ok "Local model catalog written to $(Join-Path $HomeRoot 'config\model-catalog.local.json')"
+  if ($LASTEXITCODE -ne 0) { throw "Model report failed." }
+  Ok "Read-only report complete; run setup-model-catalog.js without --report to save."
 } catch {
   Warn "Model catalog report failed; continuing without blocking install."
 }
@@ -217,11 +233,13 @@ Write-Host @"
   Data home:   $HomeRoot  (MYOS_HOME_ROOT)
   Index:       $IndexPath
   Model catalog: $(Join-Path $HomeRoot 'config\model-catalog.local.json')
-  Claude hook: $(if ($NoHook) { 'not registered (-NoHook)' } else { $Settings })
+  Runtimes: $Runtime
+  Registration: $(if ($NoHook) { 'not registered (-NoHook)' } else { 'saved; host execution/trust not verified' })
 
   Next steps:
-    - Restart Claude Code so it reloads settings.json.
+    - Restart the selected host. In Codex use /hooks to review and trust Dispatch.
+    - On older Codex without /hooks, direct invocation is the verified fallback.
     - Re-run with -IndexDir <your projects dir> to index your work.
-    - Uninstall any time: powershell -File bin\install.ps1 -Uninstall
+    - Uninstall any time: powershell -File bin\install.ps1 -Runtime $Runtime -Uninstall
 
 "@

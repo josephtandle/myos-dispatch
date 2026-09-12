@@ -70,13 +70,12 @@ test("(a) file absent -> minimal valid file created with our hook", () => {
   assert.ok(parsed.hooks.UserPromptSubmit);
 });
 
-test("(b) empty file -> same as absent", () => {
+test("(b) empty existing file is refused without overwrite", () => {
   const { settings } = sandbox();
   fs.writeFileSync(settings, "", "utf8");
   const r = add(settings);
-  assert.strictEqual(r.status, 0, r.stderr);
-  const parsed = JSON.parse(read(settings));
-  assert.strictEqual(countOurHooks(parsed), 1);
+  assert.strictEqual(r.status, 1, r.stderr);
+  assert.strictEqual(read(settings), "");
 });
 
 test("(c) malformed JSON -> REFUSES, exit 1, file byte-identical", () => {
@@ -340,4 +339,83 @@ test("tighter marker: our real command matches, logging-wrapper does not", () =>
     !isOurHookEntry({ command: "/usr/local/bin/my-wrapper-for-myos-dispatch-hook-logging.sh --surface=claude" }),
     "hyphenated wrapper name must NOT match"
   );
+});
+
+test("Codex registers supported events without host env config and preserves pretool on reinstall", () => {
+  const { settings } = sandbox();
+  const original = { model: "keep", teams: { mine: true }, hooks: { Stop: [{ hooks: [{ type: "command", command: "foreign-hook" }] }] } };
+  fs.writeFileSync(settings, JSON.stringify(original));
+  let result = add(settings, ["--surface", "codex", "--with-pretool"]);
+  assert.strictEqual(result.status, 0, result.stderr);
+  const first = JSON.parse(read(settings));
+  assert.ok(first.hooks.SessionStart, "Codex SessionStart is required");
+  assert.strictEqual(first.env, undefined, "hooks.json is not host env configuration");
+  assert.strictEqual(first.hooks.PreToolUse.at(-1).matcher, undefined);
+  assert.strictEqual(first.model, "keep");
+  assert.deepStrictEqual(first.teams, original.teams);
+  assert.deepStrictEqual(first.hooks.Stop, original.hooks.Stop);
+  for (const event of ["SessionStart", "UserPromptSubmit", "PreToolUse"]) assert.match(first.hooks[event].at(-1).hooks[0].command, /--surface=codex/);
+  const bytes = read(settings);
+  const backups = fs.readdirSync(path.dirname(settings));
+  result = add(settings, ["--surface", "codex"]);
+  assert.strictEqual(result.status, 0, result.stderr);
+  assert.strictEqual(read(settings), bytes);
+  assert.deepStrictEqual(fs.readdirSync(path.dirname(settings)), backups);
+});
+
+test("registration transaction rolls back exact prior bytes, refuses concurrent changes", () => {
+  const { home, settings } = sandbox();
+  const transaction = path.join(home, "transaction.json");
+  const original = JSON.stringify({ model: "custom", env: { MYOS_HOME_ROOT: "old", KEEP: "yes" } });
+  fs.writeFileSync(settings, original);
+  const result = add(settings, ["--transaction", transaction]);
+  assert.strictEqual(result.status, 0, result.stderr);
+  assert.notStrictEqual(read(settings), original);
+  const rollback = runReg(["--settings", settings, "--rollback", transaction]);
+  assert.strictEqual(rollback.status, 0, rollback.stderr);
+  assert.strictEqual(read(settings), original);
+  assert.strictEqual(add(settings, ["--transaction", transaction]).status, 0);
+  fs.writeFileSync(settings, "{\"concurrent\":true}");
+  assert.notStrictEqual(runReg(["--settings", settings, "--rollback", transaction]).status, 0);
+  assert.strictEqual(read(settings), "{\"concurrent\":true}");
+});
+
+test("foreign empty hook groups and their metadata survive a merge", () => {
+  const { settings } = sandbox();
+  const group = { matcher: "special", custom: { keep: true }, hooks: [] };
+  fs.writeFileSync(settings, JSON.stringify({ hooks: { Stop: [group] } }));
+  assert.strictEqual(add(settings).status, 0);
+  assert.deepStrictEqual(JSON.parse(read(settings)).hooks.Stop, [group]);
+});
+
+test("Codex includes a Windows command override with literal arguments", () => {
+  const { settings } = sandbox();
+  const result = add(settings, ["--surface", "codex"]);
+  assert.strictEqual(result.status, 0, result.stderr);
+  const hook = JSON.parse(read(settings)).hooks.UserPromptSubmit[0].hooks[0];
+  assert.match(hook.commandWindows || "", /^powershell\.exe -NoProfile -NonInteractive -EncodedCommand /);
+  const script = Buffer.from(hook.commandWindows.split(" ").at(-1), "base64").toString("utf16le");
+  assert.ok(script.includes("--surface=codex"));
+  assert.ok(script.includes("--run-hook"));
+  assert.ok(script.includes("/home/testroot"));
+});
+
+test("registered Codex command invokes the real hook with literal paths and configured home", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "hook literal $dollar `tick`-"));
+  const settings = path.join(home, "hooks.json");
+  const hookPath = path.resolve(__dirname, "../bin/myos-dispatch-hook");
+  const result = runReg(["--settings", settings, "--hook", hookPath, "--home", home, "--surface", "codex", "--allow-ephemeral-hook"]);
+  assert.strictEqual(result.status, 0, result.stderr);
+  const command = JSON.parse(read(settings)).hooks.UserPromptSubmit[0].hooks[0].command;
+  const executed = spawnSync("sh", ["-c", command], { input: JSON.stringify({ prompt: "hello", hook_event_name: "UserPromptSubmit", cwd: home }), encoding: "utf8", env: { HOME: home, PATH: process.env.PATH, MYOS_BACKGROUND_AGENTS_ENABLED: "0", MYOS_AUTO_FANOUT: "0", MYOS_BACKGROUND_BACKPRESSURE_ENABLED: "0" } });
+  assert.strictEqual(executed.status, 0, executed.stderr);
+  assert.ok(JSON.parse(executed.stdout).hookSpecificOutput.additionalContext);
+});
+
+test("atomic registration preserves private settings permissions", () => {
+  if (process.platform === "win32") return;
+  const { settings } = sandbox();
+  fs.writeFileSync(settings, "{}", { mode: 0o600 });
+  assert.strictEqual(add(settings).status, 0);
+  assert.strictEqual(fs.statSync(settings).mode & 0o777, 0o600);
 });
