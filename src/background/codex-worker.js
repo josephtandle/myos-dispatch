@@ -5,7 +5,7 @@ const { randomUUID } = require("node:crypto");
 const { spawn, execFileSync } = require("node:child_process");
 const { loadCatalog, resolveProfileModel } = require("../model-catalog");
 const { resolveWorkspacePath } = require("../myos-compat");
-const { resolveCodexOauthModel } = require("../runtime/llm-call");
+const { CODEX_OAUTH_CHEAP_MODEL, resolveCodexOauthModel } = require("../runtime/llm-call");
 const {
   appendEvent,
   buildBaseState,
@@ -473,7 +473,7 @@ function resolveCodexWorkerModelSelection(options = {}) {
     };
   } catch {
     return {
-      model: "gpt-5.4-mini",
+      model: CODEX_OAUTH_CHEAP_MODEL,
       profileId,
       source: "fallback_default",
     };

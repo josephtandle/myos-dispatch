@@ -311,13 +311,16 @@ function isGpt55OauthAllowed(options = {}) {
   );
 }
 
+const CODEX_OAUTH_CHEAP_MODEL = process.env.MYOS_CODEX_OAUTH_CHEAP_MODEL || "gpt-5.6-terra";
+const CODEX_OAUTH_STRONG_MODEL = process.env.MYOS_CODEX_OAUTH_STRONG_MODEL || "gpt-6-astra";
+
 function resolveCodexOauthModel(model, options = {}) {
   const normalized = String(model || "").trim().toLowerCase();
-  if (!normalized) return "gpt-5.4-mini";
-  if (normalized.includes("5.5")) return options.allowGpt55 ? "gpt-5.5" : "gpt-5.4";
-  if (normalized.includes("mini") || normalized.includes("nano")) return "gpt-5.4-mini";
-  if (normalized.includes("o3") || normalized.includes("o4")) return "o3";
-  return "gpt-5.4";
+  if (normalized === "gpt-5.6-terra" || normalized === "gpt-6-astra") return normalized;
+  if (!normalized) return CODEX_OAUTH_CHEAP_MODEL;
+  if (normalized.includes("mini") || normalized.includes("nano")) return CODEX_OAUTH_CHEAP_MODEL;
+  if (normalized.includes("5.5")) return options.allowGpt55 ? "gpt-5.5" : CODEX_OAUTH_STRONG_MODEL;
+  return CODEX_OAUTH_STRONG_MODEL;
 }
 
 function buildCodexExecPrompt(messages = [], responseMode = "text") {
@@ -1905,6 +1908,8 @@ function geminiCall(promptOrOptions, model, timeoutMs = 180000) {
 }
 
 module.exports = {
+  CODEX_OAUTH_CHEAP_MODEL,
+  CODEX_OAUTH_STRONG_MODEL,
   claudeCall,
   claudeCallAsync,
   codexCall,

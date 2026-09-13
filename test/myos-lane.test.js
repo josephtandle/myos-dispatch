@@ -106,8 +106,20 @@ test("planning evaluation routes to GPT 5.5 only in interactive OAuth", () => {
   assert.equal(oauthPlan.routingSource, "intent");
   assert.equal(oauthPlan.candidates[0].model, "gpt-5.5");
   assert.notEqual(apiPlan.candidates[0].model, "gpt-5.5");
-  assert.equal(resolveCodexOauthModel("gpt-5.5"), "gpt-5.4");
+  assert.equal(resolveCodexOauthModel("gpt-5.5"), "gpt-6-astra");
   assert.equal(resolveCodexOauthModel("gpt-5.5", { allowGpt55: true }), "gpt-5.5");
+});
+
+test("Codex OAuth maps unsupported models to accepted cheap and strong defaults", () => {
+  assert.equal(resolveCodexOauthModel("gpt-5.4-mini"), "gpt-5.6-terra");
+  assert.equal(resolveCodexOauthModel("gpt-5.4"), "gpt-6-astra");
+  assert.equal(resolveCodexOauthModel("o3"), "gpt-6-astra");
+  assert.equal(resolveCodexOauthModel("gpt-5.6-terra"), "gpt-5.6-terra");
+  assert.equal(resolveCodexOauthModel(""), "gpt-5.6-terra");
+  assert.equal(resolveCodexOauthModel(" GPT-6-ASTRA "), "gpt-6-astra");
+  assert.equal(resolveCodexOauthModel("gpt-5.5-mini", { allowGpt55: true }), "gpt-5.6-terra");
+  assert.equal(resolveCodexOauthModel("gpt-6-nano"), "gpt-5.6-terra");
+  assert.equal(resolveCodexOauthModel("unknown"), "gpt-6-astra");
 });
 
 test("advisory strategy routes Fable only in interactive OAuth", () => {

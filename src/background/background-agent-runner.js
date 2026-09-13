@@ -7,7 +7,7 @@ const crypto = require("node:crypto");
 const { spawn, execFileSync } = require("node:child_process");
 
 const { loadCatalog, resolveProfileModel } = require("../model-catalog");
-const { resolveCodexOauthModel } = require("../runtime/llm-call");
+const { CODEX_OAUTH_CHEAP_MODEL, resolveCodexOauthModel } = require("../runtime/llm-call");
 const { parseCodexJsonl } = require("./codex-worker");
 const {
   isParallelizationTargetQuarantined,
@@ -285,7 +285,7 @@ function resolveBackgroundModel({ provider, profile, command }) {
   }
 
   if (kind === "codex") {
-    return resolveCodexOauthModel(resolvedModel || process.env.MYOS_BACKGROUND_CODEX_MODEL || "gpt-5.4-mini");
+    return resolveCodexOauthModel(resolvedModel || process.env.MYOS_BACKGROUND_CODEX_MODEL || CODEX_OAUTH_CHEAP_MODEL);
   }
 
   return resolvedModel;

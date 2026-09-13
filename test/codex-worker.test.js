@@ -150,7 +150,7 @@ test("resolveRunOutboxDir falls back to tmp when primary outbox is full", async 
   fs.rmSync(path.join(os.tmpdir(), "myos-worker-outbox"), { recursive: true, force: true });
 });
 
-test("resolveCodexWorkerModelSelection defaults straightforward work to gpt-5.4-mini", () => {
+test("resolveCodexWorkerModelSelection defaults straightforward work to gpt-5.6-terra", () => {
   const originalDefault = process.env.MYOS_MODEL_PROFILE_DEFAULT;
   const originalSmart = process.env.MYOS_MODEL_PROFILE_SMART;
   const originalWrite = process.env.MYOS_MODEL_PROFILE_WRITE;
@@ -169,7 +169,7 @@ test("resolveCodexWorkerModelSelection defaults straightforward work to gpt-5.4-
       },
     });
 
-    assert.equal(selection.model, "gpt-5.4-mini");
+    assert.equal(selection.model, "gpt-5.6-terra");
     assert.equal(selection.profileId, "bot_default");
     assert.equal(selection.source, "routing_profile");
   } finally {
@@ -184,7 +184,7 @@ test("resolveCodexWorkerModelSelection defaults straightforward work to gpt-5.4-
   }
 });
 
-test("resolveCodexWorkerModelSelection escalates exploratory work to gpt-5.4", () => {
+test("resolveCodexWorkerModelSelection escalates exploratory work to gpt-6-astra", () => {
   const originalDefault = process.env.MYOS_MODEL_PROFILE_DEFAULT;
   const originalSmart = process.env.MYOS_MODEL_PROFILE_SMART;
   const originalWrite = process.env.MYOS_MODEL_PROFILE_WRITE;
@@ -204,7 +204,7 @@ test("resolveCodexWorkerModelSelection escalates exploratory work to gpt-5.4", (
       },
     });
 
-    assert.equal(selection.model, "gpt-5.4");
+    assert.equal(selection.model, "gpt-6-astra");
     assert.equal(selection.profileId, "openai_heavy_reasoning");
     assert.equal(selection.source, "routing_profile");
   } finally {
