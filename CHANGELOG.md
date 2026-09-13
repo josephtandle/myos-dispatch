@@ -4,6 +4,28 @@ All notable changes to MyOS Dispatch are documented here.
 
 ## Unreleased
 
+## v4.0.0 - 2026-09-12
+
+### Breaking
+
+- Background worker callers must explicitly declare a recognized `callerProvider`, including same-provider read-only callers. Missing or unknown callers fail closed; a worker command alone does not establish caller identity. General same-provider affinity remains enforced. The sole cross-provider writer contract is explicit human-interactive Claude-to-Codex code delegation.
+- Writable handbacks are patch proposals: success is `needs-review`, and `reviewRequired` stays true. Replay the hash-verified patch at `baseSha` in a separate checkout for independent review. Record SHA256 outside the mutable writer worktree and recheck before integration; self-review and later worktree contents are not approval.
+- Windows-native writable execution is refused before worktree allocation. Use WSL for the writer. Native Windows hook installation does not enable native writable workers.
+
+### Added
+
+- `myos-writer` package command for one bounded task with explicit repository, owned paths, caller, provider, and exact model; retained binary/new-file patches, SHA256, and a review manifest. No apply, commit, publish, or model fallback option.
+- Claude/Codex setup with hook merge previews for dry review, explicit acceptance, backups, and separate registration/smoke/host-trust evidence. The installer ends with a read-only model report; saving machine setup is explicit.
+- Model catalog tools for exact model add/select and hash-guarded catalog-only undo, preserving existing assignments and overrides. Model metadata does not establish account access.
+- Cleanup evidence fields: `cleanupScope: "owned-process-group"`, `ownedGroupStopped: true|false|null`, and `treeQuiescence: "unverified"`. Detached processes may survive and retained worktrees may change. The writer instruction forbids background servers, daemons, and detached processes as an execution rule, not enforced containment.
+
+### Fixed
+
+- POSIX cleanup handles both normal exit and timeout, including same-group children with ignored stdio. Failed cleanup blocks normal patch capture. Group termination never establishes worktree deletion safety; every writer worktree is retained.
+- Ownership validation accepts repository-root path aliases such as macOS `/var` and `/private/var` while preserving symlink and out-of-repository refusal.
+
+Node.js remains `>=20`; no new dependencies.
+
 ## v3.7.0 - 2026-08-24
 
 ### Added

@@ -47,6 +47,13 @@ hooks.
   no code changes.
 - **Typed-evidence shadow routing** and **dispatcher-health** self-promotion
   state machines (all observe-only by default; see the `MYOS_*` toggles).
+- **Setup previews** for Claude and Codex hooks, plus a read-only local model report.
+- **Exact model management** with explicit add/select and catalog-only undo; see
+  [models](docs/models.md).
+- **Claude-to-Codex coauthoring** through `myos-writer`: one bounded interactive
+  task, owned paths, an exact model, and a retained hash-pinned patch that requires
+  independent review. See [coauthoring](docs/coauthoring.md). The writer requires
+  macOS, Linux, or WSL; Windows-native writable execution is refused.
 - **Provider-agnostic**: Claude, Codex, Gemini and others follow the same route.
 
 ---
@@ -59,64 +66,97 @@ hooks.
   - **sqlite3** — for `sqlite`-mode data sources (`better-sqlite3` is an
     *optional* dependency; install with `--with-extras`)
   - **graphify** / **gitnexus** — optional per-repo code intelligence
-  - an **agent CLI** (`claude` or `codex`) — only needed for background workers
+  - an **agent CLI** (`claude` or `codex`) — required for that host integration or its workers
 
 ---
 
 ## Install
 
-Canonical code comes only from https://github.com/josephtandle/myos-dispatch.
-Existing clean canonical checkouts fetch and check out v3.4.1 then rerun the idempotent installer.
-Dirty or foreign checkouts are left untouched and a separate versioned canonical checkout is used.
+Get the source from [the canonical repository](https://github.com/josephtandle/myos-dispatch)
+or its [latest release](https://github.com/josephtandle/myos-dispatch/releases/latest).
+Keep it in a permanent directory: registered hooks use absolute paths. Do not run
+the installer from a temporary download folder. Keep existing checkouts and their
+local changes; use a separate directory when trying a release.
 
-Note: Settings merging preserves unrelated settings in `settings.json`, but the installer intentionally rebuilds the generated capabilities index from the chosen `--index-dir`.
+### macOS / Linux / WSL (Bash)
 
-### macOS / Linux
+With Git and Node.js 20+ installed:
 
 ```sh
-bash bin/install.sh                       # interactive (prompts before touching settings.json)
-bash bin/install.sh --yes                 # non-interactive
-bash bin/install.sh --index-dir ~/code    # scan your projects to build a useful index
+git clone https://github.com/josephtandle/myos-dispatch.git "$HOME/myos-dispatch"
+cd "$HOME/myos-dispatch"
+bash "bin/install.sh" --runtime codex
 ```
 
-Useful flags:
+Review the printed hook merge before accepting; `--yes` explicitly accepts it
+without the interactive prompt. The registrar uses `--dry-run` for this preview.
 
-| Flag | Effect |
-|------|--------|
-| `--yes` | Skip the confirm before writing `settings.json`. |
-| `--index-dir <path>` | Scan a directory for recipes/skills/workflows to build **your** index. |
-| `--with-pretool` | Also register a `PreToolUse(Bash)` hook (default: `UserPromptSubmit` only). |
-| `--with-extras` | Build optional deps too (`better-sqlite3` native build). |
-| `--with-graphify` | Install optional graphify (`pipx` preferred, never global `pip`). |
-| `--with-gitnexus` | Verify optional gitnexus via `npx` (ephemeral, no global install). |
-| `--with-shell-title` | Auto-rename your terminal tab to the current project, and to a short recap of what Claude just did after each turn. macOS/Linux, zsh or bash only. See [Shell-title hook](#shell-title-hook-optional). |
-| `--with-rabbit-hole` | Quietly nudges the assistant to periodically re-run its own focus/fatigue self-check during long sessions. See [Rabbit-hole self-check hook](#rabbit-hole-self-check-hook-optional). |
-| `--no-hook` | Install everything except the `settings.json` hook(s) — this also skips `--with-shell-title` and `--with-rabbit-hole` if passed alongside them. |
-| `--uninstall` | Reverse the install. |
+Choose `--runtime claude`, `--runtime codex`, or `--runtime both`. The default is
+`claude` for compatibility. Restart the selected host. **In Codex, open `/hooks`,
+review the Dispatch commands, and trust them before use.** Registration does not
+establish host trust. Changed commands need review again. See the
+[official hook documentation](https://learn.chatgpt.com/docs/hooks).
 
-### Windows (PowerShell)
+WSL uses Linux paths, Linux CLIs, and the WSL home directory. A Windows-native
+installation has separate profiles and must use the PowerShell installer below.
+
+Useful options:
+
+| Bash flag | Effect |
+| --- | --- |
+| `--runtime claude\|codex\|both` | Register only the selected hosts. |
+| `--yes` | Apply the previewed hook merge without a prompt. |
+| `--index-dir "$HOME/code"` | Build a capability index from your projects. |
+| `--with-pretool` | Add PreToolUse (Claude: Bash; Codex: all supported tools). Reinstalls retain it. |
+| `--with-extras` | Install the optional SQLite native dependency. Core needs only Node built-ins. |
+| `--with-graphify`, `--with-gitnexus` | Opt into optional code intelligence tools. |
+| `--with-shell-title`, `--with-rabbit-hole` | Optional Claude integrations; require runtime claude or both. |
+| `--no-hook` | Skip host registration. |
+| `--uninstall` | Remove Dispatch registration for the selected runtime; retain backups and source. |
+
+### Windows native (PowerShell)
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File bin\install.ps1 -Yes -IndexDir C:\Users\me\code
-powershell -ExecutionPolicy Bypass -File bin\install.ps1 -Uninstall
+git clone https://github.com/josephtandle/myos-dispatch.git "$env:USERPROFILE\myos-dispatch"
+Set-Location "$env:USERPROFILE\myos-dispatch"
+& ".\bin\install.ps1" -Runtime codex
 ```
 
-Same behavior as the shell installer (backup + JSON-merge + idempotent);
-Mac-only bits (launchd, mlx, bash wrappers) are skipped.
+Use `-Runtime claude`, `codex`, or `both`. Optional project indexing uses
+`-IndexDir "C:\path to your projects"`. Follow your organization's script execution
+policy. This installer does not disable it. Windows execution has not been
+verified by the macOS implementation run; a native Windows rehearsal is required.
+The `myos-writer` command requires WSL on Windows; native hook registration does
+not enable native writable workers.
 
-### What the installer does to `settings.json`
+### What gets registered and verified
 
-It **never overwrites** `~/.claude/settings.json`. It:
+Claude uses `~/.claude/settings.json`: UserPromptSubmit and optional PreToolUse,
+plus the Dispatch child data-home setting. Codex uses `~/.codex/hooks.json`, or
+`hooks.json` under your configured `CODEX_HOME`: SessionStart, UserPromptSubmit,
+and optional PreToolUse. A Node wrapper sets the data home for the Codex hook
+process; it does not add invented host configuration or edit `config.toml`.
 
-1. **Backs it up** first to `settings.json.bak-<timestamp>`.
-2. Reads the existing JSON and **merges** a single `UserPromptSubmit` hook entry
-   (using the resolved absolute `node` path and the absolute hook path), plus one
-   `env.MYOS_HOME_ROOT` key — using **node**, not `jq`, for portability.
-3. Is **idempotent**: re-running strips any prior MyOS Dispatch entry (matched by
-   a stable marker) before re-adding, so it never duplicates and never touches
-   your `model`, `theme`, permissions, or other hooks.
-4. **Prints the planned merge and asks for confirmation** unless you pass
-   `--yes`.
+The registrar validates JSON, merges only Dispatch entries by its stable marker,
+preserves unrelated hooks/model/team settings, backs up changed files, and writes
+atomically. Reinstalling the same registration does not rewrite it. A failed
+installation restores prior hook-file bytes when they have not changed meanwhile;
+concurrent changes cause rollback to refuse instead of overwriting them.
+
+Installer output separates **direct binary smoke success**, **saved registration**,
+and **unverified host execution/trust**. It does not authenticate you. If an older
+Codex version has no `/hooks`, upgrade using its official installation guidance or
+use direct invocation; automatic host integration is not established there:
+
+```sh
+printf '%s' '{"prompt":"hello","hook_event_name":"UserPromptSubmit"}' | node "bin/myos-dispatch-hook" --surface=codex
+```
+
+The final model report is read-only. A detected CLI is not proof of OAuth login.
+Normal status commands (`codex login status`, `claude auth status --json`) establish
+only the reported login method; errors and unsupported status interfaces stay
+unknown. No model request is sent. See [model management](docs/models.md) for
+explicit setup, exact model add/select, and catalog-only undo.
 
 ### Shell-title hook (optional)
 
@@ -177,7 +217,7 @@ adding any new judgment of its own:
 ### Uninstall
 
 ```sh
-bash bin/install.sh --uninstall           # macOS / Linux
+bash "bin/install.sh" --runtime both --uninstall  # macOS / Linux / WSL
 ```
 
 Surgically removes the MyOS Dispatch hook and its `env` key, the shell-title
@@ -190,7 +230,8 @@ full manual restore if you want one.
 ### One-liner (optional)
 
 ```sh
-git clone https://github.com/<you>/myos-dispatch && bash myos-dispatch/bin/install.sh --index-dir "$PWD"
+git clone https://github.com/josephtandle/myos-dispatch.git "myos-dispatch"
+bash "myos-dispatch/bin/install.sh" --runtime codex --index-dir "$PWD"
 ```
 
 ---
@@ -202,11 +243,11 @@ git clone https://github.com/<you>/myos-dispatch && bash myos-dispatch/bin/insta
 Everything Dispatch reads as operator config and writes as runtime state lives
 under **`MYOS_HOME_ROOT`** (default `~/.myos-dispatch`). The router reads your
 capability index from `$MYOS_HOME_ROOT/workspace/capabilities-index.json`. The
-installer sets this key in `settings.json` so the hook always resolves the same
-root. Point it anywhere:
+installer sets this key in Claude settings or in the Codex hook child environment
+so the hook resolves the same root. Point it anywhere:
 
 ```sh
-MYOS_HOME_ROOT=/path/to/dispatch-home bash bin/install.sh --index-dir ~/code
+MYOS_HOME_ROOT="/path/to/dispatch-home" bash "bin/install.sh" --runtime codex --index-dir "$HOME/code"
 ```
 
 Rebuild the index any time:

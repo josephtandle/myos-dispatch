@@ -52,7 +52,7 @@ function commandExists(command) {
         timeout: 3000,
         stdio: "ignore",
       })
-    : spawnSync("sh", ["-lc", `command -v ${command} >/dev/null 2>&1`], {
+    : spawnSync("sh", ["-c", `command -v ${command} >/dev/null 2>&1`], {
         timeout: 3000,
         stdio: "ignore",
       });
@@ -79,8 +79,32 @@ function runOllamaList() {
   return [...new Set(models)];
 }
 
+// Only normal status commands; never login, refresh, or inspect credential files.
+function probeLoginStatus(command, run = spawnSync, env = process.env) {
+  const args = command === "codex" ? ["login", "status"]
+    : command === "claude" ? ["auth", "status", "--json"] : null;
+  if (!args) return "unknown";
+  const result = run(command, args, { env, encoding: "utf8", timeout: 3000, maxBuffer: 65536 });
+  if (result.error || result.signal) return "unknown";
+  if (command === "claude") {
+    try {
+      const status = JSON.parse(result.stdout || "");
+      if (status.loggedIn === false) return "unauthenticated";
+      if (result.status === 0 && status.loggedIn === true && status.authMethod === "claude.ai") return "oauth";
+      if (result.status === 0 && status.loggedIn === true && status.authMethod === "api_key") return "api";
+    } catch { /* Unsupported output stays unknown. */ }
+    return "unknown";
+  }
+  const output = `${result.stdout || ""}\n${result.stderr || ""}`;
+  if (result.status === 0 && /Logged in using ChatGPT/i.test(output)) return "oauth";
+  if (result.status === 0 && /Logged in using an? API key/i.test(output)) return "api";
+  if (/Not logged in/i.test(output)) return "unauthenticated";
+  return "unknown";
+}
+
 function defaultProbes(env = process.env) {
   return {
+    loginStatus(command) { return probeLoginStatus(command, spawnSync, env); },
     cliAvailable(command) {
       return commandExists(command);
     },
@@ -104,11 +128,15 @@ function normalizeProviderAvailability(probes, env = process.env) {
   const availability = {};
   for (const provider of PROVIDER_ORDER) {
     const cli = PROVIDER_CLI[provider];
-    const oauth = cli ? Boolean(probes.cliAvailable(cli)) : false;
+    const installed = cli ? Boolean(probes.cliAvailable(cli)) : false;
+    const loginStatus = installed ? (probes.loginStatus?.(cli) || "unknown") : "not_installed";
+    const oauth = loginStatus === "oauth";
     const apiKey = Boolean((PROVIDER_ENV_KEYS[provider] || []).some((key) => probes.envHas(key)));
-    if (!oauth && !apiKey) continue;
+    if (!installed && !apiKey) continue;
     availability[provider] = {
-      oauthCli: oauth ? cli : undefined,
+      oauthCli: installed ? cli : undefined,
+      installed,
+      loginStatus,
       oauth,
       apiKey,
     };
@@ -252,11 +280,15 @@ function buildModelCatalog({ homeRoot = preferredHomeRoot(), probes = defaultPro
     : {};
 
   return {
-    version: 1,
-    generatedAt: now().toISOString(),
-    providers,
-    local,
-    assignments,
+    ...existing,
+    version: existing?.version || 1,
+    generatedAt: existing?.generatedAt || now().toISOString(),
+    providers: Object.fromEntries([...new Set([...Object.keys(existing?.providers || {}), ...Object.keys(providers)])].map(provider => [provider, {
+      ...existing?.providers?.[provider],
+      ...(providers[provider] || (PROVIDER_ORDER.includes(provider) ? { installed: false, loginStatus: "not_installed", oauth: false, apiKey: false } : {})),
+    }])),
+    local: { ...existing?.local, ...local, ollama: { ...existing?.local?.ollama, ...local.ollama }, mlxWhisper: { ...existing?.local?.mlxWhisper, ...local.mlxWhisper } },
+    assignments: { ...assignments, ...existing?.assignments },
     overrides,
     homeRoot,
   };
@@ -276,13 +308,13 @@ function formatAssignmentLine(taskClass, assignment) {
     : assignment.lane === "unattended_api"
       ? "unattended_api"
       : "unattended_local";
-  return `Assigned: ${assignment.model}, available through ${laneLabel} because ${assignment.authMode === "oauth" ? "the CLI is present" : "an API key is present"}.`;
+  return `Assigned: ${assignment.model}, available through ${laneLabel} because ${assignment.authMode === "oauth" ? "CLI OAuth login was verified when assigned" : "an API key is present"}.`;
 }
 
 function describeDetectedProvider(provider, state) {
   const parts = [];
-  if (state.oauth) parts.push(`${state.oauthCli} CLI signed in on this machine`);
-  if (state.apiKey) parts.push("API key in your environment");
+  if (state.installed) parts.push(`${state.oauthCli} CLI installed; login: ${state.loginStatus}`);
+  if (state.apiKey) parts.push("API key detected in your environment (not tested)");
   return `- ${provider}: ${parts.join(", plus an ")}`;
 }
 
@@ -314,7 +346,7 @@ function renderReport(catalog) {
   lines.push("If a request needs a safer path, it holds that work behind the right checks.");
   lines.push("The goal is to keep the system simple, fast, and predictable.");
   lines.push("");
-  lines.push("These are the models I identified as available on this machine:");
+  lines.push("These are the provider installations and credentials detected on this machine:");
   lines.push(...renderDetectedModels(catalog));
   lines.push("");
   lines.push("I've made my best guess assigning the eight task classes to them:");
@@ -327,30 +359,35 @@ function renderReport(catalog) {
 
   lines.push("");
   lines.push("Here are the task classes. I've assigned them to these models. Let me know if you would like to change any of them.");
-  lines.push(`Edit ${path.join(catalog.homeRoot, "config", "model-catalog.local.json")}, in the overrides section. Re-running node scripts/setup-model-catalog.js --report refreshes assignments without touching overrides.`);
+  lines.push(`Edit ${path.join(catalog.homeRoot, "config", "model-catalog.local.json")}, in the overrides section. The --report command previews detection without writing. Run without --report to save; existing assignments and overrides are preserved.`);
   return lines.join("\n");
 }
 
 function readExistingCatalog(targetPath) {
-  try {
-    if (!fs.existsSync(targetPath)) return null;
-    return JSON.parse(fs.readFileSync(targetPath, "utf8"));
-  } catch {
-    return null;
+  if (!fs.existsSync(targetPath)) return null;
+  const value = JSON.parse(fs.readFileSync(targetPath, "utf8"));
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Catalog must be a JSON object; no changes made");
+  for (const key of ["assignments", "overrides", "providers", "local"]) {
+    if (value[key] !== undefined && (!value[key] || typeof value[key] !== "object" || Array.isArray(value[key]))) {
+      throw new Error(`Invalid catalog ${key}; no changes made`);
+    }
   }
+  return value;
 }
 
 function writeModelCatalog(targetPath, catalog) {
-  const output = {
-    version: catalog.version,
-    generatedAt: catalog.generatedAt,
-    providers: catalog.providers,
-    local: catalog.local,
-    assignments: catalog.assignments,
-    overrides: catalog.overrides,
-  };
+  readExistingCatalog(targetPath); // Refuse malformed input even for direct callers.
+  const { homeRoot, ...output } = catalog;
+  const serialized = `${JSON.stringify(output, null, 2)}\n`;
+  const previous = fs.existsSync(targetPath) ? fs.readFileSync(targetPath, "utf8") : null;
+  if (previous === serialized) return output;
   fs.mkdirSync(path.dirname(targetPath), { recursive: true });
-  fs.writeFileSync(targetPath, `${JSON.stringify(output, null, 2)}\n`, "utf8");
+  if (previous !== null) fs.copyFileSync(targetPath, `${targetPath}.bak-${Date.now()}-${require("node:crypto").randomUUID()}`, fs.constants.COPYFILE_EXCL);
+  const tmp = `${targetPath}.tmp-${require("node:crypto").randomUUID()}`;
+  try {
+    fs.writeFileSync(tmp, serialized, { mode: 0o600, flag: "wx" });
+    fs.renameSync(tmp, targetPath);
+  } finally { if (fs.existsSync(tmp)) fs.unlinkSync(tmp); }
   return output;
 }
 
@@ -396,7 +433,8 @@ function main(argv = process.argv.slice(2)) {
     probes: defaultProbes(),
     existing,
   });
-  const written = writeModelCatalog(targetPath, catalog);
+  const { homeRoot: ignoredHome, ...preview } = catalog;
+  const written = args.report ? preview : writeModelCatalog(targetPath, catalog);
 
   if (args.json) {
     process.stdout.write(`${JSON.stringify(written, null, 2)}\n`);
@@ -422,6 +460,7 @@ if (require.main === module) {
 }
 
 module.exports = {
+  probeLoginStatus,
   TASK_DESCRIPTIONS,
   buildAssignments,
   buildModelCatalog,

@@ -67,7 +67,13 @@ function parseArgs(argv) {
   for (let i = 0; i < argv.length; i += 1) {
     const a = argv[i];
     const take = () => argv[++i] || "";
-    if (a === "--settings") args.settings = take();
+    if (a === "--run-hook") args.runHook = take();
+    else if (a.startsWith("--surface=")) args.surface = a.slice(10);
+    else if (a === "--settings") args.settings = take();
+    else if (a === "--transaction") args.transaction = take();
+    else if (a === "--rollback") args.rollback = take();
+    else if (a === "--optional-hook") args.optionalHook = take();
+    else if (a === "--shell-title-source") args.shellTitleSource = take();
     else if (a === "--node") args.node = take();
     else if (a === "--hook") args.hook = take();
     else if (a === "--home") args.home = take();
@@ -76,6 +82,7 @@ function parseArgs(argv) {
     else if (a === "--dry-run") args.dryRun = true;
     else if (a === "--remove") args.remove = true;
     else if (a === "--allow-ephemeral-hook") args.allowEphemeralHook = true;
+    else throw new Error(`Unknown argument: ${a}`);
   }
   return args;
 }
@@ -83,7 +90,6 @@ function parseArgs(argv) {
 function readSettings(settingsPath) {
   if (!fs.existsSync(settingsPath)) return {};
   const raw = fs.readFileSync(settingsPath, "utf8");
-  if (!raw.trim()) return {};
   try {
     const parsed = JSON.parse(raw);
     if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed;
@@ -94,11 +100,21 @@ function readSettings(settingsPath) {
 }
 
 function quote(value) {
-  // Wrap in double quotes for the shell; escape embedded quotes.
-  return `"${String(value).replace(/"/g, '\\"')}"`;
+  const text = String(value);
+  if (/[\r\n\0]/.test(text)) throw new Error("Invalid command path");
+  if (process.platform === "win32") {
+    if (/["%!]/.test(text)) throw new Error("Unsupported Windows command path characters");
+    return `"${text}"`;
+  }
+  return `"${text.replace(/["\\$`]/g, "\\$&")}"`;
 }
 
-function buildCommand(nodePath, hookPath, surface) {
+function buildCommand(nodePath, hookPath, surface, home = "") {
+  if (!["claude", "codex"].includes(surface)) throw new Error("Unsupported surface; use claude or codex");
+  if (surface === "codex" && home) {
+    // The wrapper sets only its child environment; hooks.json has no host env block.
+    return `${quote(nodePath)} ${quote(__filename)} --run-hook ${quote(hookPath)} --surface=${surface} --home ${quote(home)}`;
+  }
   return `${quote(nodePath)} ${quote(hookPath)} --surface=${surface}`;
 }
 
@@ -153,7 +169,7 @@ function stripMarkerFromEvent(groups) {
       continue;
     }
     const hooks = group.hooks.filter((entry) => !isOurHookEntry(entry));
-    if (hooks.length === 0) continue; // drop group that only held our entry
+    if (hooks.length === 0 && group.hooks.length > 0) continue; // drop group that only held our entry
     cleaned.push({ ...group, hooks });
   }
   return cleaned;
@@ -173,31 +189,47 @@ function addToEvent(hooks, event, group) {
   hooks[event] = [...existing, group];
 }
 
+function windowsCommand(args) {
+  const literal = value => "'" + String(value).replace(/'/g, "''") + "'";
+  const argv = args.home ? [args.node, __filename, "--run-hook", args.hook, `--surface=${args.surface}`, "--home", args.home]
+    : [args.node, args.hook, `--surface=${args.surface}`];
+  const script = `& ${argv.map(literal).join(" ")}; exit $LASTEXITCODE`;
+  return `powershell.exe -NoProfile -NonInteractive -EncodedCommand ${Buffer.from(script, "utf16le").toString("base64")}`;
+}
+
 function merge(settings, args) {
   const out = { ...settings };
-  const command = buildCommand(args.node, args.hook, args.surface);
+  const command = buildCommand(args.node, args.hook, args.surface, args.home);
+
+  const handler = { type: "command", command, ...(args.surface === "codex" ? { commandWindows: windowsCommand(args) } : {}) };
 
   // B1: fail-safe on unexpected `hooks` shape BEFORE any add or remove. Applies
   // to both code paths (add and --remove) since both flow through here.
   validateHooksShape(out.hooks);
 
   // Always start by stripping any prior MyOS Dispatch hook entries.
+  const hadPretool = (out.hooks?.PreToolUse || []).some(group => group?.hooks?.some(isOurHookEntry));
   let hooks = stripAll(out.hooks || {});
 
   if (!args.remove) {
     addToEvent(hooks, "UserPromptSubmit", {
-      hooks: [{ type: "command", command }],
+      hooks: [{ ...handler }],
     });
-    if (args.withPretool) {
+    if (args.surface === "codex") {
+      addToEvent(hooks, "SessionStart", { hooks: [{ ...handler }] });
+    }
+    if (args.withPretool || hadPretool) {
       addToEvent(hooks, "PreToolUse", {
-        matcher: "Bash",
-        hooks: [{ type: "command", command }],
+        ...(args.surface === "claude" ? { matcher: "Bash" } : {}),
+        hooks: [{ ...handler }],
       });
     }
   }
 
   if (Object.keys(hooks).length) out.hooks = hooks;
   else delete out.hooks;
+
+  if (args.surface === "codex") return { settings: out, command };
 
   // Manage exactly one env key.
   const env = { ...(out.env && typeof out.env === "object" ? out.env : {}) };
@@ -240,7 +272,8 @@ function backupExisting(settingsPath) {
 function atomicWrite(settingsPath, content) {
   const dir = path.dirname(settingsPath);
   const tmp = path.join(dir, `.${path.basename(settingsPath)}.tmp-${process.pid}-${Date.now()}`);
-  fs.writeFileSync(tmp, content, "utf8");
+  const mode = fs.existsSync(settingsPath) ? fs.statSync(settingsPath).mode & 0o777 : 0o600;
+  fs.writeFileSync(tmp, content, { encoding: "utf8", mode, flag: "wx" });
   try {
     fs.renameSync(tmp, settingsPath);
   } catch (error) {
@@ -249,11 +282,88 @@ function atomicWrite(settingsPath, content) {
   }
 }
 
+function readBytes(target) {
+  return fs.existsSync(target) ? fs.readFileSync(target, "utf8") : null;
+}
+
+function readTransaction(recordPath, target) {
+  const record = JSON.parse(fs.readFileSync(recordPath, "utf8"));
+  if (record.settings !== path.resolve(target) || typeof record.after !== "string"
+    || (record.before !== null && typeof record.before !== "string")
+    || (record.previous !== undefined && record.previous !== null && typeof record.previous !== "string")) {
+    throw new Error("Invalid rollback record");
+  }
+  return record;
+}
+
+// Extend one transaction across all selected registrars, keeping its original
+// bytes. Never adopt a foreign edit as an installer-owned intermediate state.
+function writeRegistration(args, serialized, previous) {
+  if (readBytes(args.settings) !== previous) throw new Error("Settings changed while preparing registration; refusing write");
+  let record;
+  if (args.transaction) {
+    if (path.resolve(args.transaction) === path.resolve(args.settings)) throw new Error("Transaction must be separate from settings");
+    if (fs.existsSync(args.transaction) && fs.statSync(args.transaction).size > 0) {
+      record = readTransaction(args.transaction, args.settings);
+      if (previous !== record.after) throw new Error("Settings changed since registration; refusing transaction update");
+    }
+  }
+  if (previous === serialized) {
+    process.stdout.write(`register-hook: unchanged ${args.settings}\n`);
+    return;
+  }
+  fs.mkdirSync(path.dirname(args.settings), { recursive: true });
+  const bak = backupExisting(args.settings);
+  if (bak) process.stdout.write(`register-hook: backed up ${args.settings} -> ${bak}\n`);
+  if (args.transaction) {
+    // Both expected states are rollback-safe if the following atomic write fails.
+    atomicWrite(args.transaction, JSON.stringify({ settings: path.resolve(args.settings), before: record ? record.before : previous, previous, after: serialized }));
+  }
+  if (readBytes(args.settings) !== previous) throw new Error("Settings changed before registration write; refusing write");
+  atomicWrite(args.settings, serialized);
+}
+
 function main() {
   const args = parseArgs(process.argv.slice(2));
+  if (args.runHook) {
+    if (!["claude", "codex"].includes(args.surface) || !args.home) throw new Error("--run-hook requires --home and a supported --surface");
+    const result = require("node:child_process").spawnSync(process.execPath, [args.runHook, `--surface=${args.surface}`], {
+      env: { ...process.env, MYOS_HOME_ROOT: args.home }, stdio: "inherit",
+    });
+    process.exitCode = result.status ?? 1;
+    return;
+  }
   if (!args.settings) {
     process.stderr.write("register-hook: --settings <path> is required\n");
     process.exit(2);
+  }
+  if (args.rollback) {
+    const record = readTransaction(args.rollback, args.settings);
+    const current = readBytes(args.settings);
+    if (current !== record.after && current !== record.previous) throw new Error("Settings changed since registration; refusing rollback");
+    backupExisting(args.settings);
+    if (readBytes(args.settings) !== current) throw new Error("Settings changed during rollback; refusing write");
+    if (record.before === null) { if (current !== null) fs.unlinkSync(args.settings); }
+    else atomicWrite(args.settings, record.before);
+    fs.unlinkSync(args.rollback);
+    process.stdout.write("register-hook: restored exact prior settings\n");
+    return;
+  }
+  if (args.shellTitleSource) {
+    if (!args.transaction) throw new Error("Shell rc registration requires --transaction");
+    const previous = readBytes(args.settings);
+    const begin = "# >>> myos-dispatch shell-title hook >>>";
+    const serialized = (previous || "").includes(begin) ? previous
+      : `${previous || ""}\n${begin}\nsource ${quote(args.shellTitleSource)}\n# <<< myos-dispatch shell-title hook <<<\n`;
+    if (args.dryRun) {
+      process.stdout.write(`register-hook: shell title source ${args.shellTitleSource} -> ${args.settings} (dry run)\n`);
+      return;
+    }
+    writeRegistration(args, serialized, previous);
+    return;
+  }
+  if (args.optionalHook && (!["title", "rabbit-hole"].includes(args.optionalHook) || args.surface !== "claude" || args.remove)) {
+    throw new Error("Optional hook registration requires title or rabbit-hole on Claude");
   }
   if (!args.remove && (!args.hook || !args.node)) {
     process.stderr.write("register-hook: --hook and --node are required when adding\n");
@@ -327,6 +437,7 @@ function main() {
     }
   }
 
+  const previous = readBytes(args.settings);
   let existing;
   try {
     existing = readSettings(args.settings);
@@ -339,7 +450,9 @@ function main() {
   let settings;
   let command;
   try {
-    ({ settings, command } = merge(existing, args));
+    const merger = args.optionalHook === "title" ? require("./register-title-hook").merge
+      : args.optionalHook === "rabbit-hole" ? require("./register-rabbithole-hook").merge : merge;
+    ({ settings, command } = merger(existing, args));
   } catch (error) {
     // B1 validation failure (or any merge failure) — refuse, do not rewrite.
     process.stderr.write(`register-hook: ${error.message}\n`);
@@ -361,11 +474,7 @@ function main() {
     return;
   }
 
-  fs.mkdirSync(path.dirname(args.settings), { recursive: true });
-  // B2: back up any existing file before the write (add AND remove).
-  const bak = backupExisting(args.settings);
-  if (bak) process.stdout.write(`register-hook: backed up ${args.settings} -> ${bak}\n`);
-  atomicWrite(args.settings, serialized);
+  writeRegistration(args, serialized, previous);
   process.stdout.write(
     args.remove
       ? `register-hook: removed MyOS Dispatch hook from ${args.settings}\n`
@@ -374,7 +483,7 @@ function main() {
 }
 
 if (require.main === module) {
-  main();
+  try { main(); } catch (error) { process.stderr.write(`${error.message}\n`); process.exitCode = 1; }
 }
 
 module.exports = {

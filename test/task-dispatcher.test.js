@@ -375,6 +375,7 @@ test("dispatchTaskWithBackground starts sidecars before direct dispatch", async 
     },
   }, {
     backgroundWorkerCommand: "codex",
+    callerProvider: "codex",
     parallelizationStateFile: stateFile,
     async backgroundRunCommand() {
       events.push("background");
@@ -400,6 +401,36 @@ test("dispatchTaskWithBackground starts sidecars before direct dispatch", async 
   assert.equal(result.metadata.parallelization.plan.backgroundTasks[0].prompt, undefined);
   assert.equal(result.metadata.parallelization.results[0].status, "completed");
   assert.equal(result.metadata.parallelization.results[0].runner, "codex");
+});
+
+test("dispatcher derives affinity only from an explicitly declared root caller or command", async () => {
+  for (const [options, fallback, allowed] of [
+    [{}, undefined, false],
+    [{ backgroundWorkerCommand: "codex" }, undefined, false],
+    [{ backgroundWorkerCommand: "codex", workerCommand: "/usr/local/bin/codex" }, undefined, true],
+    [{ backgroundWorkerCommand: "codex", callerProvider: "/usr/local/bin/codex" }, undefined, true],
+    [{ backgroundWorkerCommand: "codex", callerProvider: "unknown" }, undefined, false],
+    [{ backgroundWorkerCommand: "codex", workerCommand: "claude-code" }, undefined, false],
+    [{ backgroundWorkerCommand: "codex" }, { type: "worker", command: "/usr/local/bin/codex" }, true],
+    [{ backgroundWorkerCommand: "codex" }, { type: "worker", command: "claude-code" }, false],
+  ]) {
+    let invoked = false;
+    const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "myos-caller-dispatch-test-"));
+    const result = await dispatchTaskWithBackground({
+      text: "make a note", fallback,
+      dispatchPlan: { parallelizationPlan: {
+        mode: "read_only", budget: { maxAgents: 1 },
+        backgroundTasks: [{ id: "caller-check", required: true, prompt: "Inspect fixture", model: "gpt-6-astra" }],
+      } },
+    }, {
+      ...options, parallelizationStateFile: path.join(stateDir, "state.json"),
+      env: { MYOS_BACKGROUND_BACKPRESSURE_ENABLED: "0" },
+      backgroundRunCommand: async () => { invoked = true; return { code: 0, stdout: "fixture result" }; },
+    });
+    assert.equal(invoked, allowed, JSON.stringify({ options, fallback }));
+    if (!allowed) assert.match(result.metadata.parallelization.results[0].summary, /callerProvider|cross-provider/);
+    fs.rmSync(stateDir, { recursive: true, force: true });
+  }
 });
 
 test("dispatchTask skips data lookup execution when canary is not enabled", async () => {
