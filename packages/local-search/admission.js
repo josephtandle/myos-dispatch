@@ -52,6 +52,11 @@ function validPath(value) {
 }
 function validHash(value) { return typeof value === "string" && /^[a-f0-9]{64}$/i.test(value); }
 function exactKeys(value, keys) { return value && typeof value === "object" && !Array.isArray(value) && Object.keys(value).length === keys.length && keys.every((key) => Object.hasOwn(value, key)); }
+function pathIsDenied(relative, deniedPaths) {
+  if (!deniedPaths) return false;
+  for (const candidate of deniedPaths) if (candidate === "*" || relative === candidate || relative.startsWith(`${candidate}/`)) return true;
+  return false;
+}
 function loadManifest(root) {
   if (!root.admissionManifest) return { ok: true, legacy: true };
   let fd;
@@ -60,7 +65,7 @@ function loadManifest(root) {
     if (!ancestorsBefore) return denied("admissionManifestUnsafeAncestor");
     const pathBefore = fs.lstatSync(root.admissionManifest, { bigint: true });
     if (!ownRegular(pathBefore) || pathBefore.size > BigInt(MAX_MANIFEST_BYTES)) return denied("admissionManifestUnsafe");
-    fd = fs.openSync(root.admissionManifest, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0));
+    fd = fs.openSync(root.admissionManifest, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0) | (fs.constants.O_NONBLOCK || 0));
     const descriptorBefore = fs.fstatSync(fd, { bigint: true });
     if (!ownRegular(descriptorBefore) || !sameNode(pathBefore, descriptorBefore)) return denied("admissionManifestChanged");
     const bytes = readBounded(fd);
@@ -71,11 +76,19 @@ function loadManifest(root) {
       || !sameNode(descriptorBefore, descriptorAfter) || !sameNode(descriptorAfter, pathAfter)
       || !sameAncestors(ancestorsBefore, ancestorsAfter)) return denied("admissionManifestChanged");
     const manifest = JSON.parse(bytes.toString("utf8"));
-    if (!exactKeys(manifest, ["version", "rootId", "rootPath", "root", "policySha256", "files"]) || manifest.version !== 1
+    const manifestKeys = ["version", "rootId", "rootPath", "root", "policySha256", "files"];
+    const hasRevoked = Object.hasOwn(manifest, "revoked");
+    if ((!exactKeys(manifest, manifestKeys) && !(hasRevoked && exactKeys(manifest, [...manifestKeys, "revoked"]))) || manifest.version !== 1
       || manifest.rootId !== root.id || manifest.rootPath !== fs.realpathSync(root.path)
       || !exactKeys(manifest.root, ["dev", "ino"]) || !stringNode(manifest.root.dev) || !stringNode(manifest.root.ino)
       || !validHash(manifest.policySha256) || manifest.policySha256.toLowerCase() !== root.admissionPolicySha256
-      || !Array.isArray(manifest.files) || manifest.files.length > MAX_MANIFEST_ENTRIES) return denied("admissionManifestInvalid");
+      || !Array.isArray(manifest.files) || manifest.files.length > MAX_MANIFEST_ENTRIES
+      || (manifest.files.length === 0 && root.admissionRefreshPolicy !== "technical-markdown-v1")) return denied("admissionManifestInvalid");
+    const revokedValues = hasRevoked ? manifest.revoked : [];
+    if (!Array.isArray(revokedValues) || revokedValues.length > MAX_MANIFEST_ENTRIES
+      || revokedValues.some((value) => value !== "*" && !validPath(value))
+      || new Set(revokedValues).size !== revokedValues.length
+      || (revokedValues.includes("*") && revokedValues.length !== 1)) return denied("admissionManifestInvalid");
     const rootStat = fs.lstatSync(root.path, { bigint: true });
     if (rootStat.isSymbolicLink() || rootStat.dev.toString() !== manifest.root.dev || rootStat.ino.toString() !== manifest.root.ino) return denied("admissionRootChanged");
     const entries = new Map();
@@ -84,17 +97,27 @@ function loadManifest(root) {
         || !TEXT_EXTENSIONS.has(path.posix.extname(entry.path).toLowerCase()) || entries.has(entry.path)) return denied("admissionManifestInvalid");
       entries.set(entry.path, Object.freeze({ ...entry, sha256: entry.sha256.toLowerCase() }));
     }
-    return { ok: true, generation: crypto.createHash("sha256").update(bytes).digest("hex"), entries };
+    return {
+      ok: true,
+      generation: crypto.createHash("sha256").update(bytes).digest("hex"),
+      entries,
+      revoked: new Set(revokedValues),
+      document: manifest,
+    };
   } catch { return denied("admissionManifestUnavailable"); }
   finally { if (fd !== undefined) fs.closeSync(fd); }
 }
 function admissionFor(root, relative) {
+  if (pathIsDenied(relative, root.admissionExcludePaths)) return denied("admissionExcludedByConfig");
   const manifest = loadManifest(root);
   if (!manifest.ok || manifest.legacy) return manifest;
+  if (pathIsDenied(relative, manifest.revoked)) return denied("admissionRevoked");
   const entry = manifest.entries.get(relative);
   if (entry) return { ...manifest, entry, ancestor: false };
   const prefix = `${relative}/`;
-  if ([...manifest.entries.keys()].some((candidate) => candidate.startsWith(prefix))) return { ...manifest, entry: null, ancestor: true };
+  if ([...manifest.entries.keys()].some((candidate) => candidate.startsWith(prefix) && !pathIsDenied(candidate, manifest.revoked))) {
+    return { ...manifest, entry: null, ancestor: true };
+  }
   return denied("admissionNotListed");
 }
 

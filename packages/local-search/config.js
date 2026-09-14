@@ -3,6 +3,7 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const { DEFAULT_LIMITS: DOCUMENT_LIMITS } = require("./documents");
+const { ADMISSION_REFRESH_POLICY_SHA256 } = require("./admission-refresh");
 
 const DEFAULTS = Object.freeze({
   maxResults: 8,
@@ -74,7 +75,7 @@ function positiveInteger(value, fallback, label) {
 
 function normalizeRoot(root) {
   if (!root || typeof root !== "object" || Array.isArray(root)) fail("each root must be an object");
-  rejectUnknown(root, new Set(["id", "path", "contentEnabled", "extensions", "maxFiles", "maxFileBytes", "admissionManifest", "admissionPolicySha256"]), "root");
+  rejectUnknown(root, new Set(["id", "path", "contentEnabled", "extensions", "maxFiles", "maxFileBytes", "admissionManifest", "admissionPolicySha256", "admissionRefreshPolicy", "admissionExcludePaths"]), "root");
   if (typeof root.id !== "string" || !/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/.test(root.id)) fail("root id is malformed");
   const extensions = root.extensions;
   if (!Array.isArray(extensions) || extensions.length === 0 || extensions.some((item) => typeof item !== "string" || !/^\.[a-z0-9]+$/i.test(item))) fail(`extensions for ${root.id} are malformed`);
@@ -89,6 +90,21 @@ function normalizeRoot(root) {
     const rel = path.relative(rootPath, admissionManifest);
     if (rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel))) fail(`root ${root.id} admissionManifest must be outside its root`);
   }
+  const admissionRefreshPolicy = root.admissionRefreshPolicy == null ? null : root.admissionRefreshPolicy;
+  if (admissionRefreshPolicy !== null && admissionRefreshPolicy !== "technical-markdown-v1") fail(`root ${root.id} admissionRefreshPolicy is unsupported`);
+  const admissionExcludePaths = root.admissionExcludePaths == null ? [] : root.admissionExcludePaths;
+  if (!Array.isArray(admissionExcludePaths)) fail(`root ${root.id} admissionExcludePaths must be an array`);
+  const validRelative = (value) => typeof value === "string" && value.length > 0 && value.length <= 4096
+    && !value.includes("\\") && value === path.posix.normalize(value) && !value.startsWith("/")
+    && !value.split("/").some((part) => !part || part === "." || part === "..");
+  if (admissionExcludePaths.some((value) => !validRelative(value))) fail(`root ${root.id} admissionExcludePaths contains a malformed path`);
+  if (new Set(admissionExcludePaths).size !== admissionExcludePaths.length) fail(`root ${root.id} admissionExcludePaths contains duplicates`);
+  if (admissionExcludePaths.length > (root.maxFiles ?? 10_000)) fail(`root ${root.id} admissionExcludePaths exceeds maxFiles`);
+  if (admissionRefreshPolicy === null && admissionExcludePaths.length) fail(`root ${root.id} admissionExcludePaths requires admissionRefreshPolicy`);
+  if (admissionRefreshPolicy !== null && (root.contentEnabled !== true || extensions.length !== 1 || extensions[0].toLowerCase() !== ".md"
+    || !admissionManifest || admissionPolicySha256 !== ADMISSION_REFRESH_POLICY_SHA256)) {
+    fail(`root ${root.id} refresh opt-in requires Markdown content, a private manifest, and the stable policy hash`);
+  }
   if (rootPath === path.parse(rootPath).root) fail("filesystem root cannot be approved");
   if (rootPath === path.resolve(require("node:os").homedir())) fail("the whole home directory cannot be approved");
   if (containsSensitiveRoot(rootPath)) fail(`root ${root.id} is a sensitive or browser profile path`);
@@ -101,6 +117,8 @@ function normalizeRoot(root) {
     maxFileBytes: positiveInteger(root.maxFileBytes, 5 * 1024 ** 2, `root ${root.id} maxFileBytes`),
     admissionManifest,
     admissionPolicySha256,
+    admissionRefreshPolicy,
+    admissionExcludePaths: Object.freeze([...admissionExcludePaths]),
   });
 }
 

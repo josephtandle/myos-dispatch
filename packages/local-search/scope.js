@@ -1,11 +1,11 @@
 "use strict";
 
-const { execFileSync } = require("node:child_process");
 const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
 const { TextDecoder } = require("node:util");
 const { admissionFor } = require("./admission");
+const { residentOnMac } = require("./residency");
 
 const EXCLUDED_DIRECTORIES = new Set([".git", "node_modules", "build", "dist", "cache", "caches", "browserprofiles"]);
 const CONTENT_EXTENSIONS = new Set([".md", ".txt", ".json", ".yaml", ".yml", ".vtt", ".srt"]);
@@ -57,23 +57,12 @@ function classify(root, filePath) {
   return { ok: true, relative, extension, textEligible, documentEligible, contentEligible: textEligible || documentEligible, admission };
 }
 
-function residentOnMac(filePath) {
-  if (process.platform !== "darwin") return true;
-  try {
-    const raw = execFileSync("/usr/bin/stat", ["-f", "%f", filePath], { encoding: "utf8", timeout: 1000, maxBuffer: 1024 }).trim();
-    const flags = Number(raw);
-    return Number.isFinite(flags) && (flags & 0x40000000) === 0;
-  } catch {
-    return false;
-  }
-}
-
 function validateStat(root, filePath, stat) {
   if (!stat.isFile()) return unavailable("notRegularFile", filePath);
   if (Number(stat.nlink) > 1) return unavailable("hardlinkDenied", filePath);
   if (typeof process.getuid === "function" && Number(stat.uid) !== process.getuid()) return unavailable("foreignOwner", filePath);
   if (Number(stat.size) > root.maxFileBytes) return unavailable("sizeLimit", filePath);
-  if (!residentOnMac(filePath)) return unavailable("cloudPlaceholderOrFlagsUnavailable", filePath);
+  if (!residentOnMac(filePath, stat)) return unavailable("cloudPlaceholderOrFlagsUnavailable", filePath);
   return { ok: true };
 }
 
@@ -116,7 +105,7 @@ function readVerifiedBytes(root, filePath, options = {}) {
   let fd;
   try {
     if (options.beforeOpen) options.beforeOpen();
-    fd = fs.openSync(filePath, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0));
+    fd = fs.openSync(filePath, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0) | (fs.constants.O_NONBLOCK || 0));
     const before = fs.fstatSync(fd, { bigint: true });
     const allowed = validateStat(root, filePath, before);
     if (!allowed.ok) return allowed;

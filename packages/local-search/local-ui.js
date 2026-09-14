@@ -118,8 +118,8 @@ function printSearchStatus(output, packet) {
 async function searchAndMaybeOpen(context) {
   const { ask, output, api, configPath, adapters, controllers } = context;
   const query = (await ask("Search text: ")).trim();
-  const mode = (await ask("Mode (filename, keyword, semantic, auto): ")).trim().toLowerCase();
-  if (!query || !new Set(["filename", "keyword", "semantic", "auto"]).has(mode)) {
+  const mode = (await ask("Mode (native, filename, keyword, semantic, auto): ")).trim().toLowerCase();
+  if (!query || !new Set(["native", "filename", "keyword", "semantic", "auto"]).has(mode)) {
     output.write("Search needs text and an explicit valid mode.\n");
     return;
   }

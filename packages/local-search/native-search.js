@@ -7,6 +7,7 @@ const { sourceId } = require("./catalogue");
 const { emitPacket } = require("./packet");
 const { analyzeQuery, termOffsets } = require("./query");
 const { classify, readVerified, verifyMetadata } = require("./scope");
+const { primeResidency, runWithResidencyScope } = require("./residency");
 
 const CACHE_RECORD_LIMIT = 512;
 const DIRECTORY_QUEUE_LIMIT = 256;
@@ -150,12 +151,13 @@ async function discover(root, deadline, signal) {
       unavailableSources.push(unavailable(root, path.relative(root.path, directory), { reason: "rootOfflineOrUnreadable" })); complete = false; continue;
     }
     const directoryFiles = [];
+    const directoryFilePaths = [];
     const directoryUnavailable = [];
     const nextDirectories = [];
     let enumerationFailed = false;
     try {
       for await (const entry of handle) {
-        if (stopped(deadline, signal) || entries >= maxEntries || files.length + directoryFiles.length >= root.maxFiles) { complete = false; break; }
+        if (stopped(deadline, signal) || entries >= maxEntries || files.length + directoryFilePaths.length >= root.maxFiles) { complete = false; break; }
         entries += 1;
         const filePath = path.join(directory, entry.name);
         const classified = classify(root, filePath);
@@ -170,9 +172,7 @@ async function discover(root, deadline, signal) {
             complete = false;
           }
         } else if (entry.isFile()) {
-          const current = verifyMetadata(root, filePath);
-          if (!current.ok) directoryUnavailable.push(unavailable(root, classified.relative, current));
-          else directoryFiles.push({ ...current, size: Number(current.stat.size) });
+          directoryFilePaths.push(filePath);
         }
         if (entries % 32 === 0) await later();
       }
@@ -180,6 +180,20 @@ async function discover(root, deadline, signal) {
     finally { await handle.close().catch(() => {}); }
     const afterSnapshot = await directorySnapshot(root, directory);
     if (enumerationFailed || !sameDirectorySnapshot(beforeSnapshot, afterSnapshot)) {
+      unavailableSources.push(unavailable(root, path.relative(root.path, directory), { reason: "directoryIdentityChanged" }));
+      complete = false;
+      continue;
+    }
+    primeResidency(directoryFilePaths, deadline, signal);
+    if (stopped(deadline, signal)) { complete = false; break; }
+    for (const filePath of directoryFilePaths) {
+      const current = verifyMetadata(root, filePath);
+      const relative = path.relative(root.path, filePath);
+      if (!current.ok) directoryUnavailable.push(unavailable(root, relative, current));
+      else directoryFiles.push({ ...current, size: Number(current.stat.size) });
+    }
+    const verifiedSnapshot = await directorySnapshot(root, directory);
+    if (!sameDirectorySnapshot(afterSnapshot, verifiedSnapshot)) {
       unavailableSources.push(unavailable(root, path.relative(root.path, directory), { reason: "directoryIdentityChanged" }));
       complete = false;
       continue;
@@ -262,7 +276,7 @@ async function finalEmissionGuard(roots, identities, packet, deadline, signal) {
   };
 }
 
-async function nativeSearch(config, parsed, options = {}) {
+async function nativeSearchScoped(config, parsed, options = {}) {
   const deadline = Date.now() + config.budgets.queryDeadlineMs;
   const analysis = analyzeQuery(parsed.query);
   const identities = new Map(await Promise.all(parsed.roots.map(async (root) => [root.id, await rootIdentity(root)])));
@@ -336,6 +350,7 @@ async function nativeSearch(config, parsed, options = {}) {
     .filter((term, index, list) => list.findIndex((other) => other.value.toLowerCase() === term.value.toLowerCase()) === index);
   const ranked = [];
   let scannedBytes = 0;
+  let actualByteExhaustion = false;
   let textCoverageComplete = terms.length > 0;
   for (const { root, ...discovered } of discoveries) {
     for (const file of discovered.files) {
@@ -343,7 +358,7 @@ async function nativeSearch(config, parsed, options = {}) {
       if (stopped(deadline, options.signal)) { partial = true; break; }
       if (!file.textEligible) { textCoverageComplete = false; continue; }
       const remaining = config.budgets.maxContentScanBytes - scannedBytes;
-      if (remaining <= 0) { partial = true; textCoverageComplete = false; break; }
+      if (remaining <= 0) { partial = true; textCoverageComplete = false; actualByteExhaustion = true; break; }
       const boundedRoot = { ...root, maxFileBytes: Math.min(root.maxFileBytes, remaining) };
       const current = readVerified(boundedRoot, file.path);
       await later();
@@ -364,8 +379,12 @@ async function nativeSearch(config, parsed, options = {}) {
   partial ||= guarded.partial;
   return nativeResult("currentText", partial, guarded.packet, unavailableSources, {
     routeReason: "nativeCurrentText", supportedTextCoverage: textCoverageComplete && !partial && unavailableSources.length === 0,
-    contentScan: { bytes: scannedBytes, limit: config.budgets.maxContentScanBytes, exceeded: partial },
+    contentScan: { bytes: scannedBytes, limit: config.budgets.maxContentScanBytes, exceeded: actualByteExhaustion },
   });
+}
+
+async function nativeSearch(config, parsed, options = {}) {
+  return runWithResidencyScope(() => nativeSearchScoped(config, parsed, options));
 }
 
 module.exports = { nativeSearch };

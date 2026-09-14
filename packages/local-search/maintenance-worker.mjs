@@ -7,6 +7,7 @@ import { pathToFileURL } from "node:url";
 
 const require = createRequire(import.meta.url);
 const { normalizeConfig } = require("./config");
+const { refreshAdmissions } = require("./admission-refresh");
 const { acquire } = require("./maintenance");
 const { _performIndex } = require("./index");
 const { validateEmbedResult } = require("./embed-result");
@@ -95,9 +96,15 @@ try {
       finish,
     };
   }
-  const result = await _performIndex(config, adapters, true);
-  if (adapters.finish) await adapters.finish();
-  originalStdoutWrite(`${JSON.stringify(result)}\n`);
+  const admissionRefresh = await refreshAdmissions(config);
+  if (!admissionRefresh.ok) {
+    if (adapters.finish) await adapters.finish();
+    originalStdoutWrite(`${JSON.stringify(admissionRefresh)}\n`);
+  } else {
+    const indexed = await _performIndex(config, adapters, true);
+    if (adapters.finish) await adapters.finish();
+    originalStdoutWrite(`${JSON.stringify({ ...indexed, admissionRefresh })}\n`);
+  }
 } catch (error) {
   originalStdoutWrite(`${JSON.stringify({ ok: false, status: error.code || "maintenanceFailed", error: error.message })}\n`);
 } finally {

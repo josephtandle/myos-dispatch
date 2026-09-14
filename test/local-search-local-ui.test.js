@@ -3,6 +3,7 @@
 const assert = require("node:assert/strict");
 const { EventEmitter } = require("node:events");
 const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
 
@@ -158,6 +159,75 @@ test("search renders local evidence and opens only the chosen freshly-read hit",
   assert.deepEqual(calls, [{
     command: "/usr/bin/open",
     args: ["/private/tmp/client docs/notes/a file.md"],
+    options: { shell: false, stdio: "ignore" },
+  }]);
+});
+
+test("native UI uses the real QMD-free search and read path for bounded partial evidence", async (t) => {
+  const { main } = require(modulePath);
+  const realApi = require("../packages/local-search");
+  const base = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), "local-search-ui-native-"));
+  t.after(() => fs.rmSync(base, { recursive: true, force: true }));
+  const root = path.join(base, "public");
+  const stateDirectory = path.join(base, "state");
+  const configPath = path.join(base, "local-search.json");
+  fs.mkdirSync(root, { mode: 0o700 });
+  fs.writeFileSync(path.join(root, "alpha.md"), "Cobalt citation alpha.\n", { mode: 0o600 });
+  fs.writeFileSync(path.join(root, "beta.md"), "Cobalt citation beta.\n", { mode: 0o600 });
+  fs.writeFileSync(configPath, `${JSON.stringify({
+    version: 1,
+    enabled: true,
+    stateDirectory,
+    roots: [{ id: "public", path: root, contentEnabled: true, extensions: [".md"], maxFiles: 1 }],
+    qmd: null,
+  })}\n`, { mode: 0o600 });
+
+  const answers = ["search", "Cobalt", "native", "1", "quit"];
+  const output = { isTTY: true, text: "", write(value) { this.text += value; } };
+  const opens = [];
+  let request;
+  let packet;
+  let fresh;
+  const api = {
+    ...realApi,
+    async search(config, value, options) {
+      request = value;
+      packet = await realApi.search(config, value, options);
+      return packet;
+    },
+    async read(config, value, options) {
+      fresh = await realApi.read(config, value, options);
+      return fresh;
+    },
+  };
+
+  const result = await main(["--config", configPath], {
+    input: { isTTY: true },
+    output,
+    ask: async () => answers.shift(),
+    platform: "darwin",
+    runProcess(command, args, options) {
+      opens.push({ command, args, options });
+      return { status: 0 };
+    },
+    api,
+  });
+
+  assert.equal(result.status, "closed");
+  assert.deepEqual(request, { query: "Cobalt", mode: "native" });
+  assert.equal(realApi._internals.resolveConfig(configPath).qmd, null);
+  assert.equal(packet.status, "partial");
+  assert.equal(packet.negativeIsComplete, false);
+  assert.equal(packet.results.length, 1);
+  assert.match(output.text, /status=partial/);
+  assert.match(output.text, /negative=unknown/);
+  assert.match(output.text, new RegExp(packet.results[0].relative.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  assert.match(output.text, /Cobalt citation/);
+  assert.equal(fresh.ok, true);
+  assert.equal(fresh.hash, packet.results[0].hash);
+  assert.deepEqual(opens, [{
+    command: "/usr/bin/open",
+    args: [path.join(root, packet.results[0].relative)],
     options: { shell: false, stdio: "ignore" },
   }]);
 });

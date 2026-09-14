@@ -2,7 +2,9 @@
 
 `@myos/local-search` is a local-only, bounded file catalogue and search CLI. It is disabled unless an explicit owner-only configuration enables it. It has no home-directory defaults, never changes original files, makes no model API calls, and does not download dependencies or models at runtime.
 
-This is an experimental beta, not a proven performance upgrade. A withdrawn, failed development candidate at `2753121` used 1.26x the prompt tokens and 2.21x the median end-to-end time across six development questions run three times each. A later installed five-document controlled development run covered 13 cases three times each and also found no performance win: local search used 2.13x the model input and 2.62x the median end-to-end time of reconstructed selective `grep`. It answered 24 regex-scored cases versus 12 for the baseline, while an independent semantic audit found 18 versus 15 clean answers across 39 audited outputs. These are controlled development measurements, not proof of general quality or speed, and the new revisions described below have not been benchmarked. Selective baseline search remains the default.
+This is an experimental beta, not a proven performance upgrade. A withdrawn, failed development candidate at `2753121` used 1.26x the prompt tokens and 2.21x the median end-to-end time across six development questions run three times each. A later five-document controlled development run covered 13 cases three times each and also found no performance win: local search used 2.13x the model input and 2.62x the median end-to-end time of reconstructed selective `grep`. It answered 24 regex-scored cases versus 12 for the baseline, while an independent semantic audit found 18 versus 15 clean answers across 39 audited outputs.
+
+The latest 111-file, eight-question development retrieval run kept the same 87.5% top-five recall as baseline, but used 1.30x the tokens and 7.55x the median time, so it failed its performance gate. The legacy installed comparison reached 75% top-five recall. In a public synthetic run, 343 `stat` calls consumed 94–95% of native lookup time. Earlier controlled testing did include a private corpus; none of these results proves a general upgrade, whole-computer performance, or behavior on a second Mac. Selective baseline search remains the default.
 
 ## Requirements and configuration
 
@@ -18,7 +20,7 @@ myos-local-search --node24 /absolute/path/to/node24 configure \
 
 A configuration contains `enabled`, an absolute `stateDirectory` outside all source roots, and approved roots shaped as `{id,path,contentEnabled,extensions,maxFiles,maxFileBytes}`. There are no root or whole-home defaults. Budgets are finite; results cap at 8 and packet content defaults to 12,000 bytes. `maxTokens` is an estimate-only limiter using an explicitly labelled character heuristic, not a tokenizer or hard token guarantee.
 
-The default storage policy caps state plus configured external models, counted once by filesystem identity, at 20 GiB. A write must also leave at least `max(20 GiB, 10% of filesystem capacity)` free. Resource admission permits one heavy-inference slot per state directory. Its memory check is an admission estimate based on available memory, model size, and fixed overhead, not an RSS ceiling or process memory guarantee. Background maintenance pauses under resource pressure. By default it requires 5 minutes of user idle time and then 2 minutes of healthy resource readings before resuming.
+The default storage policy caps state plus configured external models, counted once by filesystem identity, at 20 GiB. A write must also leave at least `max(20 GiB, 10% of filesystem capacity)` free. Resource admission permits one heavy-inference slot per state directory. Its memory check is an admission estimate based on available memory, model size, and fixed overhead, not an RSS ceiling or process memory guarantee. Heavy hashing and embedding require the configured idle and healthy dwell. Bounded metadata refresh may continue while the user is active and during those dwell periods, but pauses on battery, under thermal pressure, or when the background probe fails.
 
 Optional QMD configuration points to an externally provisioned Node executable, the pinned QMD 2.8.3 package root, and absolute local `.gguf` model paths. Optional SHA-256 hashes are verified before use. Runtime never invokes `npx`, fetches models, or inherits API keys/proxy variables. On macOS every QMD operation runs under `/usr/bin/sandbox-exec` with network denied. Queries call SDK `searchLex` or `searchVector` directly; they never invoke expansion, generation, or reranking. If strict network enforcement is unavailable, QMD search is unavailable and the current exact lexical overlay remains usable.
 
@@ -33,6 +35,30 @@ myos-local-search --node24 /absolute/path/to/node24 watch --config /absolute/loc
 ```
 
 JSON is the default output format, and the programmatic API is unchanged. `search` and `read` accept `--format json|evidence`. Evidence output is only used for piped output and consists of UTF-8 byte-length frames whose bodies are emitted verbatim. An interactive TTY request for evidence falls back to safe JSON. Framing is a transport boundary, not a hard output-token cap. `--request /absolute/request.json` can replace individual search/read arguments. Unknown flags, root IDs, duplicate roots, traversal, and out-of-bounds values fail closed. `watch` is a foreground process using filesystem notifications plus non-overlapping periodic reconciliation; it is not a daemon.
+
+### Native-first discovery
+
+Version 1.3 adds explicit `--mode native`, also listed first in the Terminal UI. It performs bounded local discovery without QMD. `filename`, `keyword`, `semantic`, and `auto` keep their existing meanings; a blank query or invalid mode is refused before search begins.
+
+Native filename hits are metadata-only and do not carry a content hash. Before opening one, the UI separately reruns exact-path metadata checks inside the configured root. Content hits carry a hash; the UI uses the public `read` path and refuses to open the file if the fresh hash, root ID, or relative path no longer matches. Partial results and empty results with incomplete coverage do not establish absence.
+
+Automatic technical screening is under final review. The proposed facility is optional and does not configure roots automatically. Until screening is final, changed file hashes are refused rather than published. Permanent exclusions, read-time enforcement, and a durable disable-and-revoke protocol are acceptance requirements, not claims about this release.
+
+### Optional desktop assistant export
+
+The current companion implementation is `packages/local-search/desktop-find.js` in the reviewed desktop integration. Its owner-only `0600` settings file has exactly this schema:
+
+```json
+{
+  "version": 1,
+  "enabled": true,
+  "node24": "/absolute/path/to/node24",
+  "configPath": "/absolute/private/local-search.json",
+  "exportToAssistant": false
+}
+```
+
+`myos-find search` defaults to 3 results, 1024 snippet bytes, and a 4096-byte whole response. These are defaults, not hard limits: validated requests may ask for up to 8 results and larger bounded byte budgets. With `exportToAssistant: false`, `myos-find search` refuses with `notOptedIn`. The direct CLI and local Terminal UI remain independently available because they are separate commands, not a local mode of `myos-find`.
 
 ### Optional Dispatch launcher and local Terminal UI
 
@@ -93,4 +119,4 @@ The JSON metadata catalogue is intentionally a small bounded-v1 implementation a
 
 This is a same-account local CLI boundary, not a hosted MCP service or an authorization boundary against a hostile process running as the same OS account. State permissions and path checks reduce accidents; they do not provide universal same-account containment.
 
-The synthetic suite covers freshness, privacy admission, mutex contention, shutdown idempotence, bounded scans, SDK operation selection, and failure cleanup. Real embedding inference may be unavailable inside a parent sandbox even when the pinned local model is present. The candidate remains off by default, with no automatic promotion, routing, or publication and no established performance win. It has not been validated across a whole computer, a private corpus, or a second Mac. This package installs no automatic hook, route, or feature flag.
+The synthetic suite covers freshness, privacy admission, mutex contention, shutdown idempotence, bounded scans, SDK operation selection, native-mode UI admission, and failure cleanup. Real embedding inference may be unavailable inside a parent sandbox even when the pinned local model is present. The candidate remains off by default, with no automatic promotion, routing, or publication and no established performance win. Controlled private-corpus testing has occurred, but there is no proof yet of a general upgrade, whole-computer behavior, or behavior on a second Mac. This package installs no automatic hook, route, or feature flag.

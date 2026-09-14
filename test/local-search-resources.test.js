@@ -547,8 +547,12 @@ test("periodic resource-status publication failure resets healthy dwell after re
   now += 1;
   const resumedDeadline = Date.now() + 500;
   while (invocations === 1 && Date.now() < resumedDeadline) await new Promise((resolve) => setTimeout(resolve, 5));
+  // A 5 ms poll may complete another legitimate index before this waiter resumes.
+  assert.ok(invocations >= 2);
   await controller.stop();
-  assert.equal(invocations, 2);
+  const stoppedInvocations = invocations;
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(invocations, stoppedInvocations);
 });
 
 test("free-space reserve has precedence and unsafe state links fail closed", (t) => {
