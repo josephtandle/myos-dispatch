@@ -5,7 +5,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { TextDecoder } = require("node:util");
 const { admissionFor } = require("./admission");
-const { residentOnMac } = require("./residency");
+const { primeResidency, residentOnMac } = require("./residency");
 
 const EXCLUDED_DIRECTORIES = new Set([".git", "node_modules", "build", "dist", "cache", "caches", "browserprofiles"]);
 const CONTENT_EXTENSIONS = new Set([".md", ".txt", ".json", ".yaml", ".yml", ".vtt", ".srt"]);
@@ -78,6 +78,10 @@ function lstatBigint(filePath) {
 function toSafeNumber(value) {
   const number = Number(value);
   return Number.isSafeInteger(number) ? number : null;
+}
+
+function millisecondsFromNanoseconds(nanoseconds) {
+  return Number(nanoseconds / 1_000_000n) + Number(nanoseconds % 1_000_000n) / 1_000_000;
 }
 
 function verifyMetadata(root, filePath) {
@@ -182,20 +186,36 @@ function discoverRoot(root, deadline) {
     if (hasUnsafeComponent(directory)) { unavailableSources.push(unavailable("symlinkDenied", directory)); return; }
     let entries;
     try { entries = fs.readdirSync(directory, { withFileTypes: true }); } catch { complete = false; unavailableSources.push(unavailable("rootOfflineOrUnreadable", directory)); return; }
+    const candidates = [];
+    const consumeCandidates = () => {
+      if (candidates.length === 0) return;
+      primeResidency(candidates.map((candidate) => candidate.filePath), deadline);
+      for (const { filePath, classified } of candidates) {
+        if (Date.now() > deadline || files.length >= root.maxFiles) { complete = false; break; }
+        let stat;
+        try { stat = lstatBigint(filePath); } catch { unavailableSources.push(unavailable("statFailed", filePath)); continue; }
+        const permitted = validateStat(root, filePath, stat);
+        if (!permitted.ok) { unavailableSources.push(permitted); continue; }
+        files.push({
+          path: filePath, relative: classified.relative, extension: classified.extension,
+          textEligible: classified.textEligible, documentEligible: classified.documentEligible,
+          contentEligible: classified.contentEligible, size: Number(stat.size), mtimeMs: millisecondsFromNanoseconds(stat.mtimeNs),
+        });
+      }
+      candidates.length = 0;
+    };
     for (const entry of entries) {
       if (Date.now() > deadline || files.length >= root.maxFiles) { complete = false; break; }
       const filePath = path.join(directory, entry.name);
       const classified = classify(root, filePath);
       if (!classified.ok) continue;
       if (entry.isSymbolicLink()) { unavailableSources.push(unavailable("symlinkDenied", filePath)); continue; }
-      if (entry.isDirectory()) { visit(filePath); continue; }
+      if (entry.isDirectory()) { consumeCandidates(); visit(filePath); continue; }
       if (!entry.isFile()) continue;
-      let stat;
-      try { stat = fs.lstatSync(filePath); } catch { unavailableSources.push(unavailable("statFailed", filePath)); continue; }
-      const permitted = validateStat(root, filePath, stat);
-      if (!permitted.ok) { unavailableSources.push(permitted); continue; }
-      files.push({ path: filePath, relative: classified.relative, extension: classified.extension, textEligible: classified.textEligible, documentEligible: classified.documentEligible, contentEligible: classified.contentEligible, size: stat.size, mtimeMs: stat.mtimeMs });
+      candidates.push({ filePath, classified });
+      if (candidates.length >= Math.min(128, root.maxFiles - files.length)) consumeCandidates();
     }
+    consumeCandidates();
   };
   visit(root.path);
   return { files, unavailableSources, complete };

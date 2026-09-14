@@ -66,7 +66,7 @@ function parseArgs(argv) {
   if (operation === "search" && (typeof values["--query"] !== "string" || values["--query"].trim().length === 0 || values["--query"].length > 1000)) {
     return { error: "invalidArguments" };
   }
-  const mode = values["--mode"] || "native";
+  const mode = values["--mode"] || "auto";
   if (!MODES.has(mode)) return { error: "invalidArguments" };
   const bounds = [["--max-results", 1, 8], ["--max-bytes", 1, 65_536], ["--context-bytes", 512, 16_384]];
   const numbers = {};

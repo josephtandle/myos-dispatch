@@ -13,7 +13,7 @@ Locate the portable settings path from the user's supplied path or the current a
 myos-find --settings /ABSOLUTE/PRIVATE/settings.json search --query "invoice reference"
 ```
 
-Start with the default `native` mode for metadata and exact local discovery. Use `filename` or `keyword` when the request is explicitly lexical. Use `semantic` only as an optional conceptual fallback; `auto` may also invoke semantic search.
+Use the default `auto` mode for content and general questions. Use `filename` when locating a file by name, and `keyword` for explicitly lexical requests. `native` is an explicit fast option for bounded local discovery, not a guarantee of equivalent retrieval quality. Use `semantic` only as an optional conceptual mode.
 
 Keep roots and result, byte, and context budgets narrow. Excerpts require the user's explicit content-export policy. Treat citations as snapshot provenance, verify current files before consequential use, and preserve partial results, `negativeIsComplete`, `semanticPending`, and `sourceUnavailable` warnings. A missing result is not proof of absence when negatives are partial.
 

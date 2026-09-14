@@ -108,6 +108,14 @@ test("search rejects unbounded or ambiguous command options", (t) => {
   }
 });
 
+test("desktop search defaults to auto while preserving explicit native mode", (t) => {
+  const { parseArgs } = require("../packages/local-search/desktop-find");
+  const fixture = makeEnabledFixture(t);
+  const base = ["--settings", fixture.settingsPath, "search", "--query", "needle"];
+  assert.equal(parseArgs(base).mode, "auto");
+  assert.equal(parseArgs([...base, "--mode", "native"]).mode, "native");
+});
+
 test("disabled and unexported search do not inspect configured paths or spawn", async (t) => {
   const { execute } = require("../packages/local-search/desktop-find");
   const directory = temporaryDirectory(t);
@@ -246,7 +254,7 @@ test("search forwards a native request through the fixed Node 24 boundary and pr
   ]);
   assert.equal(child.status, 0, child.stderr || child.stdout);
   assert.equal(result.status, "partial");
-  assert.equal(result.taskClass, "cheap_routing");
+  assert.equal(result.taskClass, "default_automation");
   assert.equal(result.negativeIsComplete, false);
   assert.deepEqual(result.sourceUnavailable, packet.sourceUnavailable);
   assert.deepEqual(result.results, packet.results);
@@ -367,7 +375,7 @@ test("whole-response overflow returns sanitized budgetExceeded JSON", async (t) 
     },
   });
   assert.deepEqual(result, {
-    ok: false, status: "budgetExceeded", taskClass: "cheap_routing", complianceLane: "unattended_local",
+    ok: false, status: "budgetExceeded", taskClass: "default_automation", complianceLane: "unattended_local",
   });
   assert.equal(Buffer.byteLength(`${JSON.stringify(result)}\n`) <= 512, true);
 });

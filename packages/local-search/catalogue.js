@@ -4,6 +4,7 @@ const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
 const { discoverRoot, readVerified, readVerifiedBytes, verifyMetadata } = require("./scope");
+const { primeResidency, runWithResidencyScope } = require("./residency");
 
 function metadataPolicyFingerprint(root) {
   const verifier = crypto.createHash("sha256").update(Function.prototype.toString.call(verifyMetadata)).digest("hex");
@@ -59,7 +60,7 @@ function sourceId(rootId, relative) {
   return crypto.createHash("sha256").update(`${rootId}\0${relative}`).digest("hex");
 }
 
-function reconcile(config, options = {}) {
+function reconcileScoped(config, options = {}) {
   ensureState(config);
   const previous = loadCatalogue(config);
   if (previous.degraded === "catalogueCorrupt") return { catalogue: previous, unavailable: [{ status: "sourceUnavailable", reason: previous.degraded }], complete: false };
@@ -87,41 +88,48 @@ function reconcile(config, options = {}) {
     if (!inheritsIndex) for (const [relative, record] of records) records.set(relative, { ...record, indexedHash: null, indexedExtractionKey: null });
     const seen = new Set();
     let hashComplete = discovered.complete;
-    for (const file of discovered.files) {
-      if (Date.now() > deadline) { hashComplete = false; break; }
-      let hash = null;
-      let observedAt = new Date().toISOString();
-      let observedIdentity = null;
-      const metadata = verifyMetadata(root, file.path);
-      if (!metadata.ok) { unavailable.push({ ...metadata, rootId: root.id }); hashComplete = false; continue; }
-      const currentMetadataFingerprint = metadataFingerprint(root, metadata.stat);
-      if (file.contentEligible) {
-        if (contentBytes + file.size > (options.maxContentScanBytes || Infinity)) {
-          hashComplete = false;
-          budgetExceeded = true;
-          break;
+    let stopRoot = false;
+    for (let start = 0; start < discovered.files.length; start += 128) {
+      const chunk = discovered.files.slice(start, start + 128);
+      primeResidency(chunk.map((file) => file.path), deadline);
+      for (const file of chunk) {
+        if (Date.now() > deadline) { hashComplete = false; stopRoot = true; break; }
+        let hash = null;
+        let observedAt = new Date().toISOString();
+        let observedIdentity = null;
+        const metadata = verifyMetadata(root, file.path);
+        if (!metadata.ok) { unavailable.push({ ...metadata, rootId: root.id }); hashComplete = false; continue; }
+        const currentMetadataFingerprint = metadataFingerprint(root, metadata.stat);
+        if (file.contentEligible) {
+          if (contentBytes + file.size > (options.maxContentScanBytes || Infinity)) {
+            hashComplete = false;
+            budgetExceeded = true;
+            stopRoot = true;
+            break;
+          }
+          const read = file.documentEligible ? readVerifiedBytes(root, file.path) : readVerified(root, file.path);
+          contentBytes += file.size;
+          currentReads.set(file.path, read);
+          if (read.ok) { hash = read.hash; observedAt = read.sourceReadAt; observedIdentity = `${read.stat.dev}:${read.stat.ino}`; } else unavailable.push({ ...read, rootId: root.id });
         }
-        const read = file.documentEligible ? readVerifiedBytes(root, file.path) : readVerified(root, file.path);
-        contentBytes += file.size;
-        currentReads.set(file.path, read);
-        if (read.ok) { hash = read.hash; observedAt = read.sourceReadAt; observedIdentity = `${read.stat.dev}:${read.stat.ino}`; } else unavailable.push({ ...read, rootId: root.id });
+        const old = recordsByRoot.get(root.id).find((item) => item.relative === file.relative);
+        seen.add(file.relative);
+        records.set(file.relative, {
+          sourceId: sourceId(root.id, file.relative), rootId: root.id, relative: file.relative,
+          path: file.path, extension: file.extension, textEligible: file.textEligible, documentEligible: file.documentEligible,
+          contentType: file.documentEligible ? "document" : file.textEligible ? "text" : "metadata",
+          contentEligible: file.contentEligible,
+          size: file.size, mtimeMs: file.mtimeMs, observedHash: hash,
+          metadataFingerprint: currentMetadataFingerprint,
+          metadataObservedAt: observedAt,
+          observedIdentity,
+          observedExtractionKey: null,
+          indexedHash: inheritsIndex && old ? old.indexedHash || null : null,
+          indexedExtractionKey: inheritsIndex && old ? old.indexedExtractionKey || null : null,
+          observedAt,
+        });
       }
-      const old = recordsByRoot.get(root.id).find((item) => item.relative === file.relative);
-      seen.add(file.relative);
-      records.set(file.relative, {
-        sourceId: sourceId(root.id, file.relative), rootId: root.id, relative: file.relative,
-        path: file.path, extension: file.extension, textEligible: file.textEligible, documentEligible: file.documentEligible,
-        contentType: file.documentEligible ? "document" : file.textEligible ? "text" : "metadata",
-        contentEligible: file.contentEligible,
-        size: file.size, mtimeMs: file.mtimeMs, observedHash: hash,
-        metadataFingerprint: currentMetadataFingerprint,
-        metadataObservedAt: observedAt,
-        observedIdentity,
-        observedExtractionKey: null,
-        indexedHash: inheritsIndex && old ? old.indexedHash || null : null,
-        indexedExtractionKey: inheritsIndex && old ? old.indexedExtractionKey || null : null,
-        observedAt,
-      });
+      if (stopRoot) break;
     }
     if (hashComplete) for (const relative of records.keys()) if (!seen.has(relative)) records.delete(relative);
     recordsByRoot.set(root.id, [...records.values()]);
@@ -139,6 +147,10 @@ function reconcile(config, options = {}) {
     catalogue, unavailable, currentReads, contentBytes, budgetExceeded,
     complete: selectedRoots.every((root) => rootStates[root.id] && rootStates[root.id].complete),
   };
+}
+
+function reconcile(config, options = {}) {
+  return runWithResidencyScope(() => reconcileScoped(config, options));
 }
 
 module.exports = { ensureState, loadCatalogue, metadataFingerprint, metadataPolicyFingerprint, publish, reconcile, sourceId };

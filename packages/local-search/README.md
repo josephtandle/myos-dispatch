@@ -2,9 +2,9 @@
 
 `@myos/local-search` is a local-only, bounded file catalogue and search CLI. It is disabled unless an explicit owner-only configuration enables it. It has no home-directory defaults, never changes original files, makes no model API calls, and does not download dependencies or models at runtime.
 
-This is an experimental beta, not a proven performance upgrade. A withdrawn, failed development candidate at `2753121` used 1.26x the prompt tokens and 2.21x the median end-to-end time across six development questions run three times each. A later five-document controlled development run covered 13 cases three times each and also found no performance win: local search used 2.13x the model input and 2.62x the median end-to-end time of reconstructed selective `grep`. It answered 24 regex-scored cases versus 12 for the baseline, while an independent semantic audit found 18 versus 15 clean answers across 39 audited outputs.
+Version 1.3.1 restores `auto` as the desktop assistant's default so content and general questions retain exact-identifier, phrase, lexical, and optional semantic relevance signals. `native` remains available as an explicit fast option, but does not guarantee equivalent retrieval quality. The local discovery/reconciliation path batches provisional macOS residency checks in bounded, query-scoped groups before fresh verification; this is a mechanical overhead correction, not an unproven benchmark claim.
 
-The latest 111-file, eight-question development retrieval run kept the same 87.5% top-five recall as baseline, but used 1.30x the tokens and 7.55x the median time, so it failed its performance gate. The legacy installed comparison reached 75% top-five recall. In a public synthetic run, 343 `stat` calls consumed 94–95% of native lookup time. Earlier controlled testing did include a private corpus; none of these results proves a general upgrade, whole-computer performance, or behavior on a second Mac. Selective baseline search remains the default.
+Technical screening has shipped, and the public fixture has been tested on a second Mac. Those checks do not prove whole-OS coverage, held-out retrieval quality, or a general performance upgrade. The package remains experimental and opt-in.
 
 ## Requirements and configuration
 
@@ -38,11 +38,11 @@ JSON is the default output format, and the programmatic API is unchanged. `searc
 
 ### Native-first discovery
 
-Version 1.3 adds explicit `--mode native`, also listed first in the Terminal UI. It performs bounded local discovery without QMD. `filename`, `keyword`, `semantic`, and `auto` keep their existing meanings; a blank query or invalid mode is refused before search begins.
+Version 1.3.1 keeps explicit `--mode native` for bounded fast discovery without QMD. The desktop assistant defaults to `auto`; `filename` is for locating a known file, while `keyword`, `semantic`, and `auto` retain their existing meanings. A blank query or invalid mode is refused before search begins.
 
 Native filename hits are metadata-only and do not carry a content hash. Before opening one, the UI separately reruns exact-path metadata checks inside the configured root. Content hits carry a hash; the UI uses the public `read` path and refuses to open the file if the fresh hash, root ID, or relative path no longer matches. Partial results and empty results with incomplete coverage do not establish absence.
 
-Automatic technical screening is under final review. The proposed facility is optional and does not configure roots automatically. Until screening is final, changed file hashes are refused rather than published. Permanent exclusions, read-time enforcement, and a durable disable-and-revoke protocol are acceptance requirements, not claims about this release.
+Automatic technical screening is shipped, optional, and never configures roots automatically. A changed file hash is refused until a completed screening refresh validates its replacement; a hash change alone is never published. Permanent exclusions, read-time enforcement, and a durable disable-and-revoke protocol remain enforced release boundaries.
 
 ### Optional desktop assistant export
 
@@ -119,4 +119,4 @@ The JSON metadata catalogue is intentionally a small bounded-v1 implementation a
 
 This is a same-account local CLI boundary, not a hosted MCP service or an authorization boundary against a hostile process running as the same OS account. State permissions and path checks reduce accidents; they do not provide universal same-account containment.
 
-The synthetic suite covers freshness, privacy admission, mutex contention, shutdown idempotence, bounded scans, SDK operation selection, native-mode UI admission, and failure cleanup. Real embedding inference may be unavailable inside a parent sandbox even when the pinned local model is present. The candidate remains off by default, with no automatic promotion, routing, or publication and no established performance win. Controlled private-corpus testing has occurred, but there is no proof yet of a general upgrade, whole-computer behavior, or behavior on a second Mac. This package installs no automatic hook, route, or feature flag.
+The synthetic suite covers freshness, privacy admission, mutex contention, shutdown idempotence, bounded scans, SDK operation selection, native-mode UI admission, and failure cleanup. The shipped screening and second-Mac public-fixture checks are narrower than whole-OS coverage or held-out quality evaluation, neither of which is proven. Real embedding inference may be unavailable inside a parent sandbox even when the pinned local model is present. This package installs no automatic hook, route, or feature flag.
