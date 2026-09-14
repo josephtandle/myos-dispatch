@@ -507,17 +507,24 @@ test("foreground watch periodically recovers missed add, edit, and delete events
   const f = fixture(t); const events = [];
   const controller = await api.watch(f.config, { watchEvents: false, testOnlyInProcess: true, onReconcile: (event) => events.push(event) });
   t.after(() => controller.stop());
+  const addCursor = controller.getState().runs;
   write(path.join(f.root, "watched.md"), "version one");
-  await nextWatchEvent(events, (event) => event.reason === "periodic" && event.result.catalogue.records.some((item) => item.relative === "watched.md"));
-  const initialHash = controller.getState().last.catalogue.records[0].observedHash;
+  const added = await nextWatchEvent(events, (event) => event.reason === "periodic" && event.runs > addCursor && event.result.catalogue.records.some((item) => item.relative === "watched.md"));
+  const initialHash = added.result.catalogue.records.find((item) => item.relative === "watched.md").observedHash;
+  const editCursor = controller.getState().runs;
   write(path.join(f.root, "watched.md"), "version two");
-  await nextWatchEvent(events, (event) => event.result.catalogue.records.some((item) => item.observedHash !== initialHash));
+  const versionTwoHash = crypto.createHash("sha256").update("version two").digest("hex");
+  const edited = await nextWatchEvent(events, (event) => event.reason === "periodic" && event.runs > editCursor && event.result.catalogue.records.some((item) => item.relative === "watched.md" && item.observedHash === versionTwoHash));
+  assert.notEqual(initialHash, versionTwoHash);
+  assert.equal(edited.result.catalogue.records.find((item) => item.relative === "watched.md").observedHash, versionTwoHash);
+  const deleteCursor = controller.getState().runs;
   fs.unlinkSync(path.join(f.root, "watched.md"));
-  await nextWatchEvent(events, (event) => event.result.catalogue.records.length === 0);
-  assert.equal(controller.getState().running, false);
+  await nextWatchEvent(events, (event) => event.reason === "periodic" && event.runs > deleteCursor && event.result.catalogue.records.length === 0);
   const firstStop = controller.stop();
   assert.strictEqual(controller.stop(), firstStop);
   await firstStop;
+  assert.equal(controller.getState().stopped, true);
+  assert.equal(controller.getState().running, false);
 });
 
 test("already-aborted watch installs no watcher or timer and stop is shared", async (t) => {
