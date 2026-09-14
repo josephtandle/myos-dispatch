@@ -1,0 +1,15 @@
+{
+  "id": "local-search",
+  "version": 1,
+  "optional": true,
+  "taskClass": "cheap_routing",
+  "commands": [
+    "describe",
+    "status",
+    "open"
+  ],
+  "resultExport": "none/local_ui_only",
+  "automaticRouting": false,
+  "entrypoint": "myos-search",
+  "localInterface": "native_terminal"
+}

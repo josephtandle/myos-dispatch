@@ -6,6 +6,10 @@
   "main": "src/workspace-context.js",
   "bin": {
     "myos-dispatch-hook": "bin/myos-dispatch-hook",
+    "myos-local-search": "bin/myos-local-search.js",
+    "myos-search-service": "bin/myos-search-service.js",
+    "myos-search": "bin/myos-search.js",
+    "myos-search-dispatch": "bin/myos-search-dispatch.js",
     "myos-writer": "bin/myos-writer.js"
   },
   "engines": {

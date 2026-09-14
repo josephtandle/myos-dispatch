@@ -68,6 +68,36 @@ hooks.
   - **graphify** / **gitnexus** — optional per-repo code intelligence
   - an **agent CLI** (`claude` or `codex`) — required for that host integration or its workers
 
+### Optional local search Terminal
+
+`myos-search-dispatch` is an optional, disabled-by-default bridge from a separately installed Dispatch core to the local-search Terminal. It exposes only `describe`, `status`, and `open`:
+
+```sh
+myos-search-dispatch \
+  --dispatch-root /absolute/separate/dispatch-core \
+  --settings /absolute/owner-private/local-search-dispatch.json \
+  describe
+```
+
+Start with an owner-only regular settings file that is disabled:
+
+```json
+{
+  "version": 1,
+  "enabled": false,
+  "node24": "/absolute/path/to/node24",
+  "configPath": "/absolute/private/local-search.json"
+}
+```
+
+After explicit review, changing only `enabled` to `true` opts in. The enabled settings are exactly `{ "version": 1, "enabled": true, "node24": "/absolute/path/to/node24", "configPath": "/absolute/private/local-search.json" }`. Disabled or invalid settings fail before configuration loads, writes, or child-process creation. The bridge reads the normal Dispatch capability authority, adds a private ephemeral overlay, and asks the real Dispatch planner to select the fixed `local:search-launcher` capability. It creates no automatic or global route, hook, or hosted-content path. The child is always the packaged sibling `myos-search.js`; Dispatch core is not bundled inside this local-search module.
+
+`open` launches a local macOS Terminal session. Searches, snippets, status details, indexing, and source opening stay in that Terminal session. A watcher is a manual foreground task for that session, not a persistent daemon.
+
+`status` reports saved state and prerequisite checks. It does not prove that embedding inference works or that an index is current. Search output labels partial scans, unavailable sources, pending semantic work, and whether a zero-result response is a complete negative. Metadata-only results are admitted again without reading content. Content results are read again and must keep the displayed hash before the source can open.
+
+This is a local safety boundary, not universal containment against another hostile process running as the same OS account. See [the local-search package guide](packages/local-search/README.md) for configuration and scope details.
+
 ---
 
 ## Install

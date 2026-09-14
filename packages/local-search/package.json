@@ -1,0 +1,17 @@
+{
+  "name": "@myos/local-search",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Bounded, freshness-first local file search",
+  "type": "commonjs",
+  "main": "index.js",
+  "bin": {
+    "local-search": "bin/local-search.js"
+  },
+  "engines": {
+    "node": "24.x"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  }
+}
