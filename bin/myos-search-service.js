@@ -11,7 +11,9 @@ const OUTPUT_LIMIT = 8 * 1024;
 const SERVICE_FIELDS = Object.freeze([
   "version", "id", "name", "enabled", "taskClass", "complianceLane", "scheduler",
   "phase", "lastHeartbeat", "lastRun", "lastStatus", "nextReconciliationAt", "errorCode",
+  "metadataRefreshedAt", "metadataSweepCompletedAt", "metadataPending",
 ]);
+const REQUIRED_SERVICE_FIELDS = Object.freeze(SERVICE_FIELDS.filter((field) => !field.startsWith("metadata")));
 const SERVICE_PHASES = new Set(["disabled", "offline", "starting", "watching", "paused", "recovering", "degraded", "stopped"]);
 const SERVICE_ERROR_CODES = new Set([
   "configurationDisabled", "serviceNotEnabled", "registrationMissing", "missingHeartbeat",
@@ -34,6 +36,12 @@ function exactFields(value, fields) {
   return value && typeof value === "object" && !Array.isArray(value) && Object.keys(value).length === fields.length && fields.every((field) => Object.hasOwn(value, field));
 }
 
+function allowedFields(value, required, allowed) {
+  return value && typeof value === "object" && !Array.isArray(value)
+    && required.every((field) => Object.hasOwn(value, field))
+    && Object.keys(value).every((field) => allowed.includes(field));
+}
+
 function validTimestamp(value) {
   return value === null || (typeof value === "string" && Number.isFinite(Date.parse(value)) && new Date(Date.parse(value)).toISOString() === value);
 }
@@ -44,12 +52,14 @@ function sanitizePublicOutput(value, operation) {
     return Object.fromEntries(operationFields.map((field) => [field, value[field]]));
   }
   const expectedTaskClass = operation === "enable" ? "default_automation" : "cheap_routing";
-  if (!exactFields(value, SERVICE_FIELDS) || value.version !== 1 || typeof value.id !== "string" || !/^com\.myos\.local-search\.[a-f0-9]{20}$/.test(value.id)) return null;
+  if (!allowedFields(value, REQUIRED_SERVICE_FIELDS, SERVICE_FIELDS) || value.version !== 1 || typeof value.id !== "string" || !/^com\.myos\.local-search\.[a-f0-9]{20}$/.test(value.id)) return null;
   if (value.name !== "local-search-freshness" || typeof value.enabled !== "boolean" || value.taskClass !== expectedTaskClass || value.complianceLane !== "unattended_local" || value.scheduler !== "launchd" || !SERVICE_PHASES.has(value.phase)) return null;
   if (![value.lastHeartbeat, value.lastRun, value.nextReconciliationAt].every(validTimestamp)) return null;
+  if (![value.metadataRefreshedAt ?? null, value.metadataSweepCompletedAt ?? null].every(validTimestamp)) return null;
+  if (value.metadataPending !== undefined && value.metadataPending !== null && typeof value.metadataPending !== "boolean") return null;
   if (value.lastStatus !== null && (typeof value.lastStatus !== "string" || !/^[A-Za-z0-9_-]{1,64}$/.test(value.lastStatus))) return null;
   if (value.errorCode !== null && !SERVICE_ERROR_CODES.has(value.errorCode)) return null;
-  return Object.fromEntries(SERVICE_FIELDS.map((field) => [field, value[field]]));
+  return Object.fromEntries(SERVICE_FIELDS.filter((field) => Object.hasOwn(value, field)).map((field) => [field, value[field]]));
 }
 
 function parseArgs(argv) {

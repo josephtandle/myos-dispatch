@@ -10,7 +10,9 @@ const { loadConfig } = require("./config");
 const PUBLIC_FIELDS = Object.freeze([
   "version", "id", "name", "enabled", "taskClass", "complianceLane", "scheduler",
   "phase", "lastHeartbeat", "lastRun", "lastStatus", "nextReconciliationAt", "errorCode",
+  "metadataRefreshedAt", "metadataSweepCompletedAt", "metadataPending",
 ]);
+const PUBLIC_REQUIRED_FIELDS = Object.freeze(PUBLIC_FIELDS.filter((field) => !["metadataRefreshedAt", "metadataSweepCompletedAt", "metadataPending"].includes(field)));
 const PUBLIC_PHASES = new Set(["disabled", "offline", "starting", "watching", "paused", "recovering", "degraded", "stopped"]);
 const PUBLIC_ERROR_CODES = new Set([
   "configurationDisabled", "serviceNotEnabled", "registrationMissing", "missingHeartbeat",
@@ -44,7 +46,8 @@ function projection(identity, values = {}) {
     version: 1, id: identity.label, name: "local-search-freshness", enabled: false,
     taskClass: "default_automation", complianceLane: "unattended_local", scheduler: "launchd",
     phase: "disabled", lastHeartbeat: null, lastRun: null, lastStatus: null,
-    nextReconciliationAt: null, errorCode: null, ...values,
+    nextReconciliationAt: null, errorCode: null, metadataRefreshedAt: null,
+    metadataSweepCompletedAt: null, metadataPending: null, ...values,
   };
   if (!PUBLIC_PHASES.has(source.phase)) source.phase = "degraded";
   if (source.errorCode !== null) source.errorCode = safeErrorCode(source.errorCode);
@@ -193,10 +196,12 @@ function replacePrivate(filePath, content, label) {
 
 function validateTimestamp(value) { return value === null || (typeof value === "string" && Number.isFinite(Date.parse(value)) && new Date(Date.parse(value)).toISOString() === value); }
 function validatePublicStatus(raw, identity) {
-  if (!raw || typeof raw !== "object" || Array.isArray(raw) || Object.keys(raw).length !== PUBLIC_FIELDS.length || PUBLIC_FIELDS.some((field) => !Object.hasOwn(raw, field))) throw new Error("invalid fields");
+  if (!raw || typeof raw !== "object" || Array.isArray(raw) || !PUBLIC_REQUIRED_FIELDS.every((field) => Object.hasOwn(raw, field)) || Object.keys(raw).some((field) => !PUBLIC_FIELDS.includes(field))) throw new Error("invalid fields");
   if (raw.version !== 1 || raw.id !== identity.label || raw.name !== "local-search-freshness" || typeof raw.enabled !== "boolean") throw new Error("invalid identity");
   if (!new Set(["cheap_routing", "default_automation"]).has(raw.taskClass) || raw.complianceLane !== "unattended_local" || raw.scheduler !== "launchd" || !PUBLIC_PHASES.has(raw.phase)) throw new Error("invalid enum");
   if (![raw.lastHeartbeat, raw.lastRun, raw.nextReconciliationAt].every(validateTimestamp)) throw new Error("invalid timestamp");
+  if (![raw.metadataRefreshedAt ?? null, raw.metadataSweepCompletedAt ?? null].every(validateTimestamp)) throw new Error("invalid metadata timestamp");
+  if (raw.metadataPending !== undefined && raw.metadataPending !== null && typeof raw.metadataPending !== "boolean") throw new Error("invalid metadata pending");
   if (raw.lastStatus !== null && (typeof raw.lastStatus !== "string" || !/^[A-Za-z0-9_-]{1,64}$/.test(raw.lastStatus))) throw new Error("invalid last status");
   if (raw.errorCode !== null && !PUBLIC_ERROR_CODES.has(raw.errorCode)) throw new Error("invalid error code");
   return raw;

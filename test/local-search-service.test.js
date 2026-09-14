@@ -116,6 +116,15 @@ process.stdout.write(JSON.stringify({ok:false,status,taskClass:"cheap_routing",c
   assert.equal(JSON.parse(child.stdout).status, "confirmationRequired");
 });
 
+test("outer bridge accepts only strict optional metadata freshness fields", () => {
+  const base = service.projection({ label: `com.myos.local-search.${"a".repeat(20)}` }, { taskClass: "cheap_routing" });
+  const valid = { ...base, metadataRefreshedAt: "2026-09-14T00:00:00.000Z", metadataSweepCompletedAt: null, metadataPending: true };
+  assert.deepEqual(require("../bin/myos-search-service").sanitizePublicOutput(valid, "status"), valid);
+  assert.equal(require("../bin/myos-search-service").sanitizePublicOutput({ ...valid, metadataPending: "yes" }, "status"), null);
+  assert.equal(require("../bin/myos-search-service").sanitizePublicOutput({ ...valid, metadataRefreshedAt: "yesterday" }, "status"), null);
+  assert.equal(require("../bin/myos-search-service").sanitizePublicOutput({ ...valid, privatePath: "/secret" }, "status"), null);
+});
+
 test("CLI and runner main handlers expose only finite public error statuses", async () => {
   const cliPath = path.resolve(__dirname, "../packages/local-search/service-cli.js");
   const invalid = require("node:child_process").spawnSync(node24, [cliPath, "status", "--config", "relative/private"], { encoding: "utf8" });
@@ -153,7 +162,7 @@ test("explicit enable writes an owned plist and observes startup acknowledgement
   assert.match(plist, /<key>PathState<\/key>/);
   assert.equal(fs.statSync(identity.receiptPath).mode & 0o077, 0);
   assert.equal(fs.statSync(identity.markerPath).mode & 0o077, 0);
-  assert.deepEqual(Object.keys(result), ["version", "id", "name", "enabled", "taskClass", "complianceLane", "scheduler", "phase", "lastHeartbeat", "lastRun", "lastStatus", "nextReconciliationAt", "errorCode"]);
+  assert.deepEqual(Object.keys(result), ["version", "id", "name", "enabled", "taskClass", "complianceLane", "scheduler", "phase", "lastHeartbeat", "lastRun", "lastStatus", "nextReconciliationAt", "errorCode", "metadataRefreshedAt", "metadataSweepCompletedAt", "metadataPending"]);
 });
 
 test("enable requires confirmation and refuses an unowned plist collision", async (t) => {
@@ -267,7 +276,7 @@ test("status reports an unknown launchctl observation as degraded", async (t) =>
   const result = await service.status({ configPath: item.configPath }, item.dependencies);
   assert.equal(result.phase, "degraded");
   assert.equal(result.errorCode, "registrationUnknown");
-  assert.equal(Object.keys(result).length, 13);
+  assert.equal(Object.keys(result).length, 16);
 });
 
 test("disable operates only on a matching owned registration and verifies stop", async (t) => {
@@ -490,7 +499,7 @@ test("status rejects extra private fields, malformed types, and raw error text",
   fs.writeFileSync(identity.statusPath, `${JSON.stringify(malformed)}\n`, { mode: 0o600 });
   const result = await service.status({ configPath: item.configPath }, item.dependencies);
   assert.equal(result.errorCode, "invalidStatus");
-  assert.equal(Object.keys(result).length, 13);
+  assert.equal(Object.keys(result).length, 16);
   assert.equal(JSON.stringify(result).includes(item.base), false);
 });
 
@@ -594,6 +603,28 @@ test("runner lastRun advances only when the completed watcher run count advances
   clock += 1_000;
   await interval();
   assert.equal(JSON.parse(fs.readFileSync(identity.statusPath, "utf8")).lastRun, new Date(clock).toISOString());
+  signals.emit("SIGTERM");
+  await running;
+});
+
+test("runner projects only confirmed metadata refresh timestamps", async (t) => {
+  const item = fixture(t);
+  const clock = 770_000;
+  const identity = await prepareOwned(item, clock);
+  const signals = new EventEmitter();
+  const state = {
+    stopped: false, running: false, runs: 0, last: null, healthErrors: [],
+    metadataRefreshedAt: "2026-09-14T00:00:00.000Z", metadataSweepCompletedAt: null, metadataPending: true,
+  };
+  const running = runner.runService({ configPath: item.configPath }, {
+    identity, signals, now: () => clock, setInterval: () => 1, clearInterval: () => {},
+    watch: async () => ({ ok: true, stop: async () => { state.stopped = true; }, reconcileNow: async () => {}, getState: () => ({ ...state }) }),
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  const status = JSON.parse(fs.readFileSync(identity.statusPath, "utf8"));
+  assert.equal(status.metadataRefreshedAt, state.metadataRefreshedAt);
+  assert.equal(status.metadataSweepCompletedAt, null);
+  assert.equal(status.metadataPending, true);
   signals.emit("SIGTERM");
   await running;
 });
@@ -728,7 +759,7 @@ test("outer bridge bounds nested output and real Node 24 status stays cheap-rout
   const statusChild = require("node:child_process").spawnSync(process.execPath, [serviceEntrypoint, "--node24", node24, "status", "--config", item.configPath], { encoding: "utf8" });
   const statusResult = JSON.parse(statusChild.stdout);
   assert.equal(statusResult.taskClass, "cheap_routing");
-  assert.equal(Object.keys(statusResult).length, 13);
+  assert.equal(Object.keys(statusResult).length, 16);
 
   const directory = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), "myos-service-output-"));
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));

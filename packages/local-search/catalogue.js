@@ -3,7 +3,22 @@
 const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
-const { discoverRoot, readVerified, readVerifiedBytes } = require("./scope");
+const { discoverRoot, readVerified, readVerifiedBytes, verifyMetadata } = require("./scope");
+
+function metadataPolicyFingerprint(root) {
+  const verifier = crypto.createHash("sha256").update(Function.prototype.toString.call(verifyMetadata)).digest("hex");
+  const stable = (value) => {
+    if (Array.isArray(value)) return value.map(stable);
+    if (value && typeof value === "object") return Object.fromEntries(Object.keys(value).sort().map((key) => [key, stable(value[key])]));
+    return value ?? null;
+  };
+  const canonicalPolicy = JSON.stringify([2, stable(root), verifier]);
+  return crypto.createHash("sha256").update(canonicalPolicy).digest("hex");
+}
+
+function metadataFingerprint(root, stat) {
+  return [stat.dev, stat.ino, stat.size, stat.mtimeNs, stat.ctimeNs, metadataPolicyFingerprint(root)].map(String).join(":");
+}
 
 function cataloguePath(config) { return path.join(config.stateDirectory, "catalogue.json"); }
 
@@ -77,6 +92,9 @@ function reconcile(config, options = {}) {
       let hash = null;
       let observedAt = new Date().toISOString();
       let observedIdentity = null;
+      const metadata = verifyMetadata(root, file.path);
+      if (!metadata.ok) { unavailable.push({ ...metadata, rootId: root.id }); hashComplete = false; continue; }
+      const currentMetadataFingerprint = metadataFingerprint(root, metadata.stat);
       if (file.contentEligible) {
         if (contentBytes + file.size > (options.maxContentScanBytes || Infinity)) {
           hashComplete = false;
@@ -96,6 +114,8 @@ function reconcile(config, options = {}) {
         contentType: file.documentEligible ? "document" : file.textEligible ? "text" : "metadata",
         contentEligible: file.contentEligible,
         size: file.size, mtimeMs: file.mtimeMs, observedHash: hash,
+        metadataFingerprint: currentMetadataFingerprint,
+        metadataObservedAt: observedAt,
         observedIdentity,
         observedExtractionKey: null,
         indexedHash: inheritsIndex && old ? old.indexedHash || null : null,
@@ -121,4 +141,4 @@ function reconcile(config, options = {}) {
   };
 }
 
-module.exports = { ensureState, loadCatalogue, publish, reconcile, sourceId };
+module.exports = { ensureState, loadCatalogue, metadataFingerprint, metadataPolicyFingerprint, publish, reconcile, sourceId };

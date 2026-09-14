@@ -48,6 +48,9 @@ async function runService(options, dependencies = {}) {
   let lastRun = null;
   let observedRuns = null;
   let lastStatus = null;
+  let metadataRefreshedAt = null;
+  let metadataSweepCompletedAt = null;
+  let metadataPending = null;
   let lastTick = now();
   let timer;
   let watcher;
@@ -60,6 +63,7 @@ async function runService(options, dependencies = {}) {
     enabled: true, taskClass: "default_automation", phase,
     lastHeartbeat: new Date(now()).toISOString(), lastRun, lastStatus,
     nextReconciliationAt: stopRequested ? null : new Date(now() + intervalMs).toISOString(), errorCode,
+    metadataRefreshedAt, metadataSweepCompletedAt, metadataPending,
   });
   const heartbeat = () => {
     if (publicationFailed) return snapshot();
@@ -80,7 +84,12 @@ async function runService(options, dependencies = {}) {
   };
   const refreshFromWatcher = (event) => {
     const eventState = event && Number.isSafeInteger(event.runs)
-      ? { stopped: false, running: false, runs: event.runs, last: event.result, healthErrors: [] }
+      ? {
+        stopped: false, running: false, runs: event.runs, last: event.result, healthErrors: [],
+        metadataRefreshedAt: event.metadataRefreshedAt,
+        metadataSweepCompletedAt: event.metadataSweepCompletedAt,
+        metadataPending: event.metadataPending,
+      }
       : null;
     const state = eventState || (watcher && typeof watcher.getState === "function" ? watcher.getState() : null);
     const observed = projectWatcherState(state);
@@ -92,6 +101,9 @@ async function runService(options, dependencies = {}) {
       observedRuns = observedRuns === null ? observed.runCount : Math.max(observedRuns, observed.runCount);
     }
     if (observed.lastStatus) lastStatus = observed.lastStatus;
+    if (state && typeof state.metadataRefreshedAt === "string") metadataRefreshedAt = state.metadataRefreshedAt;
+    if (state && typeof state.metadataSweepCompletedAt === "string") metadataSweepCompletedAt = state.metadataSweepCompletedAt;
+    if (state && typeof state.metadataPending === "boolean") metadataPending = state.metadataPending;
   };
   const callbackHeartbeat = () => { if (!stopRequested) heartbeat(); };
   const signalNames = ["SIGINT", "SIGTERM", "SIGHUP"];

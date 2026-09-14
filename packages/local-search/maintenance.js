@@ -64,6 +64,10 @@ async function watch(config, options = {}) {
   let activeAbort;
   let resourceState;
   let paused = false;
+  // Loaded here rather than at module evaluation time: metadata-refresh obtains this
+  // module's mutex, so a top-level import would create a circular initialization path.
+  const metadata = require("./metadata-refresh");
+  const metadataCursor = metadata.createMetadataCursor(config);
   const resourceSession = {};
   const resourceChecksEnabled = Boolean(options.resourceReadings || options.resourcePlatform !== undefined || (!options.testOnlyInProcess && !options.adapters));
   const hardPauseReasons = new Set(["backgroundProbeUnavailable", "onBattery", "thermalPressure"]);
@@ -105,15 +109,27 @@ async function watch(config, options = {}) {
     if (running && (hardPauseReasons.has(resourceState.pausedReason) || resourceState.persistenceAvailable === false)) activeAbort?.abort();
     return !paused;
   };
+  const metadataMayRun = () => !resourceState || !hardPauseReasons.has(resourceState.pausedReason)
+    && resourceState.pausedReason !== "resourceStatusUnavailable";
+  const runMetadata = async () => {
+    if (!metadataMayRun() || stopped) return;
+    const result = await metadata.refreshMetadata(config, {
+      cursor: metadataCursor, signal: activeAbort?.signal, maxEntries: 32, deadline: Date.now() + 100,
+    });
+    if (["failed", "storageRejected", "catalogueCorrupt"].includes(result.status)) recordError("metadata", { code: "metadataRefreshFailed" });
+  };
   const run = async (reason) => {
     if (stopped) return;
-    if (paused && reason !== "periodic" && reason !== "startup") { queued = true; return; }
+    if (paused && hardPauseReasons.has(resourceState?.pausedReason) && reason !== "periodic" && reason !== "startup") { queued = true; return; }
     if (running) { queued = true; return; }
     running = true;
     try {
-      if (!checkResources()) return;
+      const ready = checkResources();
       queued = false;
       activeAbort = new AbortController();
+      await runMetadata();
+      // Metadata is safe during the idle/healthy dwell, but the heavyweight pass is not.
+      if (!ready) return;
       if (options.testOnlyInProcess === true || options.adapters) {
         const lock = acquire(config);
         try {
@@ -124,7 +140,12 @@ async function watch(config, options = {}) {
         last = await runMaintenanceWorker(config, { signal: activeAbort.signal });
       }
       runs += 1;
-      if (options.onReconcile) options.onReconcile({ reason, runs, result: last });
+      if (options.onReconcile) options.onReconcile({
+        reason, runs, result: last,
+        metadataRefreshedAt: metadataCursor.metadataRefreshedAt,
+        metadataSweepCompletedAt: metadataCursor.metadataSweepCompletedAt,
+        metadataPending: metadataCursor.metadataPending,
+      });
     } catch (error) {
       last = { complete: false, error: error.code || error.message };
       recordError("maintenance", error);
@@ -144,6 +165,7 @@ async function watch(config, options = {}) {
       queued = false;
       if (timer) { clearInterval(timer); timer = undefined; }
       for (const watcher of watchers.splice(0)) watcher.close();
+      metadata.closeMetadataCursor(metadataCursor);
       if (signal) signal.removeEventListener("abort", abortListener);
       if (activeAbort) activeAbort.abort();
       if (running) await new Promise((resolve) => { drainResolve = resolve; });
@@ -155,15 +177,21 @@ async function watch(config, options = {}) {
     status: "watchingForeground",
     stop,
     reconcileNow: () => run("explicitSignal"),
-    getState: () => ({ stopped, running, runs, last, healthErrors: [...healthErrors], ...(resourceState ? { resources: resourceState, queued } : {}) }),
+    getState: () => ({
+      stopped, running, runs, last, healthErrors: [...healthErrors],
+      ...(metadataCursor.metadataRefreshedAt !== null || metadataCursor.metadataSweepCompletedAt !== null
+        ? { metadataRefreshedAt: metadataCursor.metadataRefreshedAt, metadataSweepCompletedAt: metadataCursor.metadataSweepCompletedAt, metadataPending: metadataCursor.metadataPending }
+        : {}),
+      ...(resourceState ? { resources: resourceState, queued } : {}),
+    }),
   };
   if (signal) {
     signal.addEventListener("abort", abortListener, { once: true });
     if (signal.aborted) { await stop(); return controller; }
   }
   timer = setInterval(() => {
-    const ready = checkResources();
-    if (ready && !running && !stopped) void run("periodic");
+    checkResources();
+    if (!running && !stopped) void run("periodic");
   }, config.budgets.pollIntervalMs);
   await run("startup");
   if (stopped || (signal && signal.aborted)) { await stop(); return controller; }
