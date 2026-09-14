@@ -7,9 +7,10 @@ const { hydrateRecords, hydratedContent, isDocument } = require("./hydration");
 const { emitPacket } = require("./packet");
 const { analyzeQuery, termOffsets } = require("./query");
 const { parseCandidates, qmdStatus, runSdkSearch, runSdkSearchCollections, validatedSemanticPassage } = require("./qmd");
+const { nativeSearch } = require("./native-search");
 const { readVerified, selectRoots, verifyMetadata } = require("./scope");
 
-const MODES = new Set(["filename", "keyword", "semantic", "auto", "indexed-keyword", "indexed-filename"]);
+const MODES = new Set(["filename", "keyword", "semantic", "auto", "indexed-keyword", "indexed-filename", "native"]);
 
 function invalid(message) { throw Object.assign(new Error(message), { code: "INVALID_REQUEST" }); }
 
@@ -177,6 +178,7 @@ function mergeRanks(first, second) {
 async function search(config, request, options = {}) {
   if (!config.enabled) return { ok: false, status: "disabled", taskClass: "cheap_routing", complianceLane: "unattended_local", results: [] };
   const parsed = validateRequest(config, request);
+  if (parsed.mode === "native") return nativeSearch(config, parsed, options);
   if (parsed.mode === "indexed-keyword" || parsed.mode === "indexed-filename") return indexedSearch(config, parsed, options);
   const deadline = Date.now() + config.budgets.queryDeadlineMs;
   const freshness = reconcile(config, { roots: parsed.roots, deadline, publish: false, maxContentScanBytes: config.budgets.maxContentScanBytes });

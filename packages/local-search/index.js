@@ -157,7 +157,7 @@ async function index(configInput, options = {}) {
 
 async function search(configInput, request, options) {
   const config = resolveConfig(configInput);
-  return runSearch(config, request, { manifests: loadManifests(config), ...options });
+  return runSearch(config, request, request?.mode === "native" ? options : { manifests: loadManifests(config), ...options });
 }
 
 async function read(configInput, request, options = {}) {
