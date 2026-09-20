@@ -175,7 +175,7 @@ test("(i) model/theme/permissions/env keys all preserved", () => {
   assert.strictEqual(parsed.theme, "light");
   assert.deepStrictEqual(parsed.permissions, { allow: ["Bash(git status)"], deny: [] });
   assert.strictEqual(parsed.env.FOO, "bar", "unrelated env key preserved");
-  assert.strictEqual(parsed.env.MYOS_HOME_ROOT, "/home/testroot", "our env key set");
+  assert.strictEqual(parsed.env.MYOS_HOME_ROOT, "/old", "registration must not repoint an existing environment");
   assert.strictEqual(countOurHooks(parsed), 1);
 
   // And removal restores env without dropping FOO.
@@ -471,4 +471,100 @@ test("atomic registration preserves private settings permissions", () => {
   fs.writeFileSync(settings, "{}", { mode: 0o600 });
   assert.strictEqual(add(settings).status, 0);
   assert.strictEqual(fs.statSync(settings).mode & 0o777, 0o600);
+});
+
+test("two registrations preserve customer settings and foreign hook bytes", () => {
+  const { home, settings } = sandbox();
+  try {
+    const foreign = '{ "matcher" : "Edit", "hooks" : [{"type":"command", "command":"foreign-hook", "timeout":1e2}] }';
+    const env = '"env" : {"CUSTOM":"keep", "ESCAPED":"\\u0061"}';
+    const permissions = '"permissions" : { "allow" : ["Bash(git status)"], "deny":[] }';
+    const original = `{\n\t${env},\n\t${permissions},\n\t"hooks" : { "Stop":[], "UserPromptSubmit" : [${foreign}] }\n}\n`;
+    fs.writeFileSync(settings, original);
+    let first;
+    for (let i = 0; i < 2; i += 1) {
+      const result = add(settings);
+      assert.strictEqual(result.status, 0, result.stderr);
+      const bytes = read(settings);
+      const parsed = JSON.parse(bytes);
+      assert.strictEqual(parsed.env.MYOS_HOME_ROOT, undefined);
+      assert.deepStrictEqual(parsed.hooks.Stop, []);
+      assert.strictEqual(countOurHooks(parsed), 1);
+      for (const fragment of [foreign, env, permissions]) assert.ok(bytes.includes(fragment), `changed customer bytes: ${fragment}`);
+      const ownedBytes = "," + JSON.stringify(parsed.hooks.UserPromptSubmit.at(-1));
+      assert.strictEqual(bytes.replace(ownedBytes, ""), original, "all bytes outside the added entry must survive");
+      if (i === 0) first = bytes;
+      else assert.strictEqual(bytes, first, "second registration must be byte-identical");
+    }
+    const removed = remove(settings);
+    assert.strictEqual(removed.status, 0, removed.stderr);
+    assert.deepStrictEqual(JSON.parse(read(settings)), JSON.parse(original));
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
+test("fresh registration never adds a global home, including dry-run", () => {
+  const { home, settings } = sandbox();
+  try {
+    fs.writeFileSync(settings, '{}\n');
+    const preview = add(settings, ["--dry-run"]);
+    assert.strictEqual(preview.status, 0, preview.stderr);
+    assert.match(preview.stdout, /Global MYOS_HOME_ROOT after merge: absent/);
+    assert.strictEqual(read(settings), '{}\n');
+    assert.strictEqual(add(settings).status, 0);
+    assert.strictEqual(JSON.parse(read(settings)).env, undefined);
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
+test("remove cleans a legacy global home without registration arguments and keeps exact backup", () => {
+  const { home, settings } = sandbox();
+  try {
+    const original = '{"env":{"MYOS_HOME_ROOT":"/legacy-root","KEEP":"yes"},"hooks":{"Stop":[]}}';
+    fs.writeFileSync(settings, original);
+    const result = spawnSync(NODE, [SCRIPT, "--settings", settings, "--remove"], { encoding: "utf8" });
+    assert.strictEqual(result.status, 0, result.stderr);
+    assert.deepStrictEqual(JSON.parse(read(settings)), { env: { KEEP: "yes" }, hooks: { Stop: [] } });
+    const backups = fs.readdirSync(path.dirname(settings)).filter(name => name.startsWith("settings.json.bak-"));
+    assert.strictEqual(backups.length, 1);
+    assert.strictEqual(read(path.join(path.dirname(settings), backups[0])), original);
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
+test("registration replaces only owned entries in mixed groups and retains customer edits on rerun", () => {
+  const { home, settings } = sandbox();
+  try {
+    const foreign = { type: "command", command: "my-wrapper-for-myos-dispatch-hook-logging.sh --surface=claude", timeout: 43 };
+    const original = { env: {}, permissions: { allow: [] }, hooks: {
+      UserPromptSubmit: [{ matcher: "custom", metadata: "keep", hooks: [
+        { type: "command", command: 'node "/old/myos-dispatch-hook" --surface=claude' }, foreign,
+      ] }],
+      PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command: 'node "/old/myos-dispatch-hook" --surface=claude' }] }],
+      Stop: [],
+    } };
+    fs.writeFileSync(settings, JSON.stringify(original, null, "\t"));
+    assert.strictEqual(add(settings).status, 0);
+    const customized = JSON.parse(read(settings));
+    customized.env.CUSTOM = "after first registration";
+    customized.permissions.allow.push("Read");
+    fs.writeFileSync(settings, JSON.stringify(customized, null, "\t"));
+    const bytes = read(settings);
+    assert.strictEqual(add(settings).status, 0);
+    assert.strictEqual(read(settings), bytes);
+    const after = JSON.parse(bytes);
+    assert.strictEqual(countOurHooks(after), 2);
+    assert.deepStrictEqual(after.hooks.UserPromptSubmit[0], { matcher: "custom", metadata: "keep", hooks: [foreign] });
+    assert.deepStrictEqual(after.hooks.Stop, []);
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
+test("foreign bytes survive when removing an owned group shifts a mixed group", () => {
+  const { home, settings } = sandbox();
+  try {
+    const owned = JSON.stringify({ type: "command", command: 'node "/old/myos-dispatch-hook" --surface=claude' });
+    const foreign = '{ "type" : "command", "command":"foreign", "timeout":1e2 }';
+    fs.writeFileSync(settings, `{"hooks":{"UserPromptSubmit":[{"hooks":[${owned}]},{ "hooks" : [${owned},${foreign}] }]}}`);
+    const result = add(settings);
+    assert.strictEqual(result.status, 0, result.stderr);
+    assert.ok(read(settings).includes(foreign), "shifted mixed group must retain foreign hook text");
+    assert.strictEqual(countOurHooks(JSON.parse(read(settings))), 1);
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
 });

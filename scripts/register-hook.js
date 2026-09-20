@@ -1,12 +1,13 @@
 #!/usr/bin/env node
 "use strict";
 
-// register-hook.js — defensively merge the MyOS Dispatch hook into a
+// register-hook.js: defensively merge the MyOS Dispatch hook into a
 // Claude Code settings.json using node (no jq, for portability).
 //
 // SAFETY CONTRACT:
 //   - NEVER overwrites the file. Reads existing JSON, mutates only the
-//     `hooks` object and one `env` key, and writes the result back.
+//     owned `hooks` entries, and writes the result back. --remove also
+//     cleans up the legacy global MYOS_HOME_ROOT key.
 //   - IDEMPOTENT: existing MyOS Dispatch hook entries (identified by the
 //     stable marker in the command string) are stripped before re-adding,
 //     so re-running never duplicates.
@@ -179,7 +180,7 @@ function stripAll(hooks) {
   const result = {};
   for (const [event, groups] of Object.entries(hooks || {})) {
     const cleaned = stripMarkerFromEvent(groups);
-    if (cleaned.length) result[event] = cleaned;
+    if (cleaned.length || groups.length === 0) result[event] = cleaned;
   }
   return result;
 }
@@ -226,22 +227,112 @@ function merge(settings, args) {
     }
   }
 
-  if (Object.keys(hooks).length) out.hooks = hooks;
+  if (Object.keys(hooks).length || (out.hooks && Object.keys(out.hooks).length === 0)) out.hooks = hooks;
   else delete out.hooks;
 
   if (args.surface === "codex") return { settings: out, command };
 
-  // Manage exactly one env key.
-  const env = { ...(out.env && typeof out.env === "object" ? out.env : {}) };
-  if (args.remove) {
+  // Claude resolves the hook workspace from its executable location. Never
+  // set a host-wide home: that also repoints unrelated tools in every session.
+  // Explicit removal is the recovery path for the old global registration.
+  if (args.remove && out.env && typeof out.env === "object"
+    && !Array.isArray(out.env) && Object.hasOwn(out.env, HOME_ENV_KEY)) {
+    const env = { ...out.env };
     delete env[HOME_ENV_KEY];
-  } else if (args.home) {
-    env[HOME_ENV_KEY] = args.home;
+    if (Object.keys(env).length) out.env = env;
+    else delete out.env;
   }
-  if (Object.keys(env).length) out.env = env;
-  else delete out.env;
 
   return { settings: out, command };
+}
+
+// Retain original JSON text for unchanged values, including foreign hooks,
+// number notation, escapes and whitespace. Only changed containers are edited.
+// JSON.parse validates syntax before tokenization; tokens provide source spans.
+function serializeSettings(previous, settings) {
+  if (previous === null) return `${JSON.stringify(settings, null, 2)}\n`;
+  JSON.parse(previous);
+  const tokens = [...previous.matchAll(/"(?:\\.|[^"\\])*"|true|false|null|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?|[{}\[\]:,]/g)];
+  let cursor = 0;
+  function parseValue() {
+    const token = tokens[cursor++];
+    const start = token.index;
+    const entries = [];
+    const object = token[0] === "{";
+    const container = object || token[0] === "[";
+    let end = start + token[0].length;
+    if (container) {
+      const close = object ? "}" : "]";
+      const keys = new Set();
+      let boundary = end;
+      while (tokens[cursor][0] !== close) {
+        let key;
+        const memberStart = tokens[cursor].index;
+        if (object) {
+          key = JSON.parse(tokens[cursor++][0]);
+          if (keys.has(key)) throw new Error("Refusing settings with duplicate JSON keys; no changes made");
+          keys.add(key);
+          cursor += 1; // colon
+        }
+        const value = parseValue();
+        entries.push({ key, value, prefix: previous.slice(boundary, memberStart), label: previous.slice(memberStart, value.start) });
+        boundary = value.end;
+        if (tokens[cursor][0] === ",") boundary = tokens[cursor++].index + 1;
+      }
+      end = tokens[cursor++].index + 1;
+    }
+    return { start, end, entries, object, container, value: JSON.parse(previous.slice(start, end)) };
+  }
+  function render(node, next) {
+    if (JSON.stringify(node.value) === JSON.stringify(next)) return previous.slice(node.start, node.end);
+    if (!node.container || next === null || typeof next !== "object" || node.object === Array.isArray(next)) return JSON.stringify(next);
+    const parts = [];
+    if (node.object) {
+      for (const entry of node.entries) {
+        if (Object.hasOwn(next, entry.key)) parts.push(entry.prefix + entry.label + render(entry.value, next[entry.key]));
+      }
+      for (const key of Object.keys(next)) {
+        if (!Object.hasOwn(node.value, key)) parts.push(`${JSON.stringify(key)}:${JSON.stringify(next[key])}`);
+      }
+    } else {
+      // Match unchanged array members first, so removing an owned entry never
+      // rewrites a foreign member that shifts into its former position.
+      const used = new Set();
+      const matches = next.map(value => {
+        const index = node.entries.findIndex((entry, i) => !used.has(i)
+          && JSON.stringify(entry.value.value) === JSON.stringify(value));
+        if (index >= 0) used.add(index);
+        return index;
+      });
+      // A mixed group can shift when an earlier owned-only group disappears.
+      // Pair it with its original group before falling back to array position.
+      for (const [i, value] of next.entries()) {
+        if (matches[i] >= 0 || !Array.isArray(value?.hooks)) continue;
+        const index = node.entries.findIndex((entry, j) => {
+          const prior = entry.value.value;
+          return !used.has(j) && Array.isArray(prior?.hooks)
+            && JSON.stringify({ ...prior, hooks: value.hooks }) === JSON.stringify(value)
+            && value.hooks.every(hook => prior.hooks.some(old => JSON.stringify(old) === JSON.stringify(hook)));
+        });
+        if (index >= 0) { matches[i] = index; used.add(index); }
+      }
+      for (const [i, value] of next.entries()) {
+        const index = matches[i] >= 0 ? matches[i] : (!used.has(i) && node.entries[i] ? i : -1);
+        if (index < 0) parts.push(JSON.stringify(value));
+        else {
+          used.add(index);
+          const entry = node.entries[index];
+          parts.push(entry.prefix + render(entry.value, value));
+        }
+      }
+    }
+    const tailStart = node.entries.length ? node.entries.at(-1).value.end : node.start + 1;
+    return previous[node.start] + parts.join(",") + previous.slice(tailStart, node.end);
+  }
+  const root = parseValue();
+  const serialized = previous.slice(0, root.start) + render(root, settings) + previous.slice(root.end);
+  if (!require("node:util").isDeepStrictEqual(JSON.parse(serialized), settings)) throw new Error("Settings serialization mismatch; refusing write");
+  return serialized;
 }
 
 // Timestamp for backup filenames: YYYYMMDD-HHMMSS (matches installer convention).
@@ -459,7 +550,7 @@ function main() {
     process.exit(1);
     return;
   }
-  const serialized = `${JSON.stringify(settings, null, 2)}\n`;
+  const serialized = serializeSettings(previous, settings);
 
   const summaryTarget = settings.hooks && settings.hooks.UserPromptSubmit
     ? JSON.stringify(settings.hooks.UserPromptSubmit, null, 2)
@@ -471,6 +562,7 @@ function main() {
     process.stdout.write(args.remove ? "action: REMOVE hook + env key\n" : "action: ADD/UPDATE hook\n");
     if (!args.remove) process.stdout.write(`command: ${command}\n`);
     process.stdout.write(`UserPromptSubmit after merge:\n${summaryTarget}\n`);
+    process.stdout.write(`Global MYOS_HOME_ROOT after merge: ${Object.hasOwn(settings.env || {}, HOME_ENV_KEY) ? "existing value preserved" : "absent"}\n`);
     return;
   }
 

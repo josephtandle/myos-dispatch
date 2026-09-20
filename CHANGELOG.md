@@ -4,6 +4,15 @@ All notable changes to MyOS Dispatch are documented here.
 
 ## Unreleased
 
+## v4.0.1 - 2026-09-20
+
+### Fixed
+
+- Hook environment scoping: Claude registration no longer writes a global `env.MYOS_HOME_ROOT`. Explicit `--remove` cleans up the legacy key; backups and exact transaction rollback remain available.
+- Settings merge-preserve: re-registration replaces only marker-owned Dispatch hooks, retaining foreign hooks, empty event arrays, custom environment, permissions, and unchanged JSON text across repeated installs.
+
+Both fixes address a customer install report dated 2026-09-18. No new dependencies.
+
 ## v4.0.0 - 2026-09-12
 
 ### Breaking
