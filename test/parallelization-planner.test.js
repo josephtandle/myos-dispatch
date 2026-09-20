@@ -50,7 +50,7 @@ test("parallelization planner records no-op decision for direct lightweight asks
   assert.equal(plan.joinPolicy, "none");
 });
 
-test("parallelization planner fans out short research complaints but not status pings", () => {
+test("parallelization planner keeps short research questions and status pings local", () => {
   const researchPlan = buildParallelizationPlan("what's going on with dispatch fanout", {
     branch: "fallback",
     intentType: "exploratory",
@@ -68,10 +68,9 @@ test("parallelization planner fans out short research complaints but not status 
     parallelizationStage: cleanStage(),
   });
 
-  assert.equal(researchPlan.mode, "read_only");
-  assert.equal(researchPlan.aggression, "deep");
-  assert.ok(researchPlan.backgroundTasks.length >= 4);
-  assert.ok(researchPlan.backgroundTasks.some((task) => task.id === "decompose-1"));
+  assert.equal(researchPlan.mode, "none");
+  assert.equal(researchPlan.aggression, "off");
+  assert.equal(researchPlan.backgroundTasks.length, 0);
   assert.equal(statusPlan.mode, "none");
   assert.equal(statusPlan.backgroundTasks.length, 0);
 });

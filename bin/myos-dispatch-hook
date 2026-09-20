@@ -327,6 +327,7 @@ function fanoutMandateLines(surface, parallel, autoDispatchedTasks = []) {
   if ((parallel.blockedReasons || []).includes("background_agents_disabled")) {
     return ["- Background fan-out is disabled on this machine (MYOS_BACKGROUND_AGENTS_ENABLED=0). Work the critical path in this session and do not spawn background subagents."];
   }
+  if (parallel.mode === "none" || parallel.taskCount === 0) return [];
   const lines = [
     "- Fan out FIRST on non-trivial work: dispatch the parallel lanes above at the start of the turn, then work the critical path while they run.",
     "- Prefer breadth over depth: many parallel single-purpose subagents, shallow nesting. Never chain subagents deeper than the depth shown; widen instead.",
@@ -431,7 +432,7 @@ function formatDispatchContext({ surface, hookEventName, targetKind, text, plan,
       "Mandatory behavior:",
       "- Treat this route as the first routing pass for the turn.",
       "- Follow MyOS Dispatch evaluation order before broad search or provider-specific work.",
-      "- For non-trivial work, use the maximum safe fanout exposed by the plan, while respecting protected-surface, auth, destructive, and user-visible-send gates.",
+      "- Launch agents only when independent work warrants them, respecting protected-surface, auth, destructive, and user-visible-send gates.",
       ...fanoutMandateLines(surface, parallel, autoDispatchedTasks),
       ...(parallel.intentFidelity?.enabled ? [
         "- The latest explicit instruction overrides earlier interpretations, inferred preferences, and stale context. Apply corrections without defending or re-litigating the superseded interpretation.",
@@ -1294,7 +1295,7 @@ function handlePreToolUse(payload, surface, options = {}) {
     hookEventName: "PreToolUse",
     targetKind: "bash_command",
     text: command,
-    contextMode: options.contextMode || "full",
+    contextMode: "none",
     state,
   });
 
@@ -1316,6 +1317,15 @@ function handlePreToolUse(payload, surface, options = {}) {
     ...(route.route?.fastpaths ? { fastpaths: route.route.fastpaths } : {}),
   });
   const updatedInput = options.rewrite ? buildRtkRewrite(payload) : null;
+  // A shell command is not a new user turn. Keep the safety evidence and RTK
+  // rewrite, but never inject a task plan, fanout mandate or expansion contract.
+  const safetyReasons = [...new Set([
+    ...(route.route?.blockedBy || []),
+    ...(route.route?.parallelization?.blockedReasons || []),
+  ])].filter((reason) => reason !== "background_agents_disabled");
+  route.context = options.contextMode === "none" || safetyReasons.length === 0
+    ? ""
+    : `[MyOS Dispatch tool safety] ${safetyReasons.join(", ")}. Respect existing authorization and safety gates.`;
   // Route evidence is already logged above. When there is nothing actionable
   // (no rewrite and no context to inject), stay a true no-op so the PreToolUse
   // surface behaves exactly like the bare rewrite hook it replaces.

@@ -34,6 +34,8 @@ const GENERIC_TOKENS = new Set([
   'on', 'or', 'our', 'project', 'status', 'that', 'the', 'their', 'this', 'to',
   'up', 'we', 'with', 'you', 'your',
 ]);
+// Cross-domain tags are useful metadata but cannot identify a capability.
+const GENERIC_CAPABILITY_ALIASES = new Set(["api", "media", "myos", "service", "tool", "agent", "memory", "database", "launch"]);
 
 function normalizeText(value) {
   return String(value || '').toLowerCase();
@@ -95,7 +97,8 @@ function scoreCapabilityMatch(capability, text) {
   const tokens = new Set(meaningfulTokens(text));
 
   let evidenceScore = 0;
-  evidenceScore += scorePhrases(haystack, tokens, capability.aliases || []);
+  evidenceScore += scorePhrases(haystack, tokens, (capability.aliases || [])
+    .filter((alias) => !GENERIC_CAPABILITY_ALIASES.has(normalizeText(alias).trim())));
   evidenceScore += scorePhrases(haystack, tokens, capability.use_when || []);
 
   const description = normalizeText(capability.description || '');

@@ -167,12 +167,11 @@ test("PreToolUse (Claude surface) routes Bash commands and preserves RTK rewrite
 
   const hook = output?.hookSpecificOutput || {};
   assert.equal(hook.hookEventName, "PreToolUse");
-  assert.match(hook.additionalContext || "", /Target: bash_command/);
-  assert.match(hook.additionalContext || "", /Execution lane:/);
+  assert.equal(hook.additionalContext, undefined);
   assert.equal(hook.updatedInput?.command, "rtk git status");
 });
 
-test("PreToolUse (Codex surface) emits compact context and never rewrites", () => {
+test("PreToolUse (Codex surface) is silent for ordinary reads and never rewrites", () => {
   const output = handleHookPayload({
     hook_event_name: "PreToolUse",
     cwd: process.cwd(),
@@ -181,8 +180,7 @@ test("PreToolUse (Codex surface) emits compact context and never rewrites", () =
   }, "codex", { contextMode: "compact", rewrite: false });
 
   const hook = output?.hookSpecificOutput || {};
-  assert.equal(hook.hookEventName, "PreToolUse");
-  assert.match(hook.additionalContext || "", /^\[MyOS Dispatch\] surface=codex/);
+  assert.equal(output, null);
   assert.doesNotMatch(hook.additionalContext || "", /Mandatory behavior:/);
   assert.equal(hook.updatedInput, undefined);
   assert.equal(hook.permissionDecision, undefined);
@@ -229,9 +227,7 @@ test("PreToolUse (Claude surface) rejects RTK grep rewrites when grep reads stdi
     "claude",
     { contextMode: "full", rewrite: true }
   );
-  assert.ok(malformedOutput);
-  assert.equal(malformedOutput.hookSpecificOutput?.hookEventName, "PreToolUse");
-  assert.equal(malformedOutput.hookSpecificOutput?.updatedInput, undefined);
+  assert.equal(malformedOutput, null);
 });
 
 test("compactRoute extracts matched fastpaths up to max 5, prioritizing capability_id over intent", () => {

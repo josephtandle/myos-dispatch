@@ -1035,12 +1035,12 @@ test("clamps parallelization fanout for goalScale 2 prompts", () => {
   assert.equal(plan.parallelizationPlan.clampReason, "trivial_goal_scale");
 });
 
-test("does not clamp parallelization fanout for goalScale 3 prompts", () => {
+test("goalScale 3 alone does not allocate a team for a single file rename", () => {
   const { resolveDispatchPlan } = require("../src/workspace-context");
   const plan = resolveDispatchPlan("rename this file to notes.md");
   assert.equal(plan.goalScale, 3);
-  assert.notEqual(plan.parallelizationPlan.aggression, "off");
-  assert.ok(plan.parallelizationPlan.backgroundTasks.length > 0);
+  assert.equal(plan.parallelizationPlan.aggression, "off");
+  assert.equal(plan.parallelizationPlan.backgroundTasks.length, 0);
   assert.equal(plan.parallelizationPlan.clampReason, undefined);
 });
 
@@ -1054,15 +1054,15 @@ test("preserves deep fanout for goalScale 4 multi-part implementation prompts", 
   assert.equal(plan.parallelizationPlan.clampReason, undefined);
 });
 
-test("operator env override MYOS_PARALLELIZATION_AGGRESSION=deep prevents clamping on goalScale 1", () => {
+test("deep aggression preference does not allocate agents for a status ping", () => {
   const { resolveDispatchPlan } = require("../src/workspace-context");
   const origEnv = process.env.MYOS_PARALLELIZATION_AGGRESSION;
   try {
     process.env.MYOS_PARALLELIZATION_AGGRESSION = "deep";
     const plan = resolveDispatchPlan("is everything ok");
     assert.equal(plan.goalScale, 1);
-    assert.equal(plan.parallelizationPlan.aggression, "deep");
-    assert.ok(plan.parallelizationPlan.backgroundTasks.length > 0);
+    assert.equal(plan.parallelizationPlan.aggression, "off");
+    assert.equal(plan.parallelizationPlan.backgroundTasks.length, 0);
     assert.equal(plan.parallelizationPlan.clampReason, undefined);
   } finally {
     if (origEnv === undefined) {

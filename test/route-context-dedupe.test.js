@@ -46,7 +46,7 @@ test("footer-once-per-turn", () => {
       { contextMode: "full", rewrite: false }
     );
     const ctx2 = out2?.hookSpecificOutput?.additionalContext || "";
-    assert.match(ctx2, /Mandatory behavior: unchanged \(see route block earlier this turn\)/);
+    assert.equal(ctx2, "");
     assert.doesNotMatch(ctx2, /Treat this route as the first routing pass/);
 
     // Turn 2: Next UserPromptSubmit resets turn flags
@@ -143,8 +143,7 @@ test("identical-block suppression", () => {
       { contextMode: "full", rewrite: false }
     );
     const ctx2 = out2?.hookSpecificOutput?.additionalContext || "";
-    assert.match(ctx2, /\[MyOS Dispatch route\]/);
-    assert.match(ctx2, /Mandatory behavior: unchanged/);
+    assert.equal(ctx2, "");
 
     // 3rd call in SAME turn: PreToolUse with exact same command and route
     const out3 = handleHookPayload(
@@ -161,7 +160,7 @@ test("identical-block suppression", () => {
     const ctx3 = out3?.hookSpecificOutput?.additionalContext || "";
     assert.equal(
       ctx3,
-      "[MyOS Dispatch route] unchanged from previous injection this turn."
+      ""
     );
   } finally {
     try {
