@@ -581,6 +581,7 @@ function collectDispatchSignals(query, options = {}) {
   return {
     query,
     parallelizationStateFile: options.parallelizationStateFile || "",
+    callerProvider: options.callerProvider || options.hookSurface,
     env: options.env || process.env,
     dataSourceOptions,
     intentType,

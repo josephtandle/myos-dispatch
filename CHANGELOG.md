@@ -10,8 +10,10 @@ All notable changes to MyOS Dispatch are documented here.
 
 - Hook environment scoping: Claude registration no longer writes a global `env.MYOS_HOME_ROOT`. Explicit `--remove` cleans up the legacy key; backups and exact transaction rollback remain available.
 - Settings merge-preserve: re-registration replaces only marker-owned Dispatch hooks, retaining foreign hooks, empty event arrays, custom environment, permissions, and unchanged JSON text across repeated installs.
+- Sidecars default off without a provider credential, with one quiet route-context reason. Customer installs also default off with credentials until explicitly opted in. Customer detection uses an All Sorted home path, a `.all-sorted` marker in `MYOS_HOME_ROOT`, or `MYOS_CUSTOMER_INSTALL=1`. Set `MYOS_PARALLELIZATION_AGGRESSION=balanced` or `deep` in the hook's environment configuration to opt in; `off` disables sidecars. Credentialed non-customer installs retain their existing default.
+- Central child environment loading: every recipe child launched through the dispatcher loads `<MYOS_HOME_ROOT>/.env`, preserving existing shell and caller variables, including empty values. The dependency-free parser supports comments, quoted values, and `export` assignments without shell expansion. `NODE_DEBUG=myos-dispatch` logs only the path and loaded key count once per path.
 
-Both fixes address a customer install report dated 2026-09-18. No new dependencies.
+These fixes address a customer install report dated 2026-09-18. No new dependencies.
 
 ## v4.0.0 - 2026-09-12
 
