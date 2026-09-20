@@ -359,6 +359,10 @@ function resolveRouteEntry({ taskClass, intent, complianceLane }) {
   return {
     routeKey: normalizedTaskClass,
     routingSource: normalizedIntent ? "taskClass_fallback" : "taskClass",
+    allowsLocalProvider: !normalizedIntent && !localPreference &&
+      !readLocalAssignmentsFile()?.assignments?.[normalizedTaskClass] &&
+      !readLocalAssignmentsFile()?.overrides?.[normalizedTaskClass] &&
+      !routeOverrides?.[normalizedTaskClass]?.[lane],
     route: (() => {
       const merged = mergeRouteOverrides(baseRoute, routeOverrides?.[normalizedTaskClass]?.[lane]);
       if (localPreference?.source !== "local_assignment") return merged;
@@ -435,7 +439,7 @@ function resolveExecutionPlan({ taskClass, intent, complianceLane, executionPoli
     };
   }
 
-  const { routeKey, routingSource, route } = resolveRouteEntry({
+  const { routeKey, routingSource, route, allowsLocalProvider } = resolveRouteEntry({
     taskClass: normalizedTaskClass,
     intent,
     complianceLane: lane,
@@ -466,6 +470,7 @@ function resolveExecutionPlan({ taskClass, intent, complianceLane, executionPoli
     complianceLane: lane,
     routeKey,
     routingSource,
+    allowsLocalProvider: allowsLocalProvider === true,
     deterministicBypassReason,
     candidates: [
       ...deterministicCandidates,
@@ -508,6 +513,12 @@ function validateExecutionCandidate(plan, candidate, { authMode, audio } = {}) {
   }
 
   const rawProvider = String(candidate.provider || "").trim().toLowerCase();
+  if (rawProvider === "local") {
+    if (plan.taskClass !== "cheap_routing" || candidate.transportAuthMode !== "none" || !candidate.registration || candidate.authMode) {
+      throw new Error("Local execution requires a registered cheap_routing candidate with no transport credentials");
+    }
+    return;
+  }
   if (rawProvider === "claude" || rawProvider === "local-claude") {
     throw new Error("Legacy Claude providers are not allowed in active MyOS routing");
   }

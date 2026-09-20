@@ -28,6 +28,7 @@ const { appendUsageEvent, summarizeUsage } = require("./myos-usage-ledger");
 const { resolveWorkspacePath, workspaceEnvPath } = require("../myos-compat");
 const { inferGoalScale } = require("../goal-scale");
 const { isSensitiveEnvKey, resolveSecretValue } = require("./runtime-secrets");
+const { localCandidate, executeLocalCandidate } = require("./local-provider");
 
 const WORKSPACE_ENV_PATH = workspaceEnvPath();
 let workspaceEnvLoaded = false;
@@ -1425,6 +1426,9 @@ async function myosRun(options = {}) {
     profile: options.profile,
     responseMode: options.responseMode,
   });
+  const local = plan.allowsLocalProvider === true && plan.routingSource === "taskClass"
+    ? localCandidate({ ...options, taskClass }) : null;
+  if (local) plan.candidates.unshift(local);
   const goalMetadata = options.dispatchPlan?.goalScale
     ? inferGoalScale(options.dispatchPlan)
     : inferGoalScale(options, {
@@ -1446,7 +1450,7 @@ async function myosRun(options = {}) {
 
   for (let index = 0; index < plan.candidates.length; index += 1) {
     const candidate = plan.candidates[index];
-    const authLabel = resolveAuthLabel({
+    const authLabel = candidate.provider === "local" ? "local:none" : resolveAuthLabel({
       provider:
         candidate.type === "deterministic"
           ? candidate.tool
@@ -1459,7 +1463,10 @@ async function myosRun(options = {}) {
     let spendControlAction = null;
 
     try {
-      ({
+      if (candidate.provider === "local" && loadSpendPolicy().killSwitch) {
+        throw new Error("MyOS spend policy kill switch is active");
+      }
+      if (candidate.provider !== "local") ({
         candidate: executionCandidate,
         spendControlAction,
       } = applySpendPolicyToCandidate({
@@ -1473,7 +1480,9 @@ async function myosRun(options = {}) {
       }));
       validateExecutionCandidate(plan, executionCandidate, { authMode, audio: options.audio });
       const result =
-        executionCandidate.type === "deterministic"
+        executionCandidate.provider === "local"
+          ? await executeLocalCandidate(executionCandidate, { ...options, taskClass }, buildMessages(options))
+          : executionCandidate.type === "deterministic"
           ? await executeDeterministicCandidate(executionCandidate, options)
           : await llmCallAsync({
               provider: executionCandidate.provider,
@@ -1500,6 +1509,8 @@ async function myosRun(options = {}) {
 
       const finalResult = {
         ...result,
+        transportAuthMode: executionCandidate.provider === "local" ? "none" : authMode,
+        billingMode: executionCandidate.provider === "local" ? "local" : authMode,
         authMode,
         authLabel,
         caller,
@@ -1533,6 +1544,8 @@ async function myosRun(options = {}) {
         index,
         status: "success",
         type: executionCandidate.type,
+        transportAuthMode: executionCandidate.provider === "local" ? "none" : authMode,
+        billingMode: executionCandidate.provider === "local" ? "local" : authMode,
         providerOrTool:
           executionCandidate.type === "deterministic"
             ? executionCandidate.tool
@@ -1551,7 +1564,9 @@ async function myosRun(options = {}) {
       appendUsageEvent({
         ts: new Date().toISOString(),
         outcome: "success",
-        billable: authMode === "api" && executionCandidate.type === "llm",
+        billable: authMode === "api" && executionCandidate.type === "llm" && executionCandidate.provider !== "local",
+        transportAuthMode: executionCandidate.provider === "local" ? "none" : authMode,
+        billingMode: executionCandidate.provider === "local" ? "local" : authMode,
         caller,
         taskClass,
         intent,
@@ -1592,6 +1607,8 @@ async function myosRun(options = {}) {
         index,
         status: "error",
         type: executionCandidate.type,
+        transportAuthMode: executionCandidate.provider === "local" ? "none" : authMode,
+        billingMode: executionCandidate.provider === "local" ? "local" : authMode,
         providerOrTool:
           executionCandidate.type === "deterministic"
             ? executionCandidate.tool
@@ -1628,7 +1645,9 @@ async function myosRun(options = {}) {
       appendUsageEvent({
         ts: new Date().toISOString(),
         outcome: "error",
-        billable: authMode === "api" && executionCandidate.type === "llm",
+        billable: authMode === "api" && executionCandidate.type === "llm" && executionCandidate.provider !== "local",
+        transportAuthMode: executionCandidate.provider === "local" ? "none" : authMode,
+        billingMode: executionCandidate.provider === "local" ? "local" : authMode,
         caller,
         taskClass,
         intent,
