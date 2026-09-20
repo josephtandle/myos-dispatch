@@ -7,6 +7,9 @@ const { spawnSync } = require("node:child_process");
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
+// Planner behavior tests use a synthetic credential; absence is covered in customer-runtime.test.js.
+process.env.OPENAI_API_KEY = "fixture-only";
+
 const { buildParallelizationPlan, compactParallelizationPlan, resolveMaxSidecars } = require("../src/parallelization-planner");
 const { getParallelizationStage, recordParallelizationRun } = require("../src/promotion/parallelization-version-policy");
 const {
@@ -109,7 +112,7 @@ test("parallelization planner supports a configurable 20-sidecar cap", () => {
     route: { lane: "worker_skill" },
     searchScope: "<workspace>/agents/shared",
   }, {
-    env: { MYOS_PARALLELIZATION_MAX_AGENTS: "24" },
+    env: { MYOS_PARALLELIZATION_MAX_AGENTS: "24", OPENAI_API_KEY: "fixture-only" },
     parallelizationStage: cleanStage(),
   });
 
@@ -130,7 +133,7 @@ test("parallelization planner fans out command creation with human-driven OAuth 
     route: { lane: "worker_skill" },
     searchScope: "<workspace>/agents/shared",
   }, {
-    env: { MYOS_PARALLELIZATION_MAX_AGENTS: "24" },
+    env: { MYOS_PARALLELIZATION_MAX_AGENTS: "24", OPENAI_API_KEY: "fixture-only" },
     parallelizationStage: cleanStage(),
   });
 

@@ -1,0 +1,68 @@
+"use strict";
+
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
+const { execFileSync } = require("node:child_process");
+const { isUnattendedContext } = require("./env-context");
+
+const PROVIDER_ALIASES = { codex: "openai", claude: "anthropic", gemini: "google" };
+
+const PROVIDER_KEYS = {
+  openai: ["OPENAI_API_KEY", "CODEX_API_KEY"],
+  anthropic: ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_API_KEY", "CLAUDE_CODE_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"],
+  google: ["GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_AI_API_KEY", "GOOGLE_GENERATIVE_AI_API_KEY"],
+  openrouter: ["OPENROUTER_API_KEY"],
+};
+
+function hasOAuthSeat(provider, env, callerProvider) {
+  if (isUnattendedContext(env)) return false;
+  const caller = String(callerProvider || "").trim().toLowerCase();
+  if (["openai", "anthropic", "google"].includes(provider)
+    && (PROVIDER_ALIASES[caller] || caller) === provider) return true;
+
+  if (provider === "anthropic" && process.platform === "darwin") {
+    try {
+      const auth = JSON.parse(execFileSync("security", ["find-generic-password", "-s", "Claude Code-credentials", "-w"], {
+        env, encoding: "utf8", timeout: 2000, killSignal: "SIGKILL", stdio: ["ignore", "pipe", "ignore"],
+      }));
+      if (typeof auth.claudeAiOauth?.accessToken === "string" && auth.claudeAiOauth.accessToken.trim()) return true;
+    } catch {
+      // Missing, locked, malformed, or timed-out Keychain entries fall back to the file.
+    }
+  }
+  const home = env.HOME || os.homedir();
+  let authPath;
+  if (provider === "openai") {
+    authPath = env.MYOS_CODEX_AUTH_PATH || path.join(env.CODEX_HOME || path.join(home, ".codex"), "auth.json");
+  } else if (provider === "anthropic") {
+    authPath = path.join(env.CLAUDE_CONFIG_DIR || path.join(home, ".claude"), ".credentials.json");
+  } else if (provider === "google") {
+    authPath = path.join(home, ".gemini", "oauth_creds.json");
+  } else {
+    return false;
+  }
+  try {
+    const auth = JSON.parse(fs.readFileSync(authPath, "utf8"));
+    const token = provider === "openai" ? auth.tokens?.access_token
+      : provider === "anthropic" ? auth.claudeAiOauth?.accessToken : auth.access_token;
+    return typeof token === "string" && token.trim().length > 0;
+  } catch {
+    return false;
+  }
+}
+
+function sidecarOffReason(env = process.env, callerProvider) {
+  const selected = String(callerProvider || env.MYOS_LLM_PROVIDER || "openai").trim().toLowerCase();
+  const provider = PROVIDER_ALIASES[selected] || selected;
+  const hasKey = (PROVIDER_KEYS[provider] || []).some((key) => String(env[key] || "").trim());
+  if (!hasKey && !hasOAuthSeat(provider, env, callerProvider)) return `sidecars off: no ${provider} credential`;
+
+  const root = String(env.MYOS_HOME_ROOT || "");
+  const customer = env.MYOS_CUSTOMER_INSTALL === "1" || /all[-_ ]?sorted/i.test(root)
+    || (root && fs.existsSync(path.join(root, ".all-sorted")));
+  const optIn = ["balanced", "deep"].includes(String(env.MYOS_PARALLELIZATION_AGGRESSION || "").trim().toLowerCase());
+  return customer && !optIn ? "sidecars off: customer opt-in required" : "";
+}
+
+module.exports = { sidecarOffReason };
