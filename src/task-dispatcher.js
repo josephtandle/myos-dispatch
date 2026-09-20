@@ -3,7 +3,6 @@ const os = require("node:os");
 const path = require("node:path");
 const { randomUUID } = require("node:crypto");
 const { spawn } = require("node:child_process");
-const { buildChildEnv } = require("./child-env");
 
 const { normalizeRecipeResult } = require("./recipe-utils");
 const { runCodexWorker } = require("./background/codex-worker");
@@ -476,7 +475,7 @@ function runProcess(command, args, options = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
       cwd: options.cwd || process.cwd(),
-      env: buildChildEnv(options.env),
+      env: { ...process.env, ...(options.env || {}) },
       stdio: ["ignore", "pipe", "pipe"],
     });
 

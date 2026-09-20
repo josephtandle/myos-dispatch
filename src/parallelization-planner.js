@@ -4,7 +4,6 @@ const path = require("node:path");
 
 const { getParallelizationStage } = require("./promotion/parallelization-version-policy");
 const { backgroundAgentsDisabled, isUnattendedContext } = require("./env-context");
-const { sidecarOffReason } = require("./sidecar-policy");
 const { inferGoalScale } = require("./goal-scale");
 const {
   buildExecutionEnvelope,
@@ -434,9 +433,7 @@ function buildParallelizationPlan(input, basePlan = {}, signals = {}) {
   const blockedReasons = detectBlockedReasons(text, basePlan);
   if (backgroundDisabled) blockedReasons.push("background_agents_disabled");
   const criticalPath = getCriticalPath(basePlan);
-  const offReason = sidecarOffReason(env, signals.callerProvider || signals.hookSurface);
-  if (offReason) blockedReasons.push(offReason);
-  const aggression = offReason ? "off" : inferAggression(text, basePlan, env);
+  const aggression = inferAggression(text, basePlan, env);
   const maxSidecars = resolveMaxSidecars(env);
   const depth = resolveDepth(aggression, env);
   const writableLaneCap = resolveWritableLaneCap(env, maxSidecars);

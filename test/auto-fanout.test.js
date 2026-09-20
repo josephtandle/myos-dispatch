@@ -6,10 +6,6 @@ const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
 
-// Fixture sidecars model a credentialed caller; no provider request is made.
-process.env.ANTHROPIC_API_KEY = "fixture-only";
-process.env.OPENAI_API_KEY = "fixture-only";
-
 const { handleHookPayload } = require("../bin/myos-dispatch-hook");
 
 function createTmpHome() {

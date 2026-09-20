@@ -6,10 +6,6 @@ const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
 
-// Exercise credentialed hook planning without relying on a local provider login.
-process.env.OPENAI_API_KEY = "fixture-only";
-process.env.ANTHROPIC_API_KEY = "fixture-only";
-
 const {
   compactRoute,
   formatDispatchContext,

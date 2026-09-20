@@ -5,9 +5,6 @@ const os = require("node:os");
 const path = require("node:path");
 const { execFileSync } = require("node:child_process");
 
-// Routing tests exercise credentialed planning without relying on a local login.
-process.env.OPENAI_API_KEY = "fixture-only";
-
 function loadWorkspaceContextWithHome(homeDir) {
   process.env.HOME = homeDir;
   const dataSourcesConfig = path.join(homeDir, ".myos", "workspace", "data-sources.json");
