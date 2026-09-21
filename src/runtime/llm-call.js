@@ -29,6 +29,9 @@ const { resolveWorkspacePath, workspaceEnvPath } = require("../myos-compat");
 const { inferGoalScale } = require("../goal-scale");
 const { isSensitiveEnvKey, resolveSecretValue } = require("./runtime-secrets");
 const { localCandidate, executeLocalCandidate } = require("./local-provider");
+const { readState, updateState } = require("./oauth-state");
+const { selectModels, recordFailure } = require("./oauth-registry");
+const { registryPath, refreshRegistry } = require("./oauth-doctor");
 
 const WORKSPACE_ENV_PATH = workspaceEnvPath();
 let workspaceEnvLoaded = false;
@@ -317,11 +320,9 @@ const CODEX_OAUTH_STRONG_MODEL = process.env.MYOS_CODEX_OAUTH_STRONG_MODEL || "g
 
 function resolveCodexOauthModel(model, options = {}) {
   const normalized = String(model || "").trim().toLowerCase();
-  if (normalized === "gpt-5.6-terra" || normalized === "gpt-6-astra") return normalized;
-  if (!normalized) return CODEX_OAUTH_CHEAP_MODEL;
-  if (normalized.includes("mini") || normalized.includes("nano")) return CODEX_OAUTH_CHEAP_MODEL;
-  if (normalized.includes("5.5")) return options.allowGpt55 ? "gpt-5.5" : CODEX_OAUTH_STRONG_MODEL;
-  return CODEX_OAUTH_STRONG_MODEL;
+  // Discovery and explicit fallback policy decide eligibility. Never lie about
+  // an explicit identity by guessing a replacement from its name.
+  return normalized || CODEX_OAUTH_CHEAP_MODEL;
 }
 
 function buildCodexExecPrompt(messages = [], responseMode = "text") {
@@ -358,34 +359,10 @@ function resolveCodexCommand(env = process.env) {
   return "codex";
 }
 
-function defaultCodexExecRunner({ prompt, model, timeoutMs, allowGpt55 }) {
-  const outFile = path.join(
-    os.tmpdir(),
-    `myos-codex-oauth-${Date.now()}-${Math.random().toString(36).slice(2)}.txt`
-  );
-  const codexModel = resolveCodexOauthModel(model, { allowGpt55 });
-
-  try {
-    execFileSync(
-      resolveCodexCommand(),
-      ["exec", "-m", codexModel, "--skip-git-repo-check", "-o", outFile, "-"],
-      {
-        cwd: os.homedir(),
-        input: prompt,
-        encoding: "utf8",
-        timeout: Number(timeoutMs || 180000) + 2000,
-        stdio: ["pipe", "pipe", "pipe"],
-      }
-    );
-
-    return fs.readFileSync(outFile, "utf8").trim();
-  } finally {
-    try {
-      fs.unlinkSync(outFile);
-    } catch {
-      // Best-effort cleanup only.
-    }
-  }
+async function defaultCodexExecRunner({ prompt, model, timeoutMs, effort }) {
+  return require("./oauth-text").executeCodexText({
+    prompt, model: resolveCodexOauthModel(model), timeoutMs, effort, command: resolveCodexCommand(),
+  });
 }
 
 function setCodexExecRunnerForTest(runner) {
@@ -402,16 +379,18 @@ async function callOpenAIViaCodexOauth({
   timeoutMs,
   responseMode,
   allowGpt55,
+  effort,
 }) {
-  const text = codexExecRunner({
+  const output = await codexExecRunner({
     prompt: buildCodexExecPrompt(messages, responseMode),
     model,
     timeoutMs,
     allowGpt55,
+    effort,
   });
-
+  if (typeof output === "object" && output !== null) return output;
   return {
-    text,
+    text: output,
     raw: { provider: "codex-oauth", model: resolveCodexOauthModel(model, { allowGpt55 }) },
     usage: { inputTokens: 0, outputTokens: 0 },
   };
@@ -933,6 +912,13 @@ function applySpendPolicyToCandidate({ candidate, options, taskClass, compliance
   const summary = readSpendSummaryCached(policy);
   enforceDailyCaps({ summary, policy, caller, authLabel, reserveUsd });
 
+  // OAuth selection belongs to its explicit route/registry, not API price tiers.
+  // Keep the global kill switch and caps above; never silently rewrite identity.
+  if (authMode === "oauth") return {
+    candidate: { ...candidate, model: resolved.model, profile: resolved.profile },
+    spendControlAction: null,
+  };
+
   if (!isPremiumModel(resolved.model, policy)) {
     return {
       candidate: {
@@ -1292,6 +1278,7 @@ async function llmCallAsync(options = {}) {
         timeoutMs,
         responseMode,
         allowGpt55: isGpt55OauthAllowed(options),
+        effort: options.effort,
       });
     } else {
       const apiKey = resolveOpenAICredential(authMode);
@@ -1426,8 +1413,26 @@ async function myosRun(options = {}) {
     profile: options.profile,
     responseMode: options.responseMode,
   });
+  const oauthRegistry = authMode === "oauth" ? registryPath() : null;
+  let oauthState = readState(oauthRegistry);
+  const oauthDeadline = Date.now() + Number(options.timeoutMs || 180000);
+  const registryDefaultRoute = oauthState && plan.allowsLocalProvider === true && plan.routingSource === "taskClass" && !options.profile && plan.candidates.some(candidate => candidate.type === "llm");
+  if (registryDefaultRoute) {
+    if (!selectModels(oauthState, { provider: "codex", taskClass }).length && codexExecRunner === defaultCodexExecRunner) {
+      try { oauthState = await refreshRegistry(oauthRegistry, { timeoutMs: Math.min(8000, Math.max(1, oauthDeadline - Date.now())) }); }
+      catch { /* Unavailable discovery must not enable a stale model. */ }
+    }
+    plan.candidates = selectModels(oauthState, { provider: "codex", taskClass }).map(candidate => ({
+      type: "llm", provider: "openai", model: candidate.model, profile: taskClass, authMode: "oauth", effort: candidate.effort,
+    }));
+  }
+  const localEnv = oauthState ? {
+    ...process.env,
+    MYOS_PUBLIC_LOCAL_PROVIDER_CONFIG: process.env.MYOS_PUBLIC_LOCAL_PROVIDER_CONFIG || process.env.MYOS_OAUTH_LOCAL_PROVIDER_CONFIG ||
+      path.join(process.env.HOME || os.homedir(), ".myos-dispatch", "oauth-local-provider.json"),
+  } : process.env;
   const local = plan.allowsLocalProvider === true && plan.routingSource === "taskClass"
-    ? localCandidate({ ...options, taskClass }) : null;
+    ? localCandidate({ ...options, taskClass }, localEnv) : null;
   if (local) plan.candidates.unshift(local);
   const goalMetadata = options.dispatchPlan?.goalScale
     ? inferGoalScale(options.dispatchPlan)
@@ -1463,6 +1468,10 @@ async function myosRun(options = {}) {
     let spendControlAction = null;
 
     try {
+      if (authMode === "oauth" && Date.now() >= oauthDeadline) throw new Error("OAuth execution deadline exceeded");
+      if (registryDefaultRoute && candidate.provider === "openai" && !selectModels(readState(oauthRegistry), {
+        provider: "codex", taskClass,
+      }).some(model => model.model === candidate.model)) throw new Error("OAuth model is no longer eligible in the refreshed registry");
       if (candidate.provider === "local" && loadSpendPolicy().killSwitch) {
         throw new Error("MyOS spend policy kill switch is active");
       }
@@ -1481,7 +1490,12 @@ async function myosRun(options = {}) {
       validateExecutionCandidate(plan, executionCandidate, { authMode, audio: options.audio });
       const result =
         executionCandidate.provider === "local"
-          ? await executeLocalCandidate(executionCandidate, { ...options, taskClass }, buildMessages(options))
+          ? await executeLocalCandidate(executionCandidate, { ...options, taskClass,
+              ...(authMode === "oauth" ? {
+                timeoutMs: Math.max(1, Math.min(10000, oauthDeadline - Date.now())),
+                allowColdStart: options.allowLocalColdStart === true && oauthDeadline - Date.now() >= 75000,
+              } : {}),
+            }, buildMessages(options))
           : executionCandidate.type === "deterministic"
           ? await executeDeterministicCandidate(executionCandidate, options)
           : await llmCallAsync({
@@ -1493,7 +1507,8 @@ async function myosRun(options = {}) {
               audio: options.audio,
               profile: executionCandidate.profile || resolveProfileId(options.profile, taskClass),
               model: executionCandidate.model || options.model,
-              timeoutMs: options.timeoutMs,
+              timeoutMs: authMode === "oauth" ? Math.max(1, oauthDeadline - Date.now()) : options.timeoutMs,
+              effort: executionCandidate.effort,
               maxOutputTokens: options.maxOutputTokens,
               responseMode: options.responseMode,
               budgetCapUsd: options.budgetCapUsd,
@@ -1599,10 +1614,30 @@ async function myosRun(options = {}) {
         attempts: attemptEvents,
       });
       spendSummaryCache = null;
+      if (oauthState && executionCandidate.provider === "openai" &&
+          (codexExecRunner === defaultCodexExecRunner || process.env.MYOS_OAUTH_REGISTRY)) {
+        try {
+          updateState(oauthRegistry, state => ({ ...state, revision: state.revision + 1,
+            models: state.models.map(model => model.provider === "codex" && model.model === result.model
+              ? { ...model, invokedAt: new Date().toISOString() } : model),
+          }));
+        } catch { /* Registry contention must not repeat a successful inference. */ }
+      }
       return finalResult;
     } catch (error) {
       lastError = error;
-      const retryableError = isRetryableProviderError(error);
+      let retryableError = isRetryableProviderError(error);
+      if (authMode === "oauth" && executionCandidate.provider !== "local" && executionCandidate.type === "llm") {
+        const failure = { provider: "codex", model: executionCandidate.model || options.model, stderr: error.message,
+          signal: error.signal, cleanupFailed: error.cleanupFailed };
+        retryableError = recordFailure({ revision: 0, models: [] }, failure).lastFailure.retryAllowed && Date.now() < oauthDeadline;
+        if (oauthState && (codexExecRunner === defaultCodexExecRunner || process.env.MYOS_OAUTH_REGISTRY)) {
+          try {
+            updateState(oauthRegistry, state => recordFailure(state, failure));
+            if (oauthDeadline - Date.now() > 1000) await refreshRegistry(oauthRegistry, { timeoutMs: Math.min(8000, oauthDeadline - Date.now() - 500) });
+          } catch { retryableError = false; }
+        }
+      }
       attemptEvents.push({
         index,
         status: "error",

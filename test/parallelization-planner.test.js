@@ -365,7 +365,7 @@ test("background runner builds read-only Codex invocation and scrubs API-key env
     model: "gpt-5.5",
   }, { command: "codex", callerProvider: "codex", provider: "openai", cwd: "/tmp" });
 
-  assert.deepEqual(codex.args.slice(0, 4), ["-a", "never", "exec", "--json"]);
+  assert.deepEqual(codex.args.slice(0, 4), ["exec", "-c", 'approval_policy="never"', "--json"]);
   assert.ok(codex.args.includes("--ephemeral"));
   assert.equal(codex.args.includes("--ignore-user-config"), false);
   assert.ok(codex.args.includes("read-only"));

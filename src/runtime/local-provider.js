@@ -129,7 +129,7 @@ async function executeLocalCandidate(candidate, options, messages) {
     try {
       result = await request();
     } catch (error) {
-      if (error?.provider !== "local" || error?.responseStatus !== 0) throw error;
+      if (error?.provider !== "local" || error?.responseStatus !== 0 || options.allowColdStart === false) throw error;
       if (!(await runtime.ensureLocalMlxServer(config.baseUrl))) throw error;
       result = await request();
     }

@@ -8,6 +8,9 @@ const { spawn, execFileSync } = require("node:child_process");
 
 const { loadCatalog, resolveProfileModel } = require("../model-catalog");
 const { CODEX_OAUTH_CHEAP_MODEL, resolveCodexOauthModel } = require("../runtime/llm-call");
+const { readState, updateState } = require("../runtime/oauth-state");
+const { selectModels, recordFailure } = require("../runtime/oauth-registry");
+const { refreshRegistry, registryPath } = require("../runtime/oauth-doctor");
 const { parseCodexJsonl } = require("./codex-worker");
 const {
   isParallelizationTargetQuarantined,
@@ -285,7 +288,8 @@ function resolveBackgroundModel({ provider, profile, command }) {
   }
 
   if (kind === "codex") {
-    return resolveCodexOauthModel(resolvedModel || process.env.MYOS_BACKGROUND_CODEX_MODEL || CODEX_OAUTH_CHEAP_MODEL);
+    const legacyProfileDefaults = { "gpt-5-mini": "gpt-5.6-terra", "gpt-5.4-mini": "gpt-5.6-terra", "gpt-5.4": "gpt-6-astra" };
+    return legacyProfileDefaults[resolvedModel] || resolveCodexOauthModel(resolvedModel || process.env.MYOS_BACKGROUND_CODEX_MODEL || CODEX_OAUTH_CHEAP_MODEL);
   }
 
   return resolvedModel;
@@ -296,6 +300,14 @@ function resolveTaskModel(task = {}, options = {}) {
   const kind = normalizeWorkerKind(command);
   if (kind === "codex" && task.model) {
     return task.model;
+  }
+  if (kind === "codex" && !isUnattendedContext(options.env || process.env)) {
+    const state = readState(registryPath(options.env || process.env));
+    const selection = selectModels(state, {
+      provider: kind, taskClass: task.taskClass || task.modelProfile || "cheap_routing",
+    });
+    if (selection.length) return selection[0].model;
+    if (state) throw new Error("No eligible OAuth model for this task class; run myos-oauth-doctor scan or resolve the reported auth/quarantine condition.");
   }
   return task.model || resolveBackgroundModel({
     provider: options.provider,
@@ -405,19 +417,23 @@ function buildBackgroundWorkerInvocation(task = {}, options = {}) {
     return { kind, command, args, cwd, input: "", model: model || null, readOnly };
   }
 
-  const args = [
-    "-a",
-    "never",
-    "exec",
+  const args = isUnattendedContext(options.env || process.env)
+    ? ["-a", "never", "exec"]
+    : ["exec", "-c", 'approval_policy="never"'];
+  args.push(
     "--json",
     "--skip-git-repo-check",
     "--ephemeral",
     "-s",
     readOnly ? "read-only" : "workspace-write",
-  ];
+  );
   args.push("-c", "sandbox_workspace_write.network_access=false", "-c", "sandbox_workspace_write.writable_roots=[]");
   if (!isUnattendedContext(options.env || process.env)) {
     args.push("-c", 'forced_login_method="chatgpt"', "-c", 'model_provider="openai"');
+    const selected = selectModels(readState(registryPath(options.env || process.env)), {
+      provider: kind, taskClass: task.taskClass || task.modelProfile || "cheap_routing",
+    }).find(candidate => candidate.model === model);
+    if (selected && !task.model) args.push("-c", `model_reasoning_effort="${selected.effort}"`);
   }
   if (cwd) args.push("-C", cwd);
   if (model) args.push("-m", model);
@@ -980,7 +996,14 @@ async function runBackgroundTask(task, options = {}) {
 
   await acquireSidecarSlot(options.env || process.env);
   let result;
+  const oauthRegistry = registryPath(options.env || process.env);
+  // Injected transports must opt into a dedicated registry path. Otherwise
+  // tests/custom runners could label the user's real models as live-verified.
+  const oauthRecovery = !unattended && (!options.runCommand || options.env?.MYOS_OAUTH_REGISTRY) && readState(oauthRegistry);
+  const deadline = started + Number(task.timeoutMs || options.timeoutMs || DEFAULT_TIMEOUT_MS);
+  const oauthAttempts = [];
   try {
+    for (let attempt = 0; attempt < 2; attempt++) {
     try {
       result = await runCommandImpl({
         command: invocation.command,
@@ -988,7 +1011,7 @@ async function runBackgroundTask(task, options = {}) {
         cwd: invocation.cwd,
         input: invocation.input,
         env: childEnv,
-        timeoutMs: Number(task.timeoutMs || options.timeoutMs || DEFAULT_TIMEOUT_MS),
+        timeoutMs: worktree || unattended ? Number(task.timeoutMs || options.timeoutMs || DEFAULT_TIMEOUT_MS) : Math.max(1, deadline - Date.now()),
         invocation,
         task: normalizedTask,
         worktree,
@@ -1001,6 +1024,37 @@ async function runBackgroundTask(task, options = {}) {
         stderr: error?.message || String(error),
       };
     }
+    if (!oauthRecovery) break;
+    if (result?.code === 0 && invocation.kind === "codex") {
+      const parsed = parseCodexJsonl(result.stdout);
+      if (parsed.errorMessage || !extractBackgroundSummary(result.stdout, invocation.kind).trim()) {
+        result = { ...result, code: 1, stderr: parsed.errorMessage || "OAuth provider returned no validated assistant output" };
+      }
+    }
+    oauthAttempts.push({ model: invocation.model, provider: invocation.kind, code: result?.code ?? null });
+    if (result?.code === 0 && !result.signal && !result.cleanupFailed) {
+      break;
+    }
+    let failure;
+    try {
+      failure = updateState(oauthRegistry, state => recordFailure(state, {
+        provider: invocation.kind, model: invocation.model, ...result,
+        stderr: `${result?.stderr || ""}\n${result?.stdout || ""}`,
+      }));
+      if (deadline - Date.now() > 1000) await refreshRegistry(oauthRegistry, {
+        env: childEnv, cwd: invocation.cwd, timeoutMs: Math.min(8000, deadline - Date.now() - 500),
+      });
+    } catch { break; /* Keep original failure if the recovery state cannot be safely updated. */ }
+    if (attempt || worktree || task.model || !invocation.readOnly || !failure.lastFailure.retryAllowed || Date.now() >= deadline) break;
+    const fallback = selectModels(readState(oauthRegistry), {
+      provider: invocation.kind, taskClass: task.taskClass || task.modelProfile || "cheap_routing",
+    }).find(candidate => candidate.model !== invocation.model);
+    if (!fallback) break;
+    invocation = buildBackgroundWorkerInvocation({ ...normalizedTask, model: fallback.model }, {
+      ...options, cwd: invocation.cwd,
+    });
+    if (invocation.kind === "codex") invocation.args.splice(invocation.args.length - 1, 0, "-c", `model_reasoning_effort="${fallback.effort}"`);
+    }
   } finally {
     releaseSidecarSlot();
   }
@@ -1009,6 +1063,15 @@ async function runBackgroundTask(task, options = {}) {
   const summary = extractBackgroundSummary(result.stdout, invocation.kind);
   const structured = parseStructuredFindings(summary);
   let ok = result.code === 0 && !result.signal && !result.cleanupFailed && !writerResponse?.error;
+  if (oauthRecovery) {
+    const providerError = String(result.stdout || "").split(/\r?\n/).some(line => {
+      try {
+        const event = JSON.parse(line);
+        return event.type === "error" || event.type === "turn.failed" || event.is_error === true || Boolean(event.error);
+      } catch { return false; }
+    });
+    if (providerError || !summary.trim()) ok = false;
+  }
   if (writerResponse?.reportedModels?.some((model) => model !== invocation.model)) ok = false;
   const artifacts = [];
   let changedFiles = [];
@@ -1036,6 +1099,14 @@ async function runBackgroundTask(task, options = {}) {
     }
   }
 
+  if (ok && oauthRecovery) {
+    try {
+      updateState(oauthRegistry, state => ({ ...state, revision: state.revision + 1,
+        models: state.models.map(model => model.provider === invocation.kind && model.model === invocation.model
+          ? { ...model, invokedAt: new Date().toISOString(), quarantineUntil: null } : model) }));
+    } catch { /* Registry contention must not discard validated task output. */ }
+  }
+
   const response = {
     taskId: normalizedTask.id,
     taskKind: normalizedTask.kind || null,
@@ -1055,6 +1126,7 @@ async function runBackgroundTask(task, options = {}) {
     artifacts,
     durationMs: Date.now() - started,
     usage: null,
+    oauthAttempts,
     model: invocation.model || null,
     runner: invocation.kind,
     orchestrator: orchestratorContext.orchestrator,

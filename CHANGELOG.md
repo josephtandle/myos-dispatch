@@ -4,6 +4,19 @@ All notable changes to MyOS Dispatch are documented here.
 
 ## Unreleased
 
+## v4.2.0 - 2026-09-21
+
+### Added
+
+- OAuth-only model inventory, task-class defaults, exact model identity and explicit bounded read-only fallback. User pins and lane assignments retain priority; API plans are unchanged.
+- Failure-triggered, coalesced `myos-oauth-doctor` scans with official Codex model metadata, provider auth provenance, atomic revisions, last-good recovery and model-scoped quarantine. Discovery never claims successful inference or quality validation. No periodic job or automatic login.
+- Foreground ChatGPT-only CLI execution with bounded owned-process cleanup, class-appropriate effort, validated success receipts and warm-first local Qwen routing using the existing offline-cache and memory guards.
+
+### Fixed
+
+- OAuth sidecars start with `exec` so the MyOS wrapper cannot mistake them for interactive TUI requests. Explicit IDs are never silently replaced, including unsupported or unknown IDs.
+- Recovery rechecks fallback eligibility, preserves deadlines and does not retry quota/auth failures, explicit pins or writable tasks. See `docs/oauth-recovery.md` for operational boundaries.
+
 ## v4.0.1 - 2026-09-20
 
 ### Fixed

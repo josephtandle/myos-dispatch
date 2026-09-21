@@ -467,7 +467,9 @@ function resolveCodexWorkerModelSelection(options = {}) {
   try {
     const resolved = resolveProfileModel(loadCatalog("openai"), profileId);
     return {
-      model: resolveCodexOauthModel(resolved.model.model),
+      // API catalog defaults are not OAuth model identities. Migrate only
+      // these legacy profile defaults; explicit options above remain exact.
+      model: ({ "gpt-5-mini": "gpt-5.6-terra", "gpt-5.4-mini": "gpt-5.6-terra", "gpt-5.4": "gpt-6-astra" })[resolved.model.model] || resolved.model.model,
       profileId,
       source: "routing_profile",
     };

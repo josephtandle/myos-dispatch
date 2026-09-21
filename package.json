@@ -1,6 +1,6 @@
 {
   "name": "myos-dispatch",
-  "version": "4.1.0",
+  "version": "4.2.0",
   "description": "Standalone MyOS Dispatch routing and execution core.",
   "type": "commonjs",
   "main": "src/workspace-context.js",
@@ -11,13 +11,14 @@
     "myos-search-service": "bin/myos-search-service.js",
     "myos-search": "bin/myos-search.js",
     "myos-search-dispatch": "bin/myos-search-dispatch.js",
-    "myos-writer": "bin/myos-writer.js"
+    "myos-writer": "bin/myos-writer.js",
+    "myos-oauth-doctor": "bin/myos-oauth-doctor.js"
   },
   "engines": {
     "node": ">=20"
   },
   "scripts": {
-    "test": "MYOS_BACKGROUND_BACKPRESSURE_ENABLED=0 node --test test/*.test.js",
+    "test": "MYOS_OAUTH_RECOVERY=0 MYOS_BACKGROUND_BACKPRESSURE_ENABLED=0 node --test test/*.test.js",
     "audit": "node --test test/dispatch-fastpaths-audit.test.js",
     "evaluate-shadow": "node --test test/typed-evidence-shadow-policy.test.js test/typed-evidence-shadow-canary.test.js"
   },

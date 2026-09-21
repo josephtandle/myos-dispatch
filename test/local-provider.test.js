@@ -60,6 +60,16 @@ test("opted-in cheap routing executes local without OAuth transport credentials"
   assert.deepEqual(result.json, { ok: true });
 });
 
+test("latency-bounded OAuth skips cold local startup without changing API lifecycle", async t => {
+  const { runtimeModule } = fixture(t);
+  fs.writeFileSync(runtimeModule, 'module.exports = { starts: 0, ensureLocalMlxServer: async function () { this.starts++; return false; } };');
+  global.fetch = async () => { throw Object.assign(new Error("refused"), { cause: { code: "ECONNREFUSED" } }); };
+  setCodexExecRunnerForTest(() => '{"cloud":true}');
+  const result = await myOSrunOauth({ taskClass: "cheap_routing", prompt: "classify", humanVisible: true, timeoutMs: 10000 });
+  assert.equal(result.resolvedProviderOrTool, "openai");
+  assert.equal(require(runtimeModule).starts, 0);
+});
+
 test("API workflow local attempt is free and retains API workflow provenance", async (t) => {
   fixture(t);
   process.env.MYOS_AUTH_MODE = "api";
@@ -238,7 +248,7 @@ test("a cold connection reuses existing loader and bridge JSON transport with a 
     assert.deepEqual(payload.response_format, { type: "json_object" });
     return { ok: true, json: async () => ({ choices: [{ message: { content: JSON.stringify({ max: payload.max_tokens }) } }] }) };
   };
-  const result = await myOSrunOauth({ taskClass: "cheap_routing", prompt: "hello", humanVisible: true, responseMode: "json" });
+  const result = await myOSrunOauth({ taskClass: "cheap_routing", prompt: "hello", humanVisible: true, responseMode: "json", allowLocalColdStart: true, timeoutMs: 90000 });
   assert.deepEqual(result.json, { max: 512 });
   assert.deepEqual(JSON.parse(fs.readFileSync(trace)), { url: "http://127.0.0.1:8891" });
 });
