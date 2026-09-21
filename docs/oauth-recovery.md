@@ -6,11 +6,11 @@ This upgrade belongs to MyOS Dispatch, not Codex. API routing and private bot ex
 
 | Class | Primary | Explicit fallback | Effort |
 | --- | --- | --- | --- |
-| cheap_routing | Warm, eligible local Qwen, then Luna | Terra | low |
-| default_automation | Terra | Sol | medium |
+| cheap_routing | Warm, eligible local Qwen, then Luna | Terra, then verified Sonnet 5 | low |
+| default_automation | Terra | Sol, then verified Sonnet 5 | medium |
 | heavy_synthesis | Sol | Astra | high |
 | task_class_is_elite | Astra | Sol | high |
-| planning | Sol | Astra | medium |
+| planning | Sol | Astra, then verified Sonnet 5 | medium |
 
 These names refer to exact registered IDs: `gpt-5.6-luna`, `gpt-5.6-terra`, `gpt-5.6-sol`, `gpt-6-astra`. Explicit model pins, intent routes and host lane assignments retain priority. The active user-selected agent remains the orchestrator. This policy does not itself launch a team.
 
@@ -24,7 +24,11 @@ Codex discovery uses the official app-server `initialize` and paginated `model/l
 
 The registry distinguishes discovery, successful requested-model invocation and task-quality validation. CLI success is not independent provider attestation of model identity. Raw prompts, credentials and stderr are not persisted in recovery state.
 
-Claude CLI aliases are inventory, not proof of account entitlement. Claude must report subscription authentication before it can be considered available. Antigravity model metadata alone does not establish its authentication or billing provenance. Neither is silently substituted for Codex. Text-only OAuth routes do not pretend to provide audio transcription or speaker diarization.
+Claude CLI aliases are inventory, not proof of account entitlement. Version 4.2.1 enables exact `claude-sonnet-5` only after a successful invocation is registered and subscription authentication is current. The CLI rechecks `claude.ai` authentication before each call. This host's existing Max subscription was connected using official `claude auth login --claudeai`; no Desktop tokens were extracted. Explicit pins remain exact and terminal on failure. Automatic Claude fallback applies only to the three bounded text classes above, only on unsupported-model failure, and never to tools, grounding or media requests. Existing writer/provider affinity is unchanged.
+
+Claude may report a helper model alongside the requested model. The receipt preserves all reported model IDs and proves participation, not exclusive execution by one model. Input totals include cache reads and creation. Output limits use the documented `CLAUDE_CODE_MAX_OUTPUT_TOKENS` setting; one turn and zero internal retries keep execution bounded. See [Claude environment variables](https://code.claude.com/docs/en/env-vars).
+
+Antigravity model metadata alone does not establish its authentication or billing provenance, so it remains ineligible. Text-only OAuth routes do not pretend to provide audio transcription or speaker diarization.
 
 ## Local Qwen
 

@@ -24,11 +24,13 @@ const CODEX_CLASS_POLICY = Object.freeze({
 });
 
 function selectModels(state, { provider, taskClass, now = Date.now() }) {
-  const policy = provider === "codex" && CODEX_CLASS_POLICY[taskClass];
+  const policy = provider === "codex" ? CODEX_CLASS_POLICY[taskClass] :
+    provider === "claude" && ["cheap_routing", "default_automation", "planning"].includes(taskClass)
+      ? { models: ["claude-sonnet-5"], effort: taskClass === "cheap_routing" ? "low" : "medium" } : null;
   if (!policy) return [];
   return policy.models.flatMap(model => {
     const record = state?.models?.find(entry => entry.provider === provider && entry.model === model);
-    if (!record || record.visible !== true || record.auth !== "subscription" ||
+    if (!record || (provider === "claude" && !record.invokedAt) || record.visible !== true || record.auth !== "subscription" ||
         !Number.isFinite(Date.parse(record.observedAt)) || now - Date.parse(record.observedAt) > 7 * 86400000 ||
         Date.parse(record.quarantineUntil) > now) return [];
     return [{ ...record, effort: policy.effort }];

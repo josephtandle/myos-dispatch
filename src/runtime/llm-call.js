@@ -32,6 +32,7 @@ const { localCandidate, executeLocalCandidate } = require("./local-provider");
 const { readState, updateState } = require("./oauth-state");
 const { selectModels, recordFailure } = require("./oauth-registry");
 const { registryPath, refreshRegistry } = require("./oauth-doctor");
+const { isClaudeTextRequest } = require("./oauth-claude");
 
 const WORKSPACE_ENV_PATH = workspaceEnvPath();
 let workspaceEnvLoaded = false;
@@ -1425,6 +1426,9 @@ async function myosRun(options = {}) {
     plan.candidates = selectModels(oauthState, { provider: "codex", taskClass }).map(candidate => ({
       type: "llm", provider: "openai", model: candidate.model, profile: taskClass, authMode: "oauth", effort: candidate.effort,
     }));
+    if (isClaudeTextRequest(options)) plan.candidates.push(...selectModels(oauthState, {provider:"claude",taskClass}).map(candidate => ({
+      type:"llm",provider:"anthropic",model:candidate.model,profile:taskClass,authMode:"oauth",effort:candidate.effort,
+    })));
   }
   const localEnv = oauthState ? {
     ...process.env,
@@ -1469,8 +1473,8 @@ async function myosRun(options = {}) {
 
     try {
       if (authMode === "oauth" && Date.now() >= oauthDeadline) throw new Error("OAuth execution deadline exceeded");
-      if (registryDefaultRoute && candidate.provider === "openai" && !selectModels(readState(oauthRegistry), {
-        provider: "codex", taskClass,
+      if (registryDefaultRoute && ["openai","anthropic"].includes(candidate.provider) && !selectModels(readState(oauthRegistry), {
+        provider: candidate.provider === "anthropic" ? "claude" : "codex", taskClass,
       }).some(model => model.model === candidate.model)) throw new Error("OAuth model is no longer eligible in the refreshed registry");
       if (candidate.provider === "local" && loadSpendPolicy().killSwitch) {
         throw new Error("MyOS spend policy kill switch is active");
@@ -1487,7 +1491,9 @@ async function myosRun(options = {}) {
         authLabel,
         authMode,
       }));
-      validateExecutionCandidate(plan, executionCandidate, { authMode, audio: options.audio });
+      const claudeOauthVerified = authMode === "oauth" && isClaudeTextRequest(options) &&
+        selectModels(readState(oauthRegistry), {provider:"claude",taskClass}).some(model=>model.model===executionCandidate.model);
+      validateExecutionCandidate(plan, executionCandidate, { authMode, audio: options.audio, claudeOauthVerified });
       const result =
         executionCandidate.provider === "local"
           ? await executeLocalCandidate(executionCandidate, { ...options, taskClass,
@@ -1496,6 +1502,10 @@ async function myosRun(options = {}) {
                 allowColdStart: options.allowLocalColdStart === true && oauthDeadline - Date.now() >= 75000,
               } : {}),
             }, buildMessages(options))
+          : executionCandidate.provider === "anthropic" && authMode === "oauth"
+          ? await require("./oauth-claude").executeClaudeText({model:executionCandidate.model,
+              prompt:buildCodexExecPrompt(buildMessages(options),options.responseMode),responseMode:options.responseMode,
+              effort:executionCandidate.effort,maxOutputTokens:options.maxOutputTokens,timeoutMs:Math.max(1,oauthDeadline-Date.now())})
           : executionCandidate.type === "deterministic"
           ? await executeDeterministicCandidate(executionCandidate, options)
           : await llmCallAsync({
@@ -1614,11 +1624,11 @@ async function myosRun(options = {}) {
         attempts: attemptEvents,
       });
       spendSummaryCache = null;
-      if (oauthState && executionCandidate.provider === "openai" &&
+      if (oauthState && ["openai","anthropic"].includes(executionCandidate.provider) &&
           (codexExecRunner === defaultCodexExecRunner || process.env.MYOS_OAUTH_REGISTRY)) {
         try {
           updateState(oauthRegistry, state => ({ ...state, revision: state.revision + 1,
-            models: state.models.map(model => model.provider === "codex" && model.model === result.model
+            models: state.models.map(model => model.provider === (executionCandidate.provider === "anthropic" ? "claude" : "codex") && model.model === result.model
               ? { ...model, invokedAt: new Date().toISOString() } : model),
           }));
         } catch { /* Registry contention must not repeat a successful inference. */ }
@@ -1628,7 +1638,7 @@ async function myosRun(options = {}) {
       lastError = error;
       let retryableError = isRetryableProviderError(error);
       if (authMode === "oauth" && executionCandidate.provider !== "local" && executionCandidate.type === "llm") {
-        const failure = { provider: "codex", model: executionCandidate.model || options.model, stderr: error.message,
+        const failure = { provider: executionCandidate.provider === "anthropic" ? "claude" : "codex", model: executionCandidate.model || options.model, stderr: error.message,
           signal: error.signal, cleanupFailed: error.cleanupFailed };
         retryableError = recordFailure({ revision: 0, models: [] }, failure).lastFailure.retryAllowed && Date.now() < oauthDeadline;
         if (oauthState && (codexExecRunner === defaultCodexExecRunner || process.env.MYOS_OAUTH_REGISTRY)) {

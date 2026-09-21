@@ -118,3 +118,18 @@ test("OAuth rechecks fallback eligibility after a failure", async t => {
   await assert.rejects(myOSrunOauth({taskClass:"cheap_routing",prompt:"test",humanVisible:true}));
   assert.equal(calls,1);
 });
+
+test("foreground OAuth reaches verified Claude after unsupported Codex models without API transport", async t => {
+  const file=fixture(t);
+  updateState(file,state=>({...state,revision:state.revision+1,models:[...state.models,{provider:"claude",model:"claude-sonnet-5",visible:true,auth:"subscription",observedAt:new Date().toISOString(),invokedAt:new Date().toISOString()}]}));
+  const claude=require("../src/runtime/oauth-claude");
+  const original=claude.executeClaudeText;
+  t.after(()=>{claude.executeClaudeText=original;});
+  let calls=0;
+  claude.executeClaudeText=async options=>{calls++;assert.equal(options.model,"claude-sonnet-5");return {text:"ok",model:options.model,provider:"anthropic",usage:{}};};
+  setCodexExecRunnerForTest(()=>{throw new Error("model is not supported");});
+  const result=await myOSrunOauth({taskClass:"cheap_routing",prompt:"test",humanVisible:true});
+  assert.equal(calls,1);
+  assert.equal(result.resolvedProviderOrTool,"anthropic");
+  assert.equal(result.authMode,"oauth");
+});

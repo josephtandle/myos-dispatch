@@ -4,6 +4,12 @@ All notable changes to MyOS Dispatch are documented here.
 
 ## Unreleased
 
+## v4.2.1 - 2026-09-21
+
+- Connect verified Claude subscription CLI execution for foreground, tool-free text tasks. Exact live-verified Sonnet 5 is eligible for cheap routing, default automation and planning as a bounded unsupported-model fallback, or an explicit pin. API routes, writer affinity and private bots are unchanged.
+- Strip inherited Desktop session and API credentials, recheck subscription auth per invocation, enforce caller output budgets, disable tools/MCP/hooks and validate reported model participation. Refuse grounding/media/tool requirements instead of silently dropping them.
+- Include cache-read and cache-creation input tokens in Claude usage totals. OAuth authentication is not a guarantee against account credit usage.
+
 ## v4.2.0 - 2026-09-21
 
 ### Added

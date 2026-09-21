@@ -481,7 +481,7 @@ function resolveExecutionPlan({ taskClass, intent, complianceLane, executionPoli
   };
 }
 
-function validateExecutionCandidate(plan, candidate, { authMode, audio } = {}) {
+function validateExecutionCandidate(plan, candidate, { authMode, audio, claudeOauthVerified = false } = {}) {
   if (!candidate) {
     throw new Error(`No MyOS candidates available for ${plan.routeKey}:${plan.complianceLane}`);
   }
@@ -535,7 +535,7 @@ function validateExecutionCandidate(plan, candidate, { authMode, audio } = {}) {
     );
   }
 
-  if (rawProvider === "anthropic" && authMode === "oauth") {
+  if (rawProvider === "anthropic" && authMode === "oauth" && !claudeOauthVerified) {
     throw new Error(
       "Anthropic OAuth execution is not implemented in MyOS yet; Fable advisory routing is policy-only until an OAuth adapter is verified."
     );
