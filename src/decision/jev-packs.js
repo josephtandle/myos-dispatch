@@ -128,9 +128,9 @@ function answersFromRules(pack, legacy = {}) {
     } else if (field.kind === 'score') {
       const level = Math.max(1, Math.min(4, Math.round(Number(value) || goalPolicy.default_scale || 4)));
       const certainty = confidence(legacy.goalConfidence);
-      answers[key] = { type: 'score', score: level, confidence: certainty,
-        legend: pack.questions[key].criteria.slice(), probabilities: Object.fromEntries([1, 2, 3, 4]
-          .map((entry) => [entry, entry === level ? certainty : (1 - certainty) / 3])) };
+      answers[key] = { type: 'score', score: level - 1, confidence: certainty,
+        legend: Object.fromEntries(pack.questions[key].criteria.map((text, index) => [String(index), text])), probabilities: Object.fromEntries([0, 1, 2, 3]
+          .map((entry) => [String(entry), entry === level - 1 ? certainty : (1 - certainty) / 3])) };
     } else {
       const certainty = confidence(legacy[`${field.planField}Confidence`] ?? legacy[`${key}Confidence`] ?? legacy.confidence);
       const selected = value ?? (key === 'project' ? 'none' : key === 'lane' ? 'none_of_these'

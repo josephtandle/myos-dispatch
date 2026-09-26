@@ -23,7 +23,7 @@ function validAnswers(pack, answers) {
     if (field.kind === 'noul') return unit(answer.noul);
     if (!unit(answer.confidence)) return false;
     return field.kind === 'choice' ? Object.hasOwn(pack.questions[key].criteria, answer.choice)
-      : Number.isInteger(answer.score) && answer.score >= 1 && answer.score <= pack.questions[key].criteria.length;
+      : typeof answer.score === 'number' && Number.isFinite(answer.score) && answer.score >= 0 && answer.score <= pack.questions[key].criteria.length - 1;
   });
 }
 
@@ -80,7 +80,7 @@ function compare(pack, answers, legacy, engine, tool) {
   for (const [key, field] of Object.entries(pack.fields)) {
     if (!field.planField) continue;
     const answer = answers[key];
-    const decided = field.kind === 'noul' ? answer.noul >= 0.5 : field.kind === 'score' ? answer.score : answer.choice;
+    const decided = field.kind === 'noul' ? answer.noul >= 0.5 : field.kind === 'score' ? Math.round(answer.score) + 1 : answer.choice;
     const confidence = field.kind === 'noul' ? Math.max(answer.noul, 1 - answer.noul) : answer.confidence;
     const value = legacyField(legacy, field.planField);
     comparison[field.planField] = { legacy: value, decided, confidence, agrees: isDeepStrictEqual(value, decided), engine };

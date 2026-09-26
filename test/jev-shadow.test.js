@@ -34,7 +34,7 @@ function clientFor(overrides = {}, onAsk = () => {}) {
     onAsk(state, questions);
     const answers = Object.fromEntries(Object.entries(questions).map(([key, question]) => [key,
       question.type === 'noul' ? { type: 'noul', noul: 0 }
-        : question.type === 'score' ? { type: 'score', score: 4, confidence: 0.96, legend: question.criteria, probabilities: { 4: 0.96 } }
+        : question.type === 'score' ? { type: 'score', score: 3, confidence: 0.96, legend: question.criteria, probabilities: { 3: 0.96 } }
           : { type: 'choice', choice: Object.keys(question.criteria)[0], confidence: 0.96, probabilities: {} }]));
     return { ok: true, answers: { ...answers, ...overrides }, model: 'fake-jev', usage: { input_tokens: 17 } };
   } };
@@ -161,7 +161,7 @@ test('ledger hashes full prompt, omits text by default and retains probabilities
   assert.equal(entry.event, 'prompt');
   assert.equal(entry.ts, new Date(1000).toISOString());
   assert.equal(entry.inputTokens, 17);
-  assert.deepEqual(entry.decided.goal_scale.probabilities, { 4: 0.96 });
+  assert.deepEqual(entry.decided.goal_scale.probabilities, { 3: 0.96 });
   await attachJevShadow('explicit text', legacy, {}, { ...opts, env: { ...opts.env, MYOS_JEV_LOG_TEXT: '1' } });
   const entries = fs.readFileSync(opts.ledgerFile, 'utf8').trim().split('\n').map(JSON.parse);
   assert.equal(entries.length, 2);
@@ -239,4 +239,14 @@ test('calibration reports reliability rows and rejects insufficient or miscalibr
   assert.equal(isFieldEligibleForPromotion(null), false);
   assert.equal(summarizeCalibration(null).length, 10);
   assert.deepEqual(metrics, snapshot);
+});
+
+test('live zero-based fractional scores are accepted and mapped to goal scale', async (t) => {
+  const live = require('./fixtures/jev-prompt-answers-live.json');
+  const client = { isConfigured: () => true, ask: async () => ({ ok: true, ...live }) };
+  const result = await resolveDecisions(buildPromptPack('synthetic work'), { client, legacy });
+  assert.equal(result.engine, 'jev');
+  assert.equal(result.skipped, undefined);
+  const plan = await attachJevShadow('synthetic work', legacy, {}, { ...fixture(t), client });
+  assert.equal(plan.jev.comparison.goalScale.decided, Math.round(live.answers.goal_scale.score) + 1);
 });

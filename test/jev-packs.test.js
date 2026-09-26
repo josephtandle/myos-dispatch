@@ -92,9 +92,9 @@ test('rules answers have typed Jev shapes and existing confidence bands', () => 
   assert.equal(answers.intent.type, 'choice');
   assert.equal(answers.intent.confidence, 0.9);
   assert.equal(answers.action.confidence, 0.5);
-  assert.equal(answers.goal_scale.score, 3);
+  assert.equal(answers.goal_scale.score, 2);
   assert.equal(answers.goal_scale.confidence, 0.7);
-  assert.equal(answers.goal_scale.legend.length, 4);
+  assert.equal(Object.keys(answers.goal_scale.legend).length, 4);
   assert.equal(answers.lane.choice, 'worker_skill');
   assert.deepEqual(answers.auth_sensitive, { type: 'noul', noul: 1 });
   assert.deepEqual(answers.browser_control, { type: 'noul', noul: 0 });
