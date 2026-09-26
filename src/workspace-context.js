@@ -1318,7 +1318,7 @@ function buildDataSections(query, options = {}) {
     const text = readConfiguredTextSource(
       sourceId,
       source.maxChars || (source.mode === "pointer" ? 2500 : 3000),
-      dataSourceOptions,
+      { ...dataSourceOptions, query },
     );
     if (text) {
       const heading = source.mode === "pointer" ? "Data Pointer" : "Data Match";
