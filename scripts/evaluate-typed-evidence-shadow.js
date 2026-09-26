@@ -5,7 +5,7 @@ const fs = require("node:fs");
 
 const { resolveDispatchPlan } = require("../src/workspace-context");
 const {
-  DEFAULT_REPLAY_CORPUS_FILE,
+  resolveTypedEvidenceCorpusFile,
   evaluateTypedEvidenceReplayCases,
   loadTypedEvidenceReplayCorpus,
   recordTypedEvidenceReplayEvaluation,
@@ -13,7 +13,7 @@ const {
 
 function parseArgs(argv) {
   const args = {
-    corpusFile: DEFAULT_REPLAY_CORPUS_FILE,
+    corpusFile: "",
     stateFile: "",
     strict: false,
     json: false,
@@ -39,12 +39,15 @@ function parseArgs(argv) {
 
 function main() {
   const args = parseArgs(process.argv.slice(2));
-  if (!fs.existsSync(args.corpusFile)) {
-    console.error(`Replay corpus not found: ${args.corpusFile}`);
+  const corpusFile = args.corpusFile || resolveTypedEvidenceCorpusFile();
+  if (!corpusFile || !fs.existsSync(corpusFile)) {
+    console.error(corpusFile
+      ? `Replay corpus not found: ${corpusFile}`
+      : "Replay corpus not found in MYOS_TYPED_EVIDENCE_CORPUS, the workspace, or the in-repo default. Set --corpus <file> to select a corpus.");
     process.exit(2);
   }
 
-  const cases = loadTypedEvidenceReplayCorpus(args.corpusFile);
+  const cases = loadTypedEvidenceReplayCorpus(corpusFile);
   const evaluation = evaluateTypedEvidenceReplayCases(cases, (prompt) => resolveDispatchPlan(prompt, {
     typedEvidenceShadowPolicy: {
       disableAuthority: true,
@@ -76,8 +79,9 @@ function main() {
   };
 
   if (args.json) {
-    console.log(JSON.stringify({ summary, evaluation, progression }, null, 2));
+    console.log(JSON.stringify({ corpusFile, summary, evaluation, progression }, null, 2));
   } else {
+    console.log(`Replay corpus: ${corpusFile}`);
     console.log(`Typed-evidence shadow replay: ${summary.replayPassedCases}/${summary.replayCases} passed`);
     console.log(`Pass rate: ${summary.replayPassRate}`);
     console.log(`Hard-gate pass rate: ${summary.hardGatePassRate}`);

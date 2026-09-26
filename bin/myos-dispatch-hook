@@ -1391,7 +1391,27 @@ function formatJev(jev) {
   return `[Jev] stage=${summary.stage} engine=${summary.engine} agree=${summary.agree}/${summary.n} latency=${summary.latencyMs}ms`;
 }
 
-let jevClient;
+const { locations: jevLocations, readState: readJevState, effectiveStage: jevStage } = require('../src/decision/jev-state');
+let pendingJev;
+let pendingJevDeadline = 0;
+
+function jevTimeout(tool) {
+  const raw = tool ? process.env.MYOS_JEV_TOOL_TIMEOUT_MS : process.env.MYOS_JEV_TIMEOUT_MS;
+  const value = raw == null || raw.trim() === '' ? NaN : Number(raw);
+  return Math.max(200, Math.min(2500, Number.isFinite(value) ? value : tool ? 900 : 1500));
+}
+
+async function finishOutput(text = '') {
+  await new Promise(resolve => process.stdout.write(text, resolve));
+  if (pendingJev) {
+    let timer;
+    await Promise.race([pendingJev, new Promise(resolve => {
+      timer = setTimeout(resolve, Math.max(0, pendingJevDeadline - Date.now()));
+    })]);
+    clearTimeout(timer);
+  }
+}
+
 async function prepareJev(payload, surface) {
   const event = readHookEventName(payload);
   const tool = event === "PreToolUse";
@@ -1404,11 +1424,20 @@ async function prepareJev(payload, surface) {
     : { plan: { ...plan, jev: { skipped: reason } } };
   if (process.env.MYOS_JEV_ENABLED === "0" || readArg("--no-jev") === "1") return fallback("disabled");
   try {
-    jevClient ||= createJevClient({ timeoutMs: Number(process.env.MYOS_JEV_TIMEOUT_MS) || 1500, maxRetries: 1 });
+    const timeoutMs = jevTimeout(tool);
+    const jevClient = createJevClient({ timeoutMs, maxRetries: 0 });
     const opts = { env: process.env, client: jevClient, surface };
     if (tool) {
       const input = payload.tool_input || payload.toolInput || {};
-      const toolSafety = await attachJevToolSafety(text, input.description || "", { cwd: payload.cwd || process.cwd(), surface }, labels, opts);
+      const files = jevLocations({}, process.env);
+      const stage = jevStage(readJevState(files.stateFile, files.metricsFile), process.env);
+      const request = attachJevToolSafety(text, input.description || "", { cwd: payload.cwd || process.cwd(), surface }, labels, opts);
+      if (stage === 'shadow') {
+        pendingJev = request.catch(() => {});
+        pendingJevDeadline = Date.now() + timeoutMs;
+        return { plan, toolSafety: { labels } };
+      }
+      const toolSafety = await request;
       return { plan, toolSafety: { ...toolSafety, labels: [...new Set([...labels, ...toolSafety.labels])] } };
     }
     const signals = jevClient.isConfigured()
@@ -1432,7 +1461,7 @@ async function renderRouteFromStdin() {
     plan: (await prepareJev({ prompt: text }, readSurface())).plan,
     contextMode: "full",
   });
-  if (context) process.stdout.write(`${context}\n`);
+  await finishOutput(context ? `${context}\n` : "");
 }
 
 async function main() {
@@ -1449,13 +1478,13 @@ async function main() {
   let prepared = {};
   try { prepared = await prepareJev(payload, surface); } catch {}
   const output = handleHookPayload(payload, surface, { contextMode: readContextMode(), rewrite: readRewriteEnabled(), ...prepared });
-  if (output) {
-    process.stdout.write(`${JSON.stringify(output)}\n`);
-  }
+  await finishOutput(output ? `${JSON.stringify(output)}\n` : "");
 }
 
 if (require.main === module) {
-  (async () => { await main(); })().catch(() => {});
+  main().then(() => process.exit(0)).catch(error => {
+    process.stderr.write(`${error.stack || error}\n`, () => process.exit(1));
+  });
 }
 
 module.exports = {

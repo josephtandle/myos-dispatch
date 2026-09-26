@@ -119,3 +119,24 @@ test('browser criteria explicitly cover macOS URL and application opens', () => 
   assert.ok(question.instructions.includes('open <http or https URL>'));
   assert.ok(question.instructions.includes('open -a'));
 });
+
+test('model packs redact credential patterns while preserving command semantics', () => {
+  const values = ['Bearer abcDEF123', 'apikey: private', 'apikey=private', 'Authorization: Basic abc123',
+    'sk-abc123', 'sk_live_abc123', 'sk_test_abc123', 'rk_live_abc123', 'whsec_abc123', 'ghp_abc123',
+    'gho_abc123', 'xoxa-123-abc', 'xoxb-123-abc', 'xoxp-123-abc', 'AKIA1234567890ABCDEF',
+    'eyJabc.def.ghi', 'apikey_0123456789abcdef0123', 'TYPESAFE_API_KEY=private', 'API_KEY="two words"',
+    "TOKEN='two words'", 'SECRET=private', 'PASSWORD=private', 'KEY=private', 'ACCESS_TOKEN=private',
+    '-u user:pass', '-u "user:pass"', 'https://user:pass@host/path'];
+  for (const value of values) {
+    const redacted = packs.redactForModel(value);
+    assert.match(redacted, /<REDACTED>/, value);
+    assert.notEqual(redacted, value);
+    for (const pack of [buildPromptPack(value), buildToolPack(value, value)]) {
+      assert.equal(JSON.stringify(pack.state).includes(value), false, value);
+      assert.doesNotMatch(JSON.stringify(pack), /apikey_[0-9a-f]{20}/);
+    }
+  }
+  assert.equal(buildToolPack('curl -H "apikey: private" https://host/path', '').state.command,
+    'curl -H "apikey: <REDACTED>" https://host/path');
+  assert.equal(packs.redactForModel('echo hello && ls ./files'), 'echo hello && ls ./files');
+});

@@ -103,10 +103,18 @@ async function attemptOnce(fetchImpl, apiKey, body, timeoutMs) {
   const ac = new AbortController();
   let timer;
   let requestId = null;
+  let responseBody;
+  let reader;
+  const dispose = () => {
+    try { Promise.resolve(reader?.cancel()).catch(() => {}); } catch {}
+    try { Promise.resolve(responseBody?.cancel?.()).catch(() => {}); } catch {}
+    try { responseBody?.destroy?.(); } catch {}
+  };
   const expired = new Promise((resolve) => {
     timer = setTimeout(() => {
       resolve({ ok: false, reason: 'timeout', retryable: true, requestId });
       ac.abort();
+      dispose();
     }, Math.max(0, timeoutMs));
   });
   const run = async () => {
@@ -116,9 +124,22 @@ async function attemptOnce(fetchImpl, apiKey, body, timeoutMs) {
       body,
       signal: ac.signal,
     });
+    responseBody = res.body;
+    if (ac.signal.aborted) { dispose(); return { ok: false, reason: 'timeout', retryable: true }; }
     const header = (name) => res.headers?.get?.(name) ?? null;
     requestId = header('x-typesafe-request-id');
-    const text = await res.text();
+    let text;
+    if (responseBody?.getReader) {
+      reader = responseBody.getReader();
+      const decoder = new TextDecoder();
+      text = '';
+      for (;;) {
+        const chunk = await reader.read();
+        if (chunk.done) break;
+        text += decoder.decode(chunk.value, { stream: true });
+      }
+      text += decoder.decode();
+    } else text = await res.text();
     let json = null;
     try { json = text ? JSON.parse(text) : null; } catch { json = null; }
     const status = res.status;
@@ -157,9 +178,11 @@ function createJevClient(opts = {}) {
     maxRetries = 1,
     onResult = null,
   } = opts;
-  const fetchImpl = opts.fetch || globalThis.fetch;
+  const testHang = process.env.MYOS_JEV_TEST_HANG === '1';
+  const fetchImpl = testHang ? () => { setInterval(() => {}, 1000); return new Promise(() => {}); }
+    : opts.fetch || globalThis.fetch;
   if (typeof fetchImpl !== 'function') throw new TypeError('createJevClient: no fetch available (Node 18+ required)');
-  const apiKey = process.env.MYOS_JEV_ENABLED === '0' ? '' : resolveKey(opts);
+  const apiKey = process.env.MYOS_JEV_ENABLED === '0' ? '' : testHang ? 'synthetic-test-key' : resolveKey(opts);
   const configured = apiKey.length > 0;
 
   function report(record) {
@@ -201,7 +224,7 @@ function createJevClient(opts = {}) {
     const requestedRetries = Number(callOpts.maxRetries ?? maxRetries);
     const perAttemptMs = Number.isFinite(requestedTimeout) ? Math.max(1, requestedTimeout) : 1500;
     const retries = Number.isFinite(requestedRetries) ? Math.max(0, Math.floor(requestedRetries)) : 1;
-    const deadline = started + perAttemptMs * 3;
+    const deadline = started + perAttemptMs;
     const body = JSON.stringify({ state, model: usedModel, questions });
     let attempts = 0;
     let last;

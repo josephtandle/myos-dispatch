@@ -26,11 +26,39 @@ function parseArgs(argv) {
   return args;
 }
 
+function inputFiles(input) {
+  if (fs.existsSync(input)) return fs.statSync(input).isDirectory()
+    ? fs.readdirSync(input).filter(name => /^jev-shadow(?:\..+)?\.jsonl$/.test(name)).sort().map(name => path.join(input, name)) : [input];
+  if (!/[?*]/.test(input)) return [];
+  const parts = path.resolve(input).split(path.sep).filter(Boolean);
+  let files = [path.parse(path.resolve(input)).root];
+  for (const part of parts) {
+    const pattern = new RegExp('^' + part.split('').map(char => char === '*' ? '.*' : char === '?' ? '.'
+      : char.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('') + '$');
+    files = files.flatMap(dir => {
+      try { return fs.readdirSync(dir).filter(name => pattern.test(name)).map(name => path.join(dir, name)); }
+      catch { return []; }
+    });
+  }
+  return files.filter(file => fs.statSync(file).isFile()).sort();
+}
+
 function readRows(file, limit, optional = false) {
-  if (!file || (optional && !fs.existsSync(file))) return [];
-  const text = fs.readFileSync(file, 'utf8').trim();
-  if (!text) return [];
-  return (text.startsWith('[') ? JSON.parse(text) : text.split(/\r?\n/).filter(Boolean).map(JSON.parse)).slice(0, limit);
+  if (!file) return [];
+  const files = inputFiles(file);
+  if (!files.length && !optional) throw new Error(`Input not found: ${file}`);
+  const rows = [];
+  for (const name of files) {
+    if (rows.length >= limit) break;
+    const text = fs.readFileSync(name, 'utf8').trim();
+    if (!text) continue;
+    const entries = text.startsWith('[') ? JSON.parse(text) : text.split(/\r?\n/).filter(Boolean).map(JSON.parse);
+    for (const row of entries) {
+      if (rows.length >= limit) break;
+      rows.push(row);
+    }
+  }
+  return rows;
 }
 
 function metric() {
@@ -88,13 +116,14 @@ function finishLabels(fields) {
 
 async function evaluate(args) {
   const home = process.env.MYOS_HOME_ROOT || path.join(os.homedir(), '.myos-dispatch');
-  const ledger = args.ledger || path.join(home, 'logs/jev-shadow.jsonl');
+  const ledger = args.ledger || path.join(home, 'logs');
   const selected = field => !args.field || field === args.field || field === `safety.${args.field}`;
   const metrics = {};
   const promptPack = buildPromptPack('synthetic');
   const toolPack = buildToolPack('ls -la', 'List files');
   const map = { ...promptPack.fields, ...toolPack.fields, lane: { planField: 'executionLane' }, project: { planField: 'projectSlug' } };
   for (const row of readRows(ledger, args.limit, true)) {
+    if (row.engine !== 'jev') continue;
     for (const [key, answer] of Object.entries(row.decided || {})) {
       const field = (row.event === 'tool' ? toolPack.fields[key] : promptPack.fields[key])?.planField || map[key]?.planField;
       if (!field || !selected(field) || !Object.hasOwn(row.legacy || {}, field)) continue;
@@ -106,10 +135,8 @@ async function evaluate(args) {
       observe(metrics, 'goalConfidence', equal(confidence, row.legacy.goalConfidence), confidence);
     }
   }
-  let state = {};
-  try { state = JSON.parse(fs.readFileSync(path.join(home, 'state/jev-shadow-state.json'), 'utf8')); } catch {}
-  const report = { mode: args.live ? 'live' : 'rules', ledger: { path: ledger, fields: summarize(metrics, state.metrics || {}) },
-    eligibleFields: Object.entries(state.metrics || {}).filter(([field, row]) => selected(field) && isFieldEligibleForPromotion(row)).map(([field]) => field),
+  const report = { mode: args.live ? 'live' : 'rules', ledger: { path: ledger, fields: summarize(metrics) },
+    eligibleFields: Object.entries(metrics).filter(([field, row]) => selected(field) && isFieldEligibleForPromotion(row)).map(([field]) => field),
     prompts: { n: 0, fields: {} }, tools: { n: 0, engines: {}, reliability: {} }, regressions: [] };
   const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'jev-evaluate-'));
   try {

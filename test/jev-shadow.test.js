@@ -52,7 +52,7 @@ test('unconfigured and undefined clients use rules without fetch and preserve th
     assert.equal(jev.engine, 'rules');
     assert.equal(jev.skipped, 'typesafe_key_missing');
     assert.deepEqual(jev.authoritativeFields, []);
-    assert.deepEqual(JSON.parse(fs.readFileSync(opts.stateFile)).metrics, {});
+    assert.equal(JSON.parse(fs.readFileSync(opts.stateFile)).metrics, undefined);
   }
   assert.equal(fetchCalls, 0);
 });
@@ -80,26 +80,26 @@ test('explicit previous project reaches the model state', async (t) => {
   assert.equal(observed, 'previous');
 });
 
-test('canary overrides only goalConfidence and fanoutAggression above their floors', async (t) => {
+test('canary is reserved and never overrides prompt fields', async (t) => {
   const opts = fixture(t, { stage: 'canary', authoritativeFields: ['goalScale', 'actionType'], floors: { fanoutAggression: 0.99 } });
   const overrides = { aggression: { choice: 'deep', confidence: 0.98 } };
   const result = await attachJevShadow('work', legacy, {}, { ...opts, client: clientFor(overrides) });
-  assert.equal(result.goalConfidence, 0.96);
+  assert.equal(result.goalConfidence, 'medium');
   assert.equal(result.goalScale, 2);
   assert.equal(result.actionType, 'read');
   assert.equal(result.fanoutAggression, 'off');
-  assert.deepEqual(result.jev.authoritativeFields, [{ field: 'goalConfidence', selectedBy: 'jev' }]);
+  assert.deepEqual(result.jev.authoritativeFields, []);
   const allowed = await attachJevShadow('work', legacy, {}, { ...fixture(t, { stage: 'canary', floors: { fanoutAggression: 0.98 } }), client: clientFor(overrides) });
-  assert.equal(allowed.fanoutAggression, 'deep');
+  assert.equal(allowed.fanoutAggression, 'off');
 });
 
-test('authoritative fields require allowlisting and per-field floors', async (t) => {
+test('authoritative top-level prompt fields remain shadow only', async (t) => {
   const opts = fixture(t, { stage: 'authoritative', authoritativeFields: ['goalScale', 'actionType'], floors: { goalScale: 0.97, actionType: 0.95 } });
   const result = await attachJevShadow('work', legacy, {}, { ...opts, client: clientFor({ action: { choice: 'write', confidence: 0.96 } }) });
   assert.equal(result.goalScale, 2);
-  assert.equal(result.actionType, 'write');
+  assert.equal(result.actionType, 'read');
   assert.equal(result.goalConfidence, 'medium');
-  assert.deepEqual(result.jev.authoritativeFields, [{ field: 'actionType', selectedBy: 'jev' }]);
+  assert.deepEqual(result.jev.authoritativeFields, []);
 });
 
 test('environment stage overrides state and unknown stages fail closed', async (t) => {
@@ -171,10 +171,11 @@ test('ledger hashes full prompt, omits text by default and retains probabilities
   assert.equal(entries[1].promptText, 'explicit text');
 });
 
-test('state metrics accumulate and confidence one is assigned to bin nine', async (t) => {
+test('opt-in metrics accumulate and confidence one is assigned to bin nine', async (t) => {
   const opts = fixture(t);
+  opts.env.MYOS_JEV_HOOK_METRICS = '1';
   for (let i = 0; i < 2; i++) await attachJevShadow('work', legacy, {}, { ...opts, client: clientFor() });
-  const state = JSON.parse(fs.readFileSync(opts.stateFile, 'utf8'));
+  const state = { metrics: JSON.parse(fs.readFileSync(path.join(opts.env.MYOS_HOME_ROOT, 'state/jev-shadow-metrics.json'), 'utf8')) };
   assert.equal(state.metrics.intentType.n, 2);
   assert.equal(state.metrics.intentType.agree, 2);
   assert.equal(state.metrics.intentType.sumConfidence, 1.92);
@@ -199,7 +200,8 @@ test('corrupt state, invalid floors and unwritable observation paths do not brea
 test('default observation locations are relative to MYOS_HOME_ROOT', async (t) => {
   const opts = fixture(t);
   await attachJevShadow('work', legacy, {}, { env: opts.env });
-  assert.ok(fs.existsSync(path.join(opts.env.MYOS_HOME_ROOT, 'state/jev-shadow-state.json')));
+  assert.equal(fs.existsSync(path.join(opts.env.MYOS_HOME_ROOT, 'state/jev-shadow-state.json')), false);
+  assert.equal(fs.existsSync(path.join(opts.env.MYOS_HOME_ROOT, 'state/jev-shadow-metrics.json')), false);
   assert.ok(fs.existsSync(path.join(opts.env.MYOS_HOME_ROOT, 'logs/jev-shadow.jsonl')));
 });
 
@@ -266,4 +268,56 @@ test('authoritative browser open adds a missing legacy label and records the cha
   assert.equal(entry.agree, 8);
   assert.equal(entry.n, 9);
   assert.equal(Object.hasOwn(entry, 'promptText'), false);
+});
+
+test('truncated config stays byte-identical and fails closed despite environment authority', async (t) => {
+  const opts = fixture(t, {}, { MYOS_JEV_STAGE: 'authoritative', MYOS_JEV_HOOK_METRICS: '1' });
+  fs.writeFileSync(opts.stateFile, '{"stage":"author');
+  const bytes = fs.readFileSync(opts.stateFile);
+  const result = await attachJevShadow('work', legacy, {}, { ...opts, client: clientFor() });
+  assert.equal(result.jev.stage, 'shadow');
+  assert.equal(result.jev.configUnreadable, true);
+  assert.deepEqual(fs.readFileSync(opts.stateFile), bytes);
+  assert.equal(JSON.parse(fs.readFileSync(opts.ledgerFile)).configUnreadable, true);
+});
+
+test('corrupt metrics are not repaired by a hook event', async (t) => {
+  const opts = fixture(t, {}, { MYOS_JEV_HOOK_METRICS: '1' });
+  opts.metricsFile = path.join(opts.env.MYOS_HOME_ROOT, 'metrics.json');
+  fs.writeFileSync(opts.metricsFile, '{torn');
+  await attachJevShadow('work', legacy, {}, { ...opts, client: clientFor() });
+  assert.equal(fs.readFileSync(opts.metricsFile, 'utf8'), '{torn');
+});
+
+test('40 concurrent processes preserve config and expose only complete metrics', async (t) => {
+  const { spawn } = require('node:child_process');
+  const opts = fixture(t, { stage: 'authoritative', authoritativeFields: ['blockedBy.browser_control'], promotionNote: 'keep' });
+  const bytes = fs.readFileSync(opts.stateFile);
+  const metricsFile = path.join(opts.env.MYOS_HOME_ROOT, 'state/jev-shadow-metrics.json');
+  const code = `const { attachJevShadow } = require(${JSON.stringify(require.resolve('../src/decision/jev-shadow'))});
+    const opts = ${JSON.stringify(opts)};
+    opts.env.MYOS_JEV_HOOK_METRICS = '1';
+    attachJevShadow('synthetic', {}, {}, opts).catch(e => { console.error(e); process.exitCode = 1; });`;
+  let reads = 0;
+  let readError;
+  const timer = setInterval(() => {
+    try {
+      JSON.parse(fs.readFileSync(opts.stateFile));
+      if (fs.existsSync(metricsFile)) { JSON.parse(fs.readFileSync(metricsFile)); reads++; }
+    } catch (error) { readError = error; }
+  }, 1);
+  try {
+    await Promise.all(Array.from({ length: 40 }, () => new Promise((resolve, reject) => {
+      const child = spawn(process.execPath, ['-e', code], { stdio: ['ignore', 'ignore', 'pipe'] });
+      let stderr = '';
+      child.stderr.on('data', chunk => { stderr += chunk; });
+      child.on('error', reject);
+      child.on('exit', status => status === 0 ? resolve() : reject(new Error(stderr)));
+    })));
+  } finally { clearInterval(timer); }
+  assert.ifError(readError);
+  assert.ok(reads > 0);
+  assert.deepEqual(fs.readFileSync(opts.stateFile), bytes);
+  assert.equal(fs.readFileSync(opts.ledgerFile, 'utf8').trim().split('\n').map(JSON.parse).length, 40);
+  assert.deepEqual(fs.readdirSync(path.dirname(metricsFile)), ['jev-shadow-metrics.json']);
 });

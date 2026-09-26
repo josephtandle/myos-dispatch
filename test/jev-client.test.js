@@ -165,13 +165,13 @@ test("total wall cap also covers ignored aborts and stalled body reads", async (
   let calls = 0;
   const result = await client({ timeoutMs: 60, maxRetries: 100, fetch: async () => {
     calls++;
-    if (calls < 3) return response(529, {}, { "retry-after-ms": "65" });
+    if (calls < 3) return response(529, {}, { "retry-after-ms": "10" });
     return { ...response(), text: () => new Promise(() => {}) };
   } }).ask({}, questions);
   assert.equal(result.reason, "timeout");
   assert.equal(result.attempts, 3);
-  assert.ok(result.latencyMs >= 150);
-  assert.ok(result.latencyMs < 240, `latency ${result.latencyMs}`);
+  assert.ok(result.latencyMs >= 50);
+  assert.ok(result.latencyMs < 180, `latency ${result.latencyMs}`);
   const ignored = await client({ timeoutMs: 20, maxRetries: 0, fetch: () => new Promise(() => {}) }).ask({}, questions);
   assert.equal(ignored.reason, "timeout");
 });
@@ -201,4 +201,24 @@ test("sidecar parser defaults to an eligible class and supports overrides withou
   assert.match(source, /taskClass: args.taskClass/);
   assert.match(source, /modelProfile: args.taskClass/);
   assert.doesNotMatch(source, /openai_cheap_extraction/);
+});
+
+test('timeout cancels a stalled reader and destroys a stalled body', async () => {
+  for (const stream of [false, true]) {
+    let cancelled = false;
+    let destroyed = false;
+    let signal;
+    const body = stream ? { getReader: () => ({ read: () => new Promise(() => {}), cancel: () => { cancelled = true; } }) }
+      : { destroy: () => { destroyed = true; }, cancel: () => { cancelled = true; return Promise.reject(new Error('locked')); } };
+    const result = await client({ timeoutMs: 50, fetch: async (_, options) => {
+      signal = options.signal;
+      return { ...response(), body, text: () => new Promise(() => {}) };
+    } }).ask({}, questions);
+    assert.equal(result.reason, 'timeout');
+    assert.equal(signal.aborted, true);
+    assert.equal(cancelled, true);
+    if (!stream) assert.equal(destroyed, true);
+    assert.ok(result.latencyMs < 150, `timeout took ${result.latencyMs}ms`);
+    assert.equal(result.attempts, 1);
+  }
 });
