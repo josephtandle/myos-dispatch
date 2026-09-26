@@ -154,3 +154,27 @@ test("typed-evidence shadow V2 can self-promote after successful authoritative u
   assert.deepEqual(last.promoted && { from: last.promoted.from, to: last.promoted.to }, { from: "v2", to: "v3" });
   assert.equal(readTypedEvidenceShadowState({ stateFile }).activeStage, "v3");
 });
+
+
+test("replay corpus resolves explicit, env, workspace, default, then empty", (t) => {
+  const { resolveTypedEvidenceCorpusFile, loadTypedEvidenceReplayCorpus, DEFAULT_REPLAY_CORPUS_FILE } = require("../src/promotion/typed-evidence-shadow-policy");
+  const { resolveWorkspacePath } = require("../src/myos-compat");
+  const previous = process.env.MYOS_TYPED_EVIDENCE_CORPUS;
+  process.env.MYOS_TYPED_EVIDENCE_CORPUS = "/fake/env-corpus.json";
+  t.after(() => {
+    if (previous === undefined) delete process.env.MYOS_TYPED_EVIDENCE_CORPUS;
+    else process.env.MYOS_TYPED_EVIDENCE_CORPUS = previous;
+  });
+  const workspace = resolveWorkspacePath("agents", "shared", "replay-corpora", "typed-evidence-shadow-corpus.json");
+  const candidates = ["/fake/explicit.json", process.env.MYOS_TYPED_EVIDENCE_CORPUS, workspace, DEFAULT_REPLAY_CORPUS_FILE];
+  const existing = new Set(candidates);
+  t.mock.method(fs, "existsSync", (file) => existing.has(file));
+  t.mock.method(fs, "readFileSync", (file) => JSON.stringify({ cases: [{ id: file }] }));
+  for (const expected of candidates) {
+    assert.equal(resolveTypedEvidenceCorpusFile(candidates[0]), expected);
+    assert.deepEqual(loadTypedEvidenceReplayCorpus(candidates[0]), [{ id: expected }]);
+    existing.delete(expected);
+  }
+  assert.equal(resolveTypedEvidenceCorpusFile(), null);
+  assert.deepEqual(loadTypedEvidenceReplayCorpus(), []);
+});

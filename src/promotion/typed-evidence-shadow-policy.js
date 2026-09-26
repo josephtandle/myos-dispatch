@@ -488,8 +488,19 @@ function applyPromotionIfEligible(state, stage, metrics, options = {}) {
   return stagedPromotionPolicy.applyPromotionIfEligible(state, stage, metrics, options);
 }
 
-function loadTypedEvidenceReplayCorpus(filePath = DEFAULT_REPLAY_CORPUS_FILE) {
-  const parsed = JSON.parse(fs.readFileSync(filePath, "utf8"));
+function resolveTypedEvidenceCorpusFile(filePath) {
+  return [
+    filePath,
+    process.env.MYOS_TYPED_EVIDENCE_CORPUS,
+    resolveWorkspacePath("agents", "shared", "replay-corpora", "typed-evidence-shadow-corpus.json"),
+    DEFAULT_REPLAY_CORPUS_FILE,
+  ].find((candidate) => candidate && fs.existsSync(candidate)) || null;
+}
+
+function loadTypedEvidenceReplayCorpus(filePath) {
+  const resolved = resolveTypedEvidenceCorpusFile(filePath);
+  if (!resolved) return [];
+  const parsed = JSON.parse(fs.readFileSync(resolved, "utf8"));
   return Array.isArray(parsed.cases) ? parsed.cases : [];
 }
 
@@ -504,6 +515,7 @@ module.exports = {
   isRiskyAuthoritativePrompt,
   isSafeAuthoritativeShadow,
   loadTypedEvidenceReplayCorpus,
+  resolveTypedEvidenceCorpusFile,
   normalizeStageId,
   readTypedEvidenceShadowState,
   recordTypedEvidenceReplayEvaluation,

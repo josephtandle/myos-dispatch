@@ -34,6 +34,7 @@ function parseArgs(argv) {
     prompt: "",
     scope: "",
     provider: "",
+    taskClass: process.env.MYOS_SIDECAR_TASK_CLASS || "cheap_routing",
     timeoutMs: 180000,
     id: "",
     kind: "",
@@ -45,6 +46,7 @@ function parseArgs(argv) {
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === "--scope") args.scope = String(argv[++i] || "");
+    else if (arg === "--task-class") args.taskClass = String(argv[++i] || args.taskClass);
     else if (arg === "--provider") args.provider = String(argv[++i] || "");
     else if (arg === "--timeout-ms") args.timeoutMs = Math.max(10000, Number(argv[++i] || args.timeoutMs));
     else if (arg === "--id" || arg === "--lane-id" || arg === "--task-id") args.id = String(argv[++i] || "");
@@ -61,7 +63,7 @@ function parseArgs(argv) {
 
 function usage() {
   console.log([
-    'Usage: node agents/shared/bin/myos-sidecar.js "<question>" [--scope <dir>] [--provider codex|claude|gemini] [--timeout-ms <ms>] [--out <file>] [--envelope <json>]',
+    'Usage: node agents/shared/bin/myos-sidecar.js "<question>" [--scope <dir>] [--provider codex|claude|gemini] [--task-class <class>] [--timeout-ms <ms>] [--out <file>] [--envelope <json>]',
     "",
     "Runs one orchestrator-approved read-only background scout and prints JSON: status, summary, findings, risks, checks, confidence.",
     "Direct worker or nested sidecar launches are refused; use MyOS Dispatch fan-out instead.",
@@ -133,7 +135,8 @@ async function main() {
     writeScope: [],
     required: false,
     mode: "read_only",
-    modelProfile: "openai_cheap_extraction",
+    taskClass: args.taskClass,
+    modelProfile: args.taskClass,
     timeoutMs: args.timeoutMs,
     ...(envelopeObj ? { executionEnvelope: envelopeObj } : {}),
   };
