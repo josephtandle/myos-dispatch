@@ -5,6 +5,14 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
+const { isolateHookHome, preserveEnv } = require("./helpers/isolated-home");
+
+test.beforeEach((t) => {
+  isolateHookHome(t);
+  preserveEnv(t, ["MYOS_BACKGROUND_AGENTS_ENABLED"]);
+  // Exercise planning only. isolateHookHome disables actual automatic fan-out.
+  process.env.MYOS_BACKGROUND_AGENTS_ENABLED = "1";
+});
 
 // Exercise credentialed hook planning without relying on a local provider login.
 process.env.OPENAI_API_KEY = "fixture-only";
@@ -316,6 +324,7 @@ test("UserPromptSubmit and PreToolUse route logs carry the Intent Fidelity contr
     assert.equal(preToolRecord.intentFidelity?.version, "intent-fidelity-v1");
     assert.equal(preToolRecord.intentFidelity?.enabled, true);
   } finally {
+    fs.rmSync(tmpLogDir, { recursive: true, force: true });
     if (origLogDir !== undefined) {
       process.env.MYOS_DISPATCH_HOOK_LOG_DIR = origLogDir;
     } else {
@@ -404,6 +413,7 @@ test("appendRouteLog records fastpaths on UserPromptSubmit and PreToolUse callsi
       assert.ok(preToolRecord.fastpaths.length <= 5);
     }
   } finally {
+    fs.rmSync(tmpLogDir, { recursive: true, force: true });
     if (origLogDir !== undefined) {
       process.env.MYOS_DISPATCH_HOOK_LOG_DIR = origLogDir;
     } else {

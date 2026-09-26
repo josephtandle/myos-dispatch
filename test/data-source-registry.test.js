@@ -33,8 +33,9 @@ test("data source registry defaults to no configured sources", () => {
   });
 });
 
-test("data source registry resolves configured workspace paths and reads content", () => {
+test("data source registry resolves configured workspace paths and reads content", (t) => {
   const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "data-source-registry-"));
+  t.after(() => fs.rmSync(homeDir, { recursive: true, force: true }));
   const workspaceRoot = path.join(homeDir, ".myos", "workspace");
   fs.mkdirSync(path.join(workspaceRoot, "data"), { recursive: true });
   fs.writeFileSync(path.join(workspaceRoot, "data", "entities.md"), "# Entities\nExample Holdings LLC\n", "utf8");
@@ -50,7 +51,7 @@ test("data source registry resolves configured workspace paths and reads content
     "utf8",
   );
 
-  loadRegistryWithEnv({ HOME: homeDir, MYOS_DATA_SOURCES_CONFIG: configPath }, (registry) => {
+  loadRegistryWithEnv({ HOME: homeDir, MYOS_HOME_ROOT: path.join(homeDir, ".myos"), OPENCLAW_HOME_ROOT: path.join(homeDir, ".myos"), MYOS_DATA_SOURCES_CONFIG: configPath }, (registry) => {
     const source = registry.getDataSource("entities");
     assert.equal(source.label, "entities.md");
     assert.equal(source.path, path.join(workspaceRoot, "data", "entities.md"));
@@ -58,3 +59,17 @@ test("data source registry resolves configured workspace paths and reads content
     assert.match(registry.readConfiguredTextSource("entities"), /Example Holdings LLC/);
   });
 });
+
+for (const override of ["none", "/missing/data-sources.json"]) {
+  test(`data source override ${override} excludes repo-local config`, (t) => {
+    const registry = require("../src/data-source-registry");
+    const readFileSync = fs.readFileSync;
+    const existsSync = fs.existsSync;
+    const localConfig = { version: 1, dataSources: [{ id: "live-source" }] };
+    t.mock.method(fs, "existsSync", (file) => file === registry.LOCAL_CONFIG_FILE || existsSync(file));
+    t.mock.method(fs, "readFileSync", (file, ...args) => file === registry.LOCAL_CONFIG_FILE
+      ? JSON.stringify(localConfig) : readFileSync(file, ...args));
+    assert.deepEqual(registry.loadDataSourcesConfig({ env: { MYOS_DATA_SOURCES_CONFIG: override } }),
+      JSON.parse(readFileSync(registry.DEFAULT_CONFIG_FILE, "utf8")));
+  });
+}

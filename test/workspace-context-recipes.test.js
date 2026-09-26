@@ -9,6 +9,8 @@ const path = require("node:path");
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "dispatch-recipes-"));
 process.env.HOME = root;
 process.env.MYOS_HOME_ROOT = path.join(root, ".myos");
+process.env.OPENCLAW_HOME_ROOT = process.env.MYOS_HOME_ROOT;
+process.env.MYOS_DATA_SOURCES_CONFIG = "none";
 const workspace = path.join(process.env.MYOS_HOME_ROOT, "workspace");
 fs.mkdirSync(workspace, { recursive: true });
 fs.writeFileSync(path.join(workspace, "DISPATCH-FASTPATHS.json"), JSON.stringify({
@@ -118,4 +120,14 @@ test("recipe matches are distinct capabilities, longest first, capped at three",
   const matches = matchRecipes("please prepare daily handoff now", { indexPath: rankedIndexPath });
   assert.deepEqual(matches.map((match) => match.capabilityId), ["recipe:3", "recipe:2", "recipe:1"]);
   assert.deepEqual(matches.map((match) => match.score), [100, 100, 100]);
+});
+
+
+test("exact recipe skips scoring and retains reusable non-enumerable evidence", () => {
+  const plan = resolveDispatchPlan("prepare daily handoff", { indexPath });
+  assert.deepEqual(plan._dispatchSignals.projects, []);
+  assert.deepEqual(plan._dispatchSignals.route.candidates, []);
+  assert.equal(plan._dispatchSignals.recipeMatches[0].capabilityId, "recipe:daily");
+  assert.equal(Object.keys(plan).includes("_dispatchSignals"), false);
+  assert.equal(JSON.stringify(plan).includes("_dispatchSignals"), false);
 });

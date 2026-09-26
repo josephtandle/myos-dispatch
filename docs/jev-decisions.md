@@ -1,6 +1,10 @@
 # Jev calibrated decisions
 
-The hook resolves the existing dispatch plan first. UserPromptSubmit and the plain-text `--render-route` path then submit one bounded prompt pack through the shared Jev step. Bash PreToolUse submits a tool pack after computing existing safety labels. Other tools and events retain their existing paths. Direct synchronous hook imports remain compatible; the CLI owns the asynchronous step.
+The hook checks tier-0 before loading routing indexes. For remaining events, it starts one bounded Jev request from raw inputs before computing rules, then attaches comparisons to the completed rules result. UserPromptSubmit and the plain-text `--render-route` path use the prompt pack. Bash PreToolUse uses `resolveToolSafetyPlan`, avoiding recipe, capability, project and shadow planning on the common path. Other tools and events retain their existing paths. Direct synchronous hook imports remain compatible; the CLI owns the asynchronous step.
+
+Tool safety preserves the goal classifier's approval predicate, planner blocker order and existing sidecar-policy labels. Protected-project write labels depend on project ownership: write-like commands check the protected subset of the project index and matching commands retain the full planner as a compatibility fallback. This exception prevents removing a legacy safety gate. Tool route-log records retain safety labels and the Jev summary schema; unrelated routing metadata now reflects a safety-only plan (`route.branch: "tool_safety"`) rather than an inferred prompt route.
+
+Exact recipe wins skip project and capability scoring. Plans retain their already-collected signals under a non-enumerable `_dispatchSignals` property. Fastpaths still need capability lanes for the printed route and project evidence for typed-evidence authority and follow-up hints, so those consumers retain scoring. Removing it unconditionally would change routing. Capability and fastpath phrase regexes are cached per process.
 
 The optional model is `jev-1.13.0`. Prompt requests default to a 1500 ms total timeout; tool requests default to 900 ms. The hook does not retry. Both hook budgets clamp to 200 through 2500 ms. The client bounds all attempts and backoff by its total timeout. Invalid answers, timeouts, unavailable credentials, transport failures, and unexpected attachment errors preserve the legacy plan. Tool authority can add safety labels and cannot remove existing labels. Observation write failures cannot block dispatch.
 
@@ -8,16 +12,17 @@ The optional model is `jev-1.13.0`. Prompt requests default to a 1500 ms total t
 
 `shadow` records comparisons without changing decisions. `canary` is reserved; no fields today. `authoritative` is effective only for additive `safety.*` and `blockedBy.*` fields explicitly listed in the config file's `authoritativeFields`. All other fields, including goal confidence and fanout aggression, remain shadow-only. Promotion eligibility is reported, never automatically granted by the evaluator.
 
-Prompt fields are intent type, action type, goal scale, correction detection, fanout aggression, and the six blockers: browser control, user-visible send, payment/account mutation, auth sensitive, interactive auth, and destructive/approval sensitive. Capability lane and project are included when a shortlist exists. Prompt injection is diagnostic only. Goal confidence is derived from the score answer.
+Prompt fields are intent type, action type, goal scale, correction detection, fanout aggression, and the six blockers: browser control, user-visible send, payment/account mutation, auth sensitive, interactive auth, and destructive/approval sensitive. The pack has 11 questions. Capability lane, project and prompt injection are not asked; the model state contains only redacted prompt text and surface, so no shortlist is needed before transport starts. Goal confidence is derived from the score answer.
 
-Tool fields cover those six blockers plus protected-surface write, approval-sensitive operation, and read-only status. Description-match and needs-human answers are diagnostic only. All mapped fields default to a 0.9 confidence floor, including derived goal confidence. State `floors` can override individual fields. Noul decisions use 0.5 as their boolean threshold and the larger of p and 1-p as confidence. Score answers are finite zero-based floats in [0, 3]; goal scale is `Math.round(score) + 1`.
+The tool pack has 8 questions: the six blockers, approval-sensitive operation, and read-only status. Protected-surface write, description-match and needs-human questions are removed. Existing rules-derived protected-surface labels are retained. All mapped fields default to a 0.9 confidence floor, including derived goal confidence. State `floors` can override individual fields. Noul decisions use 0.5 as their boolean threshold and the larger of p and 1-p as confidence. Score answers are finite zero-based floats in [0, 3]; goal scale is `Math.round(score) + 1`.
 
-Blocker and safety authority only adds positive gates in the authoritative stage. Top-level prompt comparisons remain available in the ledger for grading but cannot override the planner.
+Blocker and safety authority only adds positive gates in the authoritative stage. Prompt comparisons remain available in the ledger for grading but cannot override the planner. Mapped fields accept dotted paths: correction uses `parallelizationPlan.executionEnvelope.features.intentFidelity.correctionDetected`, aggression uses `parallelizationPlan.aggression`, and a lane field in an existing/custom pack can use `route.lane`. The ledger's `legacy` keys and comparison metrics use those mapped paths. Old top-level correction/aggression metrics are not combined with the corrected series.
 
 ## Configuration and observations
 
 - `TYPESAFE_API_KEY`: optional TypeSafe credential, resolved by the existing client from the environment or workspace env file.
 - `MYOS_JEV_ENABLED=0`: bypasses Jev and preserves legacy behavior; prompt context adds only `[Jev] skipped: disabled`. The hidden `--no-jev` hook flag does the same.
+- `MYOS_JEV_PROMPT_SAMPLE`: prompt fraction in [0, 1], default 0.2. Invalid or empty values use the default. The first 32 bits of the full prompt SHA-256 hash choose the sample, so identical prompts agree. Any configured non-`safety.*` authoritative field bypasses sampling, even when the stage is currently shadow. Tools are never sampled.
 - `MYOS_JEV_STAGE`: `shadow`, `canary`, or `authoritative`, overriding the saved stage. Invalid values fall back to shadow.
 - `MYOS_JEV_TIMEOUT_MS`: prompt total timeout, default 1500 ms, clamped to [200, 2500].
 - `MYOS_JEV_TOOL_TIMEOUT_MS`: tool total timeout, default 900 ms, clamped to [200, 2500].
@@ -27,11 +32,46 @@ Blocker and safety authority only adds positive gates in the authoritative stage
 
 The ledger is `<root>/logs/jev-shadow.jsonl`. Above 50 MB it rotates by atomic rename to `jev-shadow.<YYYYMMDD-HHMMSS>.jsonl` before append. Config `{stage, authoritativeFields, floors, promotionNote}` is read-only at `<root>/state/jev-shadow-state.json`. An unreadable config forces shadow for that event, records `configUnreadable`, and is never rewritten. Optional metrics live at `<root>/state/jev-shadow-metrics.json` and use same-directory temporary files plus atomic rename. Invalid metrics are not rewritten that event. Legacy config metrics supply the initial metrics until a separate file exists. Concurrent metric updates can be lost; the evaluator derives calibration and eligibility from model ledger rows across active and rotated files. Ledger entries contain hashes, lengths, incumbent values, typed answers, stage, engine, latency, tokens, and model. Opt-in hook metrics accumulate only real Jev answers, never rules self-agreement. Reliability bins measure agreement with the incumbent, not correctness against ground truth.
 
-Model prompt, command, and description text is redacted for common credentials before pack construction. Shadow tool checks flush legacy labels immediately, finish observation work within the tool budget, then exit explicitly. Authoritative tool checks await the result before output.
+Model prompt, command, and description text is redacted for common credentials before pack construction. Shadow tool checks flush legacy labels immediately, finish observation work within the tool budget plus a 25 ms timeout-ledger continuation allowance, then exit explicitly. Authoritative tool checks await the result before output.
 
 The existing hook route log adds a compact `jev` summary with stage, engine, skipped reason, agreement counts, latency, input tokens, and model; it contains no answer payload or text. Prompt records also include intent/action, goal scale/mode/confidence, fanout aggression/depth, plan/approval flags, and blockers for every install.
 
-Prompt route context has one Jev status line after the Intent Fidelity/Horizon lines. A skipped decision shows its reason code. Tool safety context adds `jev=k/n` only for a completed model decision; skipped tool checks add nothing and ordinary reads stay silent.
+Prompt route context has one Jev status line after the Intent Fidelity/Horizon lines. A skipped decision shows its reason code. Tool safety context adds `jev=k/n` only for a completed model decision; skipped nontrivial tool checks add nothing and reads with no safety labels stay silent. Sampled-out prompts keep the normal routing block and route-log record with `[Jev] skipped: sampled_out` and no model ledger row.
+
+## Tier-0
+
+Tier-0 applies to Bash PreToolUse events only. Prompts never take a tier-0 path: every UserPromptSubmit runs the normal route (with prompt sampling as configured), so acknowledgements such as "ok" or "go" still get the same route context the pre-Jev hook produced. Word count is never a triviality test.
+
+Commands must be simple allow-listed pipelines after removing `cd X &&` and `export X=Y &&` prefixes. Allowed verbs are `ls`, `cat`, `head`, `tail`, `grep`, `rg`, `find`, `pwd`, `echo`, `which`, `wc`, `stat`, `du`, `df`, `ps`, `sysctl`, `uname`, `date`, `whoami`, `id`; env-free `git status|log|diff|show|branch|rev-parse`; and exact `node --version`, `npm --version`, `python3 --version`. Redirects, substitutions, backticks, command separators, sudo, rm, xargs, -exec, tee, curl and ssh disqualify the command. Ambiguous shell syntax and known write/execute flags such as `find -delete`, `git branch -D`, `git diff --output`, `rg --pre`, and loader-related export prefixes also take the normal safety path. Quoted flags receive the same checks.
+
+A tier-0 tool event is invisible on stdout: it prints exactly what the pre-Jev hook printed for that command (nothing on Codex, nothing on Claude unless the opt-in RTK rewrite applies, in which case only the `updatedInput` is emitted). No `[Jev]` line and no context block is injected, so route-context dedupe and footer behaviour are unaffected. The only trace is one route-log row with `branch: "tier0"`, `jev.skipped: "tier0_trivial"`, and the same `intentFidelity` and `intentHorizon` contracts every tool row carries. Tier-0 skips indexes, shadow planning and Jev, so it costs no network call.
+
+## Efficiency
+
+Measured in this isolated worktree on 2026-09-26, fresh Node process per event, `--surface=test`, fanout disabled, isolated empty indexes. Both runs classified (never executed) the first 20 rows of each named research corpus: `p0001` through `p0020` from `PROMPT-CORPUS-2026-09-26.jsonl`, and `tsc-0001` through `tsc-0020` from `TOOL-SAFETY-CORPUS-2026-09-26.jsonl`. Jev was enabled in authoritative stage, using a controlled 400 ms in-process transport stub with valid typed answers. The baseline ran before edits; the after run used default prompt sampling. There were 40 stub calls before and 24 after (4 prompts, 20 tools); 16 prompts were sampled out and none of these corpus rows hit tier-0.
+
+| Event | Before p50 wall | After p50 wall | Events per run |
+|---|---:|---:|---:|
+| Prompt | 507.5 ms | 79.4 ms | 20 |
+| Tool | 483.6 ms | 498.2 ms | 20 |
+
+The after run additionally measured safety rules at 2.29 ms p50, 2.89 ms max for 20 tools; prompt rules were 7.35 ms p50. Timings use the mean of the two middle observations. The tool wall-time sample did not improve; with empty indexes, startup variance and the fixed stub dominate. These are controlled local measurements, not live Jev or production-index results. The network-disabled, no-secret execution envelope prevented reproducing the report's live transport and installed indexes; production's reported roughly 100 ms rules cost and the under-15 ms target still need validation on that install. The original report's live p50s were 646 ms for prompts and 634 ms for tools; do not compare those directly with this stub run.
+
+### Live measurement 2026-09-26 (branch after W11b vs main before W11)
+
+Fresh Node process per event, `--surface=claude`, `MYOS_AUTO_FANOUT=0`, live workspace indexes, real Jev API in authoritative stage, 20 real prompts and 20 real Bash commands sampled from the research corpora (seed 7). p50 wall time in ms:
+
+| Path | main (pre-W11) | branch |
+|---|---|---|
+| prompt, Jev on, default sample 0.2 | 730 | 214 |
+| prompt, Jev on, sample 1.0 | 730 | 662 |
+| prompt, Jev off | 208 | 211 |
+| Bash PreToolUse, Jev on | 666 | 495 |
+| Bash PreToolUse, Jev off | 231 | 57 |
+
+Every run produced valid JSON with exit code 0. The remaining cost on the tool path is the Jev call itself: server time to first byte is about 310 ms and the TLS handshake only about 80 ms, so connection reuse would save at most 80 ms per call. Tier-0 matches 3.0% of real commands (22 of 738 in the corpus; 55 of 9,493 live PreToolUse rows). A broader read-only-pipeline gate was estimated at 13.8% coverage but 12 of those commands carry a truth safety label, so it was not adopted.
+
+Value of Jev on the tool path from the live ledger (2,186 Bash events, 24 h): the rules flag a safety label on 4.5% of events; Jev at the 0.7 floor adds a safety label the rules missed on 3.5% (auth_sensitive 43, approval_sensitive_operation 20, user_visible_send 5, browser_control 4, destructive_or_approval_sensitive 4, protected_surface_write 1). The price is about 440 ms per non-tier-0 Bash call. Turning it off is `MYOS_JEV_ENABLED=0` or `MYOS_JEV_TOOL_TIMEOUT_MS`; the default stays on because the missed labels sit on hard gates.
 
 ## Evaluation and smoke checks
 

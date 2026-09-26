@@ -4,7 +4,7 @@ const { execFileSync } = require("node:child_process");
 const { readJsonCached } = require("./json-cache");
 const { loadCapabilityIndex, shortlistCapabilities, selectExecutionLane } = require("./capability-router");
 const { inferGoalScale } = require("./goal-scale");
-const { buildParallelizationPlan } = require("./parallelization-planner");
+const { buildParallelizationPlan, detectBlockedReasons } = require("./parallelization-planner");
 const { homeDir, resolveWorkspacePath, resolveWorkspaceRoot } = require("./myos-compat");
 const {
   getDataSearchScope: getConfiguredDataSearchScope,
@@ -214,16 +214,20 @@ function loadFastpaths(filePath = FASTPATHS_FILE) {
   }
 }
 
+const fastpathRegexCache = new Map();
+
 function hasFastpathTerm(text, term) {
   const normalizedText = normalizeText(text);
   const normalizedTerm = normalizeText(term).trim();
   if (!normalizedTerm) return false;
 
-  const escaped = normalizedTerm
-    .replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
-    .replace(/\s+/g, "\\s+");
-
-  return new RegExp(`\\b${escaped}\\b`, "i").test(normalizedText);
+  let pattern = fastpathRegexCache.get(normalizedTerm);
+  if (!pattern) {
+    const escaped = escapeRegex(normalizedTerm).replace(/\s+/g, "\\s+");
+    pattern = new RegExp(`\\b${escaped}\\b`, "i");
+    fastpathRegexCache.set(normalizedTerm, pattern);
+  }
+  return pattern.test(normalizedText);
 }
 
 function scoreFastpath(query, fastpath) {
@@ -610,9 +614,13 @@ function collectDispatchSignals(query, options = {}) {
   const recipeMatches = matchRecipes(query, options);
   const dataSourceOptions = options.dataSourceOptions || {};
   const fastpathMatches = matchFastpaths(query, 3);
-  const projects = loadProjectIndex();
-  let projectMatches = matchProjects(query, projects);
-  const route = selectExecutionLane(query, options);
+  // Exact recipes supply their own lane and never consume project/capability scores.
+  // Fastpaths still consume the lane and typed-evidence project authority below.
+  const recipeWins = Boolean(recipeMatches[0]);
+  const projects = recipeWins ? [] : loadProjectIndex();
+  let projectMatches = recipeWins ? [] : matchProjects(query, projects);
+  const route = recipeWins ? { lane: "recipe_dispatcher", reason: "recipe_exact_match", candidates: [] }
+    : selectExecutionLane(query, options);
   const intentType = inferIntentType(query);
   const actionType = inferActionType(query);
   const isFollowUp = isShortFollowUp(query);
@@ -873,7 +881,7 @@ function attachShadowDispatch(query, legacyPlan, signals, options = {}) {
       }
     : legacyPlan;
 
-  return {
+  const result = {
     ...selectedPlan,
     shadowDispatch: {
       version: stage.planVersion || "typed-evidence-shadow-v1",
@@ -890,6 +898,36 @@ function attachShadowDispatch(query, legacyPlan, signals, options = {}) {
       },
     },
   };
+  Object.defineProperty(result, "_dispatchSignals", { value: signals, enumerable: false });
+  return result;
+}
+
+function resolveToolSafetyMetadata(command, options = {}) {
+  const env = options.env || process.env;
+  const actionType = inferActionType(command);
+  const goal = inferGoalScale(command, { actionType });
+  const text = normalizeText(command).replace(/\s+/g, " ").trim();
+  const blockedReasons = detectBlockedReasons(text, { ...options, actionType });
+  const { backgroundAgentsDisabled } = require("./env-context");
+  const { sidecarOffReason } = require("./sidecar-policy");
+  const { buildExecutionEnvelope } = require("./orchestration/execution-envelope");
+  if (backgroundAgentsDisabled(env)) blockedReasons.push("background_agents_disabled");
+  const offReason = sidecarOffReason(env, options.callerProvider || options.hookSurface);
+  if (offReason) blockedReasons.push(offReason);
+  const taskClass = options.taskClass || (actionType === "write" ? "default_automation" : actionType === "read" ? "cheap_routing" : null);
+  const executionEnvelope = buildExecutionEnvelope(text, { ...goal, actionType }, { env, blockedReasons, taskClass });
+  return { blockedBy: goal.blockedBy, parallelizationPlan: { blockedReasons, executionEnvelope } };
+}
+
+function resolveToolSafetyPlan(command, options = {}) {
+  // Protected-project writes depend on project ownership, not just blocker regexes.
+  // Preserve that rare legacy gate instead of silently dropping a safety label.
+  if (!options.projectSlug && inferActionType(command) === "write") {
+    const protectedProjects = loadProjectIndex().filter(project => ["allsorted", "goldenclaw"].includes(project.slug));
+    if (matchProjects(command, protectedProjects).length) return resolveDispatchPlan(command, options);
+  }
+  // Retain the intent contracts using only local classifiers, without routing or fanout.
+  return { branch: "tool_safety", ...resolveToolSafetyMetadata(command, options) };
 }
 
 function resolveDispatchPlan(query, options = {}) {
@@ -1399,6 +1437,8 @@ module.exports = {
   compareDispatchPlans,
   formatDispatchShadowComparison,
   resolveDispatchPlan,
+  resolveToolSafetyPlan,
+  resolveToolSafetyMetadata,
   buildWorkspaceContextBundle,
   buildFastpathSections,
   inferFastpathTargetType,

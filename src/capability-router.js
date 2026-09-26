@@ -55,11 +55,18 @@ function escapeRegex(value) {
   return String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+const phraseRegexCache = new Map();
+
 function hasBoundedPhrase(text, phrase) {
   const needle = normalizeText(phrase).trim();
   if (!needle) return false;
-  const escaped = escapeRegex(needle).replace(/\s+/g, '\\s+');
-  return new RegExp(`\\b${escaped}\\b`, 'i').test(normalizeText(text));
+  let pattern = phraseRegexCache.get(needle);
+  if (!pattern) {
+    const escaped = escapeRegex(needle).replace(/\s+/g, '\\s+');
+    pattern = new RegExp(`\\b${escaped}\\b`, 'i');
+    phraseRegexCache.set(needle, pattern);
+  }
+  return pattern.test(normalizeText(text));
 }
 
 function loadCapabilityIndex(options = {}) {
