@@ -6,7 +6,7 @@ const { resolveHomePath, resolveWorkspacePath } = require("./myos-compat");
 
 const DEFAULT_CONFIG_FILE = path.join(__dirname, "..", "config", "data-sources.example.json");
 const LOCAL_CONFIG_FILE = path.join(__dirname, "..", "config", "data-sources.json");
-const VALID_MODES = new Set(["content", "sqlite", "pointer"]);
+const VALID_MODES = new Set(["content", "sqlite", "pointer", "atelier"]);
 
 function readConfigFile(filePath) {
   try {
@@ -76,6 +76,8 @@ function normalizeDataSourceEntry(entry = {}) {
     excludeTerms: normalizeTermList(entry.excludeTerms),
     workerFollowupTerms: normalizeTermList(entry.workerFollowupTerms),
     readOnly: entry.readOnly !== false,
+    ...(mode === "atelier" ? { audiences: Array.isArray(entry.audiences) ? entry.audiences.filter(value => ["private", "team", "public"].includes(value)) : ["private", "team"] } : {}),
+    ...(mode === "atelier" && entry.includePaths !== undefined ? { includePaths: entry.includePaths } : {}),
     preferOverProject: entry.preferOverProject === true,
   };
 }
@@ -155,6 +157,17 @@ function getDataSearchScope(sourceIds = [], options = {}) {
 
 function readConfiguredTextSource(sourceId, maxChars = 8000, options = {}) {
   const source = getDataSource(sourceId, options);
+  if (source?.mode === "atelier") {
+    const result = require("./atelier-source").readAtelierSource(source, { query: options.query });
+    const budget = Math.max(0, Number(source.maxChars || maxChars));
+    let serialized = JSON.stringify(result);
+    while (serialized.length > budget && result.matches.length) {
+      result.matches.pop();
+      result.truncated = true;
+      serialized = JSON.stringify(result);
+    }
+    return serialized.length <= budget ? serialized : "";
+  }
   if (!source || !source.path || !["content", "pointer"].includes(source.mode)) return "";
   try {
     return fs.readFileSync(source.path, "utf8").slice(0, source.maxChars || maxChars).trim();

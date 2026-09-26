@@ -12,7 +12,10 @@
     "myos-search": "bin/myos-search.js",
     "myos-search-dispatch": "bin/myos-search-dispatch.js",
     "myos-writer": "bin/myos-writer.js",
-    "myos-oauth-doctor": "bin/myos-oauth-doctor.js"
+    "myos-oauth-doctor": "bin/myos-oauth-doctor.js",
+    "myos-atelier-audience": "bin/myos-atelier-audience.js",
+    "myos-atelier-sync": "bin/myos-atelier-sync.js",
+    "myos-atelier-query": "bin/myos-atelier-query.js"
   },
   "engines": {
     "node": ">=20"
