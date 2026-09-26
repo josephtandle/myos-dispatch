@@ -11,7 +11,7 @@ for (const surface of ['claude', 'codex']) {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'jev-hook-'));
     t.after(() => fs.rmSync(home, { recursive: true, force: true }));
     const env = { ...process.env, MYOS_HOME_ROOT: home, OPENCLAW_HOME_ROOT: home, MYOS_WORKSPACE_ROOT: home,
-      MYOS_DISPATCH_HOOK_LOG_DIR: path.join(home, 'logs'), MYOS_BACKGROUND_AGENTS_ENABLED: '0', MYOS_AUTO_FANOUT: '0' };
+      MYOS_DISPATCH_HOOK_LOG_DIR: path.join(home, 'logs'), MYOS_BACKGROUND_AGENTS_ENABLED: '0', MYOS_AUTO_FANOUT: '0', MYOS_JEV_PROMPT_SAMPLE: '1' };
     delete env.TYPESAFE_API_KEY;
     const run = (input, flags = [], enabled = '0') => execFileSync(process.execPath,
       [hook, `--surface=${surface}`, ...flags], { input, encoding: 'utf8', env: { ...env, MYOS_JEV_ENABLED: enabled } });
@@ -57,7 +57,7 @@ test('CLI model metadata and thrown attachments preserve the legacy route', (t) 
     if (process.env.JEV_TEST_THROW === '1') require(${JSON.stringify(shadowPath)}).attachJevShadow = async () => { throw new Error('synthetic error'); };
   `);
   const env = { ...process.env, MYOS_HOME_ROOT: home, OPENCLAW_HOME_ROOT: home, MYOS_WORKSPACE_ROOT: home,
-    MYOS_DISPATCH_HOOK_LOG_DIR: path.join(home, 'logs'), MYOS_BACKGROUND_AGENTS_ENABLED: '0', MYOS_AUTO_FANOUT: '0', MYOS_JEV_ENABLED: '1', MYOS_JEV_STAGE: 'shadow' };
+    MYOS_DISPATCH_HOOK_LOG_DIR: path.join(home, 'logs'), MYOS_BACKGROUND_AGENTS_ENABLED: '0', MYOS_AUTO_FANOUT: '0', MYOS_JEV_PROMPT_SAMPLE: '1', MYOS_JEV_ENABLED: '1', MYOS_JEV_STAGE: 'shadow' };
   delete env.TYPESAFE_API_KEY;
   const run = extra => JSON.parse(execFileSync(process.execPath, ['--require', preload, hook, '--surface=codex'], {
     input: JSON.stringify({ prompt: 'Explain the synthetic report', cwd: home }), encoding: 'utf8', env: { ...env, ...extra },
@@ -91,7 +91,7 @@ test('PreToolUse renders an authoritative Jev label when legacy safety is empty'
     stage: 'authoritative', authoritativeFields: ['safety.browser_control'], floors: { 'safety.browser_control': 0.7 },
   }));
   const env = { ...process.env, MYOS_HOME_ROOT: home, OPENCLAW_HOME_ROOT: home, MYOS_WORKSPACE_ROOT: home,
-    MYOS_DISPATCH_HOOK_LOG_DIR: path.join(home, 'logs'), MYOS_BACKGROUND_AGENTS_ENABLED: '0', MYOS_AUTO_FANOUT: '0' };
+    MYOS_DISPATCH_HOOK_LOG_DIR: path.join(home, 'logs'), MYOS_BACKGROUND_AGENTS_ENABLED: '0', MYOS_AUTO_FANOUT: '0', MYOS_JEV_PROMPT_SAMPLE: '1' };
   delete env.TYPESAFE_API_KEY;
   delete env.MYOS_JEV_STAGE;
   const run = enabled => execFileSync(process.execPath, ['--require', preload, hook, '--surface=codex'], {
@@ -109,7 +109,7 @@ function isolatedEnv(t) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'jev-hook-bounds-'));
   t.after(() => fs.rmSync(home, { recursive: true, force: true }));
   return { ...process.env, MYOS_HOME_ROOT: home, OPENCLAW_HOME_ROOT: home, MYOS_WORKSPACE_ROOT: home,
-    MYOS_DISPATCH_HOOK_LOG_DIR: path.join(home, 'logs'), MYOS_BACKGROUND_AGENTS_ENABLED: '0', MYOS_AUTO_FANOUT: '0',
+    MYOS_DISPATCH_HOOK_LOG_DIR: path.join(home, 'logs'), MYOS_BACKGROUND_AGENTS_ENABLED: '0', MYOS_AUTO_FANOUT: '0', MYOS_JEV_PROMPT_SAMPLE: '1',
     MYOS_JEV_ENABLED: '1', MYOS_JEV_STAGE: 'shadow', TYPESAFE_API_KEY: 'synthetic' };
 }
 
@@ -195,5 +195,126 @@ test('prompt and tool timeout settings have separate defaults and clamp to 200..
     const payload = tool ? { hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'printf hello' } } : { prompt: 'Explain a report' };
     execFileSync(process.execPath, ['--require', preload, hook], { env: local, input: JSON.stringify(payload) });
     assert.equal(JSON.parse(fs.readFileSync(observed)).timeoutMs, expected);
+  }
+});
+
+
+test('tier0 bypasses indexes, rules and Jev while retaining logging and RTK rewriting', t => {
+  const env = isolatedEnv(t);
+  const home = env.MYOS_HOME_ROOT;
+  const preload = path.join(home, 'preload-tier0.cjs');
+  fs.writeFileSync(preload, `
+    const fs = require('node:fs');
+    const read = fs.readFileSync;
+    fs.readFileSync = (file, ...args) => {
+      if (typeof file === 'string' && /(?:capabilities-index|DISPATCH-FASTPATHS|_index)\\.json$/.test(file)) throw new Error('index loaded');
+      return read(file, ...args);
+    };
+    const ws = require(${JSON.stringify(require.resolve('../src/workspace-context'))});
+    ws.resolveDispatchPlan = ws.resolveToolSafetyPlan = () => { throw new Error('rules invoked'); };
+    require(${JSON.stringify(require.resolve('../src/runtime/jev-client'))}).createJevClient = () => { throw new Error('Jev invoked'); };
+    require('node:child_process').spawnSync = (command) => {
+      if (command !== 'rtk') throw new Error('unexpected subprocess');
+      return { status: 0, stdout: JSON.stringify({hookSpecificOutput:{updatedInput:{command:'rtk ls'}}}) };
+    };
+  `);
+  for (const payload of [{ prompt: 'OK!!!' }, { prompt: '<machine> block' },
+    { hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'ls' } }]) {
+    const output = JSON.parse(execFileSync(process.execPath, ['--require', preload, hook, '--surface=claude', '--rewrite'], {
+      env, encoding: 'utf8', input: JSON.stringify(payload),
+    })).hookSpecificOutput;
+    assert.equal(output.additionalContext, '[Jev] skipped: tier0_trivial');
+    if (payload.tool_input) assert.equal(output.updatedInput.command, 'rtk ls');
+  }
+  const rows = fs.readFileSync(path.join(home, 'logs/myos-dispatch-hooks.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
+  assert.equal(rows.length, 3);
+  assert.ok(rows.every(row => row.branch === 'tier0' && row.jev.skipped === 'tier0_trivial'));
+  assert.equal(fs.existsSync(path.join(home, 'logs/jev-shadow.jsonl')), false);
+});
+
+test('sampled-out prompts retain the route and authority bypasses sampling; tools always run', t => {
+  const env = { ...isolatedEnv(t), MYOS_JEV_PROMPT_SAMPLE: '0' };
+  const home = env.MYOS_HOME_ROOT;
+  const preload = path.join(home, 'sample.cjs');
+  fs.writeFileSync(preload, `require(${JSON.stringify(require.resolve('../src/runtime/jev-client'))}).createJevClient = () => ({
+    isConfigured: () => true, ask: async (_, questions) => ({ok:true, answers:Object.fromEntries(Object.entries(questions).map(([key,q]) => [key,
+      q.type === 'noul' ? {noul:0} : q.type === 'score' ? {score:1,confidence:0.9} : {choice:Object.keys(q.criteria)[0],confidence:0.9}]))})
+  });`);
+  const run = (payload, extra = {}) => execFileSync(process.execPath, ['--require', preload, hook, '--surface=codex'], {
+    env: { ...env, ...extra }, encoding: 'utf8', input: JSON.stringify(payload),
+  });
+  const payload = { prompt: 'Explain the synthetic report format', cwd: home };
+  const skipped = run(payload);
+  assert.match(skipped, /skipped: sampled_out/);
+  assert.equal(run(payload), skipped);
+  assert.equal(run(payload, { MYOS_JEV_ENABLED: '0' }).replace('[Jev] skipped: disabled', '[Jev] skipped: sampled_out'), skipped);
+  const rows = fs.readFileSync(path.join(home, 'logs/myos-dispatch-hooks.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
+  const withoutObservation = ({ at, jev, ...row }) => row;
+  assert.deepEqual(withoutObservation(rows[0]), withoutObservation(rows[2]));
+  assert.equal(fs.existsSync(path.join(home, 'logs/jev-shadow.jsonl')), false);
+  fs.mkdirSync(path.join(home, 'state'), { recursive: true });
+  fs.writeFileSync(path.join(home, 'state/jev-shadow-state.json'), JSON.stringify({ authoritativeFields: ['blockedBy.auth_sensitive'] }));
+  assert.match(run(payload), /engine=jev/);
+  fs.writeFileSync(path.join(home, 'state/jev-shadow-state.json'), JSON.stringify({ authoritativeFields: ['safety.browser_control'] }));
+  run({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'printf hello' } });
+  const ledger = fs.readFileSync(path.join(home, 'logs/jev-shadow.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
+  assert.deepEqual(ledger.map(row => row.event), ['prompt', 'tool']);
+});
+
+test('Jev starts before each rules path and the prompt evidence is collected only once', t => {
+  const env = { ...isolatedEnv(t), MYOS_JEV_STAGE: 'authoritative' };
+  const home = env.MYOS_HOME_ROOT;
+  const preload = path.join(home, 'order.cjs');
+  const orderFile = path.join(home, 'order.json');
+  fs.writeFileSync(preload, `
+    const order = [];
+    require(${JSON.stringify(require.resolve('../src/runtime/jev-client'))}).createJevClient = () => ({
+      isConfigured: () => true, ask: async () => {
+        order.push('ask');
+        await new Promise(resolve => setTimeout(resolve, 100));
+        return {ok:false,reason:'network_error'};
+      }
+    });
+    const ws = require(${JSON.stringify(require.resolve('../src/workspace-context'))});
+    for (const key of ['resolveDispatchPlan','resolveToolSafetyPlan']) {
+      const original = ws[key];
+      ws[key] = (...args) => {
+        if (order[0] !== 'ask') throw new Error('Jev started late');
+        order.push(key);
+        return original(...args);
+      };
+    }
+    ws.collectDispatchSignals = () => { throw new Error('duplicate signal collection'); };
+    process.on('exit', () => require('node:fs').writeFileSync(${JSON.stringify(orderFile)}, JSON.stringify(order)));
+  `);
+  for (const [payload, resolver] of [[{prompt:'Explain the synthetic report'}, 'resolveDispatchPlan'],
+    [{hook_event_name:'PreToolUse',tool_name:'Bash',tool_input:{command:'printf hello'}}, 'resolveToolSafetyPlan']]) {
+    execFileSync(process.execPath, ['--require', preload, hook, '--surface=codex'], {
+      env, encoding: 'utf8', input: JSON.stringify(payload),
+    });
+    assert.deepEqual(JSON.parse(fs.readFileSync(orderFile)), ['ask', resolver]);
+  }
+});
+
+// Frozen legacy label order, captured from the original HEAD hook before accepting the safety-only change.
+const legacyToolLabels = [
+  ['rm -rf ./synthetic-cache', ['approval_sensitive_operation', 'destructive_or_approval_sensitive']],
+  ['printf "rotate api key"', ['approval_sensitive_operation', 'auth_sensitive', 'destructive_or_approval_sensitive']],
+  ['printf "send email to client"', ['user_visible_send']],
+  ['printf "open browser page"', ['browser_control']],
+  ['printf "login github account"', ['interactive_auth_action']],
+  ['printf "update billing account"', ['approval_sensitive_operation', 'payment_or_account_mutation', 'destructive_or_approval_sensitive']],
+  ['printf hello', []],
+];
+
+test('nontrivial tool context preserves the legacy fixture label bytes and order', t => {
+  const env = { ...isolatedEnv(t), MYOS_JEV_ENABLED: '0' };
+  for (const [command, labels] of legacyToolLabels) {
+    const output = execFileSync(process.execPath, [hook, '--surface=codex'], {
+      env, encoding: 'utf8', input: JSON.stringify({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: {command} }),
+    });
+    const expected = labels.length ? JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse',
+      additionalContext: `[MyOS Dispatch tool safety] ${labels.join(', ')}. Respect existing authorization and safety gates.` } }) + '\n' : '';
+    assert.equal(output, expected, command);
   }
 });

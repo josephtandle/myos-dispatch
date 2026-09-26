@@ -7,9 +7,13 @@ const { execFileSync } = require("node:child_process");
 
 // Routing tests exercise credentialed planning without relying on a local login.
 process.env.OPENAI_API_KEY = "fixture-only";
+// Planning only: these tests never execute the returned background tasks.
+process.env.MYOS_BACKGROUND_AGENTS_ENABLED = "1";
 
 function loadWorkspaceContextWithHome(homeDir) {
   process.env.HOME = homeDir;
+  process.env.MYOS_HOME_ROOT = path.join(homeDir, ".myos");
+  process.env.OPENCLAW_HOME_ROOT = process.env.MYOS_HOME_ROOT;
   const dataSourcesConfig = path.join(homeDir, ".myos", "workspace", "data-sources.json");
   if (fs.existsSync(dataSourcesConfig)) {
     process.env.MYOS_DATA_SOURCES_CONFIG = dataSourcesConfig;
@@ -1072,4 +1076,26 @@ test("deep aggression preference does not allocate agents for a status ping", ()
       process.env.MYOS_PARALLELIZATION_AGGRESSION = origEnv;
     }
   }
+});
+
+
+test("tool safety matches full-plan labels including protected project aliases", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "workspace-tool-safety-"));
+  const workspace = path.join(tmpDir, ".myos", "workspace");
+  fs.mkdirSync(path.join(workspace, "projects"), { recursive: true });
+  fs.writeFileSync(path.join(workspace, "projects/_index.json"), JSON.stringify({ projects: {
+    allsorted: { name: "All Sorted", aliases: ["customer console"], path: "allsorted" },
+  } }));
+  fs.writeFileSync(path.join(workspace, "capabilities-index.json"), JSON.stringify({ capabilities: [] }));
+  fs.writeFileSync(path.join(workspace, "DISPATCH-FASTPATHS.json"), JSON.stringify({ fastpaths: [] }));
+  const { resolveToolSafetyPlan, resolveDispatchPlan } = loadWorkspaceContextWithHome(tmpDir);
+  const { compactRoute, toolSafetyLabels } = require("../bin/myos-dispatch-hook");
+  const options = { hookSurface: "codex", hookEventName: "PreToolUse" };
+  for (const command of ["rm -rf ./cache", "rotate api key", "send email to client", "open browser page",
+    "login github account", "update billing account", "cat ./notes", "update customer console"]) {
+    assert.equal(JSON.stringify(toolSafetyLabels(compactRoute(resolveToolSafetyPlan(command, options)))),
+      JSON.stringify(toolSafetyLabels(compactRoute(resolveDispatchPlan(command, options)))), command);
+  }
+  const protectedPlan = resolveToolSafetyPlan("update customer console", options);
+  assert.ok(toolSafetyLabels(compactRoute(protectedPlan)).includes("protected_surface_write"));
 });

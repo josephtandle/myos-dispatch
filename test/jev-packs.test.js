@@ -18,20 +18,13 @@ const signals = {
   projectMatches: Array.from({ length: 8 }, (_, i) => ({ slug: `project-${i}`, name: `Project ${i}` })),
 };
 
-test('prompt state uses real shortlist shape, omits empty fields and bounds data', () => {
-  const pack = buildPromptPack('x'.repeat(7000), signals, { lastDispatchHint: { projectSlug: 'previous' } });
-  assert.equal(pack.state.prompt.length, 6000);
-  assert.equal(pack.state.top_capabilities.length, 6);
-  assert.equal(pack.state.top_projects.length, 4);
-  assert.deepEqual(pack.state.top_capabilities[0], { id: 'cap-0', title: 'Capability 0', summary: 'Does task 0' });
-  assert.equal(pack.state.surface, 'codex');
-  assert.equal(pack.state.is_follow_up, true);
-  assert.equal(pack.state.previous_project, 'previous');
-  const empty = buildPromptPack('hello');
-  assert.deepEqual(empty.state, { prompt: 'hello' });
-  assert.equal(empty.questions.lane, undefined);
-  assert.equal(empty.questions.project, undefined);
-  assert.equal(buildPromptPack('hello', { isFollowUp: false }).state.is_follow_up, false);
+test('prompt pack uses only raw prompt and surface, without shortlist questions', () => {
+  const pack = buildPromptPack('x'.repeat(7000), signals, { surface: 'codex' });
+  assert.deepEqual(pack.state, { prompt: 'x'.repeat(6000), surface: 'codex' });
+  assert.deepEqual(Object.keys(pack.questions), ['intent', 'action', 'goal_scale', 'correction', 'aggression',
+    'browser_control', 'user_visible_send', 'payment_or_account_mutation', 'auth_sensitive',
+    'interactive_auth_action', 'destructive_or_approval_sensitive']);
+  assert.deepEqual(buildPromptPack('hello').state, { prompt: 'hello' });
 });
 
 test('choice criteria are non-empty plain dictionaries and score has four levels', () => {
@@ -46,7 +39,7 @@ test('choice criteria are non-empty plain dictionaries and score has four levels
   }
   assert.equal(pack.questions.goal_scale.criteria.length, 4);
   assert.match(pack.questions.goal_scale.criteria[3], /multi-system/);
-  assert.equal(pack.fields.prompt_injection.planField, null);
+  assert.equal(pack.fields.prompt_injection, undefined);
 });
 
 test('prompt blocker keys match the planner BLOCKERS declaration exactly', () => {
@@ -57,24 +50,16 @@ test('prompt blocker keys match the planner BLOCKERS declaration exactly', () =>
   assert.deepEqual(Object.entries(pack.fields).filter(([, field]) => field.planField?.startsWith('blockedBy.')).map(([key]) => key).sort(), keys);
 });
 
-test('shortlist duplicate and reserved ids cannot replace sentinel criteria', () => {
-  const pack = buildPromptPack('hello', { route: { candidates: [
-    { capability: { id: '__proto__', name: 'Prototype tool' } },
-    { capability: { id: 'none_of_these' } },
-    { capability: { id: '__proto__', name: 'Prototype tool' } },
-  ] }, projectMatches: [{ slug: 'none' }, { slug: 'p' }, { slug: 'p' }] });
-  assert.equal(Object.keys(pack.questions.lane.criteria).length, 2);
-  assert.equal(Object.keys(pack.questions.project.criteria).length, 2);
-  assert.ok(Object.hasOwn(pack.questions.lane.criteria, '__proto__'));
-});
-
-test('tool pack supplies eight gates, hard negatives and only argv paths', () => {
+test('tool pack supplies seven gates, hard negatives and only argv paths', () => {
   const pack = buildToolPack('cat "./path with spaces.txt" --output=/tmp/result https://example.com/health', 'read a file', { cwd: '/repo/src', repoRoot: '/repo' });
   assert.equal(pack.state.cwd_kind, 'repo');
   assert.deepEqual(pack.state.argv_paths, ['./path with spaces.txt', '/tmp/result']);
-  assert.equal(Object.keys(pack.questions).length, 11);
+  assert.equal(Object.keys(pack.questions).length, 8);
   assert.equal(pack.fields.read_only.planField, 'safety.read_only');
-  assert.equal(pack.fields.needs_human.planField, null);
+  for (const key of ['needs_human', 'description_matches_command', 'protected_surface_write']) {
+    assert.equal(pack.fields[key], undefined);
+    assert.equal(pack.questions[key], undefined);
+  }
   assert.match(pack.questions.destructive_or_approval_sensitive.instructions, /grepping for the word rm is not deleting/);
   assert.match(pack.questions.destructive_or_approval_sensitive.instructions, /printing a file that mentions git push --force is not pushing/);
   assert.match(pack.questions.user_visible_send.instructions, /curl to localhost health/);
@@ -86,7 +71,8 @@ test('tool pack supplies eight gates, hard negatives and only argv paths', () =>
 test('rules answers have typed Jev shapes and existing confidence bands', () => {
   const pack = buildPromptPack('work', signals);
   const answers = answersFromRules(pack, { intentType: 'directive', intentConfidence: 'high', actionType: 'write',
-    goalScale: 3, goalConfidence: 'medium', correctionDetected: true, fanoutAggression: 'off',
+    goalScale: 3, goalConfidence: 'medium', parallelizationPlan: { aggression: 'off',
+      executionEnvelope: { features: { intentFidelity: { correctionDetected: true } } } },
     blockedBy: ['auth_sensitive'], executionLane: 'worker_skill', projectSlug: 'project-0' });
   assert.deepEqual(RULES_ENGINE_BANDS, { high: 0.9, medium: 0.7, low: 0.5, none: 0.5 });
   assert.equal(answers.intent.type, 'choice');
@@ -95,7 +81,8 @@ test('rules answers have typed Jev shapes and existing confidence bands', () => 
   assert.equal(answers.goal_scale.score, 2);
   assert.equal(answers.goal_scale.confidence, 0.7);
   assert.equal(Object.keys(answers.goal_scale.legend).length, 4);
-  assert.equal(answers.lane.choice, 'worker_skill');
+  assert.equal(answers.lane, undefined);
+  assert.equal(answers.aggression.choice, 'off');
   assert.deepEqual(answers.auth_sensitive, { type: 'noul', noul: 1 });
   assert.deepEqual(answers.browser_control, { type: 'noul', noul: 0 });
   assert.deepEqual(answers.correction, { type: 'noul', noul: 1 });
@@ -104,13 +91,6 @@ test('rules answers have typed Jev shapes and existing confidence bands', () => 
   }
   assert.equal(answersFromRules(buildToolPack('cat a', 'read'), ['read_only']).read_only.noul, 1);
   assert.equal(answersFromRules(buildToolPack('rm a', 'delete'), { labels: ['destructive_or_approval_sensitive'] }).destructive_or_approval_sensitive.noul, 1);
-});
-
-test('rules fallback retains labels without a mapped plan field', () => {
-  const answers = answersFromRules(buildToolPack('login', 'authenticate'), ['needs_human', 'description_matches_command']);
-  assert.equal(answers.needs_human.noul, 1);
-  assert.equal(answers.description_matches_command.noul, 1);
-  assert.equal(answersFromRules(buildPromptPack('work'), { prompt_injection: true }).prompt_injection.noul, 1);
 });
 
 test('browser criteria explicitly cover macOS URL and application opens', () => {

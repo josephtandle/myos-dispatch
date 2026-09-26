@@ -10,10 +10,12 @@ const { spawnSync, spawn } = require("node:child_process");
 const { createJevClient } = require("../src/runtime/jev-client");
 const { attachJevShadow, attachJevToolSafety } = require("../src/decision/jev-shadow");
 
+const { buildPromptPack, buildToolPack } = require("../src/decision/jev-packs");
+
 const WORKSPACE_ROOT = path.resolve(__dirname, "..");
 const {
   resolveDispatchPlan,
-  collectDispatchSignals,
+  resolveToolSafetyPlan,
 } = require(path.join(WORKSPACE_ROOT, "src/workspace-context"));
 const { preferredHomeRoot, resolveLogsRoot } = require(path.join(WORKSPACE_ROOT, "src/myos-compat"));
 const {
@@ -1311,7 +1313,7 @@ function handlePreToolUse(payload, surface, options = {}) {
     hookEventName: "PreToolUse",
     targetKind: "bash_command",
     text: command,
-    plan: options.plan,
+    plan: options.plan || resolveToolSafetyPlan(command, { hookSurface: surface }),
     contextMode: "none",
     state,
   });
@@ -1354,6 +1356,12 @@ function handleHookPayload(payload, surface = readSurface(), options) {
   const hookEventName = readHookEventName(payload);
   const opts = options || { contextMode: readContextMode(), rewrite: readRewriteEnabled() };
   try {
+    const tool = hookEventName === "PreToolUse";
+    const text = tool ? readCommand(payload) : readPromptText(payload);
+    if ((tool && (!readToolName(payload) || readToolName(payload) === "Bash") && isTier0Command(text))
+      || (hookEventName === "UserPromptSubmit" && isTier0Prompt(text))) {
+      return handleTier0(payload, surface, opts, tool, text);
+    }
     if (hookEventName === "UserPromptSubmit") {
       return handleUserPromptSubmit(payload, surface, opts);
     }
@@ -1412,40 +1420,133 @@ async function finishOutput(text = '') {
   }
 }
 
+const ACKNOWLEDGEMENTS = new Set([
+  "ok", "okay", "yes", "no", "thanks", "thank you", "go", "go ahead", "continue",
+  "keep going", "do it", "sure", "great", "nice", "cool", "got it", "k", "y", "n",
+]);
+const TIER0_COMMANDS = new Set([
+  "ls", "cat", "head", "tail", "grep", "rg", "find", "pwd", "echo", "which", "wc",
+  "stat", "du", "df", "ps", "sysctl", "uname", "date", "whoami", "id",
+]);
+
+function isTier0Prompt(text) {
+  const value = String(text || "").trim();
+  return Boolean(value) && (ACKNOWLEDGEMENTS.has(value.toLowerCase().replace(/[.!?,;:]+$/, "").trim())
+    || /^https?:\/\/[^\s]+$/i.test(value) || /^[<[]/.test(value));
+}
+
+function isTier0Command(command) {
+  let text = String(command || "").trim();
+  // Deliberately conservative shell grammar. Unrecognized syntax takes the safety path.
+  if (!text || /[><`;\n\r\\#()]|\$\(|\b(?:sudo|rm|xargs|tee|curl|ssh)\b|(?:^|\s)-exec/.test(text)) return false;
+  let exported = false;
+  const word = `(?:"[^"\\n]*"|'[^'\\n]*'|[^\\s&|"']+)`;
+  const prefix = new RegExp(`^(cd\\s+${word}|export\\s+[A-Za-z_][A-Za-z0-9_]*=${word})\\s*&&\\s*`);
+  let match;
+  while ((match = text.match(prefix))) {
+    if (/^export\s+(?:LD_|DYLD_|BASH_ENV=|ENV=|SHELLOPTS=|NODE_OPTIONS=|PYTHON|GIT_)/.test(match[1])) return false;
+    exported ||= match[1].startsWith("export ");
+    text = text.slice(match[0].length);
+  }
+  if (/[&$]|\|\|/.test(text)) return false;
+  return text.split("|").every(segment => {
+    const words = segment.trim().match(/"[^"\n]*"|'[^'\n]*'|[^\s"']+/g) || [];
+    if (!words.length) return false;
+    // Quotes in the executable position or malformed quotes are not accepted.
+    if (words.join(" ").replace(/\s+/g, " ") !== segment.trim().replace(/\s+/g, " ")) return false;
+    const verb = words[0];
+    const args = words.slice(1).map(word => word.replace(/^(?:"(.*)"|'(.*)')$/, (_, double, single) => double ?? single));
+    if (["node", "npm", "python3"].includes(verb)) return args.length === 1 && args[0] === "--version";
+    if (verb === "git") {
+      if (exported || !["status", "log", "diff", "show", "branch", "rev-parse"].includes(args[0])) return false;
+      if (args[0] === "branch") return args.length === 1 || args.slice(1).every(arg => ["--list", "-l", "-a", "--all", "-r", "--remotes", "-v", "-vv", "--show-current"].includes(arg));
+      return !args.some(arg => /^--(?:output|ext-diff|textconv|exec-path)(?:=|$)/.test(arg));
+    }
+    if (!TIER0_COMMANDS.has(verb)) return false;
+    // These otherwise read-oriented programs have write/execute flags.
+    if (verb === "find" && args.some(arg => /^-(?:delete|ok|okdir|fprint|fprint0|fprintf|fls)$/.test(arg))) return false;
+    if (verb === "rg" && args.some(arg => /^--(?:pre|hostname-bin)(?:=|$)/.test(arg))) return false;
+    if (verb === "sysctl" && args.some(arg => /^-[wf]/.test(arg) || arg.includes("="))) return false;
+    if (verb === "date" && args.some(arg => !["-u", "--utc", "--universal", "-R", "--rfc-email"].includes(arg) && !arg.startsWith("+"))) return false;
+    return true;
+  });
+}
+
+function handleTier0(payload, surface, options, tool, text) {
+  const jev = { skipped: "tier0_trivial" };
+  appendRouteLog({ at: new Date().toISOString(), surface,
+    hookEventName: tool ? "PreToolUse" : "UserPromptSubmit",
+    targetKind: tool ? "bash_command" : "user_prompt", inputHash: `sha256:${sha256(text)}`,
+    inputLength: text.length, cwd: safeString(payload.cwd || process.cwd()), branch: "tier0",
+    route: { branch: "tier0" }, jev: jevSummary(jev), lanesAutoDispatched: 0, agentCallsObserved: 0 });
+  const updatedInput = tool && options.rewrite ? buildRtkRewrite(payload) : null;
+  return outputHookContext(tool ? "PreToolUse" : "UserPromptSubmit", formatJev(jev),
+    updatedInput ? { updatedInput } : {});
+}
+
+function shouldSamplePrompt(text, state, env = process.env) {
+  if (state.config.authoritativeFields.some(field => !field.startsWith("safety."))) return true;
+  const raw = env.MYOS_JEV_PROMPT_SAMPLE;
+  const parsed = raw == null || raw.trim() === "" ? NaN : Number(raw);
+  const fraction = Number.isFinite(parsed) && parsed >= 0 && parsed <= 1 ? parsed : 0.2;
+  const bucket = parseInt(sha256(text).slice(0, 8), 16) / 0x100000000;
+  return bucket < fraction;
+}
+
 async function prepareJev(payload, surface) {
   const event = readHookEventName(payload);
   const tool = event === "PreToolUse";
   const text = tool ? readCommand(payload) : readPromptText(payload);
   if (!text || (!tool && event !== "UserPromptSubmit") || (!tool && /^h$/i.test(text.trim()))
     || (tool && readToolName(payload) && readToolName(payload) !== "Bash")) return {};
-  const plan = resolveHookPlan(text, { hookSurface: surface, hookEventName: event });
+  if (tool ? isTier0Command(text) : isTier0Prompt(text)) {
+    return { plan: { branch: "tier0", jev: { skipped: "tier0_trivial" } } };
+  }
+
+  let opts, stage, timeoutMs, reason;
+  const input = payload.tool_input || payload.toolInput || {};
+  const context = { cwd: payload.cwd || process.cwd(), surface };
+  if (process.env.MYOS_JEV_ENABLED === "0" || readArg("--no-jev") === "1") reason = "disabled";
+  else try {
+    const files = jevLocations({}, process.env);
+    const state = readJevState(files.stateFile, files.metricsFile);
+    stage = jevStage(state, process.env);
+    if (!tool && !shouldSamplePrompt(text, state)) reason = "sampled_out";
+    else {
+      timeoutMs = jevTimeout(tool);
+      const client = createJevClient({ timeoutMs, maxRetries: 0 });
+      const configured = client.isConfigured();
+      const pack = tool ? buildToolPack(text, input.description || "", context)
+        : buildPromptPack(text, {}, { surface });
+      const decisionStartedAt = Date.now();
+      // Start transport before synchronous rules. Attach comparisons only once the plan exists.
+      const request = configured ? Promise.resolve(client.ask(pack.state, pack.questions))
+        .catch(() => ({ ok: false, reason: "network_error" })) : null;
+      opts = { env: process.env, surface, decisionStartedAt,
+        client: { isConfigured: () => configured, ask: () => request } };
+    }
+  } catch { reason = "internal_error"; }
+
+  const plan = tool ? resolveToolSafetyPlan(text, { hookSurface: surface, hookEventName: event })
+    : resolveHookPlan(text, { hookSurface: surface, hookEventName: event });
   const labels = tool ? toolSafetyLabels(compactRoute(plan)) : [];
-  const fallback = reason => tool ? { plan, toolSafety: { labels, jev: { skipped: reason } } }
-    : { plan: { ...plan, jev: { skipped: reason } } };
-  if (process.env.MYOS_JEV_ENABLED === "0" || readArg("--no-jev") === "1") return fallback("disabled");
+  const fallback = skipped => tool ? { plan, toolSafety: { labels, jev: { skipped } } }
+    : { plan: { ...plan, jev: { skipped } } };
+  if (reason) return fallback(reason);
   try {
-    const timeoutMs = jevTimeout(tool);
-    const jevClient = createJevClient({ timeoutMs, maxRetries: 0 });
-    const opts = { env: process.env, client: jevClient, surface };
     if (tool) {
-      const input = payload.tool_input || payload.toolInput || {};
-      const files = jevLocations({}, process.env);
-      const stage = jevStage(readJevState(files.stateFile, files.metricsFile), process.env);
-      const request = attachJevToolSafety(text, input.description || "", { cwd: payload.cwd || process.cwd(), surface }, labels, opts);
+      const request = attachJevToolSafety(text, input.description || "", context, labels, opts);
       if (stage === 'shadow') {
         pendingJev = request.catch(() => {});
-        pendingJevDeadline = Date.now() + timeoutMs;
+        // Allow the client timeout continuation to append its ledger before forced exit.
+        pendingJevDeadline = opts.decisionStartedAt + timeoutMs + 25;
         return { plan, toolSafety: { labels } };
       }
       const toolSafety = await request;
       return { plan, toolSafety: { ...toolSafety, labels: [...new Set([...labels, ...toolSafety.labels])] } };
     }
-    const signals = jevClient.isConfigured()
-      ? collectDispatchSignals(text, { hookSurface: surface, hookEventName: event }) : {};
-    return { plan: await attachJevShadow(text, plan, signals, opts) };
-  } catch {
-    return fallback("internal_error");
-  }
+    return { plan: await attachJevShadow(text, plan, plan._dispatchSignals || {}, opts) };
+  } catch { return fallback("internal_error"); }
 }
 
 async function renderRouteFromStdin() {
@@ -1453,6 +1554,11 @@ async function renderRouteFromStdin() {
   // is the plain full route block, ready to prepend to an agent prompt.
   const text = readStdin().trim();
   if (!text) return;
+  if (isTier0Prompt(text)) {
+    const output = handleTier0({ prompt: text }, readSurface(), {}, false, text);
+    await finishOutput(`${output.hookSpecificOutput.additionalContext}\n`);
+    return;
+  }
   const { context } = buildDispatchContext({
     surface: readSurface(),
     hookEventName: "UserPromptSubmit",
@@ -1488,6 +1594,10 @@ if (require.main === module) {
 }
 
 module.exports = {
+  isTier0Prompt,
+  isTier0Command,
+  shouldSamplePrompt,
+  prepareJev,
   compactRoute,
   toolSafetyLabels,
   formatDispatchContext,

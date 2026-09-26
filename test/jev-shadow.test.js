@@ -18,7 +18,8 @@ test('shadow module provides prompt, tool and decision entry points', () => {
 });
 
 const legacy = { intentType: 'directive', actionType: 'read', goalScale: 2, goalConfidence: 'medium',
-  fanoutAggression: 'off', correctionDetected: false, blockedBy: ['auth_sensitive', 'custom_gate'], nested: { untouched: true } };
+  fanoutAggression: 'off', correctionDetected: false,
+  parallelizationPlan: { aggression: 'off', executionEnvelope: { features: { intentFidelity: { correctionDetected: false } } } }, blockedBy: ['auth_sensitive', 'custom_gate'], nested: { untouched: true } };
 
 function fixture(t, state = {}, env = {}) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'jev-shadow-test-'));
@@ -61,7 +62,7 @@ test('configured client receives a single complete pack and shadow never overrid
   let asks = 0;
   const opts = fixture(t);
   const result = await attachJevShadow('do work', legacy, { callerProvider: 'codex' }, { ...opts,
-    client: clientFor({}, (state, questions) => { asks++; assert.equal(state.prompt, 'do work'); assert.equal(Object.keys(questions).length, 12); }) });
+    client: clientFor({}, (state, questions) => { asks++; assert.equal(state.prompt, 'do work'); assert.equal(Object.keys(questions).length, 11); }) });
   const { jev, ...plan } = result;
   assert.equal(asks, 1);
   assert.deepEqual(plan, legacy);
@@ -71,13 +72,6 @@ test('configured client receives a single complete pack and shadow never overrid
   assert.equal(jev.comparison.intentType.agrees, true);
   assert.equal(jev.model, 'fake-jev');
   assert.equal(jev.usage.input_tokens, 17);
-});
-
-test('explicit previous project reaches the model state', async (t) => {
-  let observed;
-  await attachJevShadow('continue', legacy, {}, { ...fixture(t), previousProject: 'previous',
-    client: clientFor({}, (state) => { observed = state.previous_project; }) });
-  assert.equal(observed, 'previous');
 });
 
 test('canary is reserved and never overrides prompt fields', async (t) => {
@@ -265,8 +259,8 @@ test('authoritative browser open adds a missing legacy label and records the cha
   assert.deepEqual(result.jev.authoritativeFields, [{ field: 'safety.browser_control', selectedBy: 'jev' }]);
   const entry = JSON.parse(fs.readFileSync(opts.ledgerFile, 'utf8'));
   assert.deepEqual(entry.authoritativeFields, result.jev.authoritativeFields);
-  assert.equal(entry.agree, 8);
-  assert.equal(entry.n, 9);
+  assert.equal(entry.agree, 7);
+  assert.equal(entry.n, 8);
   assert.equal(Object.hasOwn(entry, 'promptText'), false);
 });
 
@@ -320,4 +314,26 @@ test('40 concurrent processes preserve config and expose only complete metrics',
   assert.deepEqual(fs.readFileSync(opts.stateFile), bytes);
   assert.equal(fs.readFileSync(opts.ledgerFile, 'utf8').trim().split('\n').map(JSON.parse).length, 40);
   assert.deepEqual(fs.readdirSync(path.dirname(metricsFile)), ['jev-shadow-metrics.json']);
+});
+
+
+test('realistic nested legacy fields compare and reach the ledger', async t => {
+  const opts = fixture(t);
+  const plan = { intentType: 'directive', actionType: 'write', goalScale: 3, goalConfidence: 0.96,
+    parallelizationPlan: { aggression: 'deep', executionEnvelope: {
+      features: { intentFidelity: { correctionDetected: true } } } },
+    route: { lane: 'worker_skill' }, blockedBy: [] };
+  const result = await attachJevShadow('No, fix the report', plan, {}, { ...opts, client: clientFor({
+    correction: { noul: 1 }, aggression: { choice: 'deep', confidence: 0.96 },
+  }) });
+  for (const field of ['parallelizationPlan.executionEnvelope.features.intentFidelity.correctionDetected', 'parallelizationPlan.aggression']) {
+    assert.equal(result.jev.comparison[field].agrees, true, field);
+    assert.deepEqual(JSON.parse(fs.readFileSync(opts.ledgerFile)).legacy[field], result.jev.comparison[field].legacy);
+  }
+  // Lane is no longer asked in the production pack; existing/custom packs still resolve dotted paths.
+  const pack = { fields: { lane: { kind: 'choice', planField: 'route.lane' } },
+    questions: { lane: { criteria: { worker_skill: 'worker', other: 'other' } } } };
+  const answers = answersFromRules(pack, plan);
+  assert.equal(answers.lane.choice, 'worker_skill');
+  assert.equal(shadow.compare(pack, answers, plan, 'jev', false)['route.lane'].agrees, true);
 });

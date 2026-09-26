@@ -3,7 +3,7 @@
 const { locations, readState, effectiveStage, writeMetrics, appendLedger } = require('./jev-state');
 const { createHash } = require('node:crypto');
 const { isDeepStrictEqual } = require('node:util');
-const { buildPromptPack, buildToolPack, answersFromRules } = require('./jev-packs');
+const { buildPromptPack, buildToolPack, answersFromRules, legacyValue } = require('./jev-packs');
 
 function now(clock) {
   return Number(typeof clock === 'function' ? clock() : clock?.now ? clock.now() : Date.now());
@@ -25,8 +25,8 @@ function validAnswers(pack, answers) {
   });
 }
 
-async function resolveDecisions(pack, { client, legacy = {}, clock } = {}) {
-  const started = now(clock);
+async function resolveDecisions(pack, { client, legacy = {}, clock, decisionStartedAt } = {}) {
+  const started = decisionStartedAt ?? now(clock);
   let result;
   try {
     if (!client?.isConfigured()) result = { ok: false, reason: 'typesafe_key_missing' };
@@ -43,11 +43,7 @@ async function resolveDecisions(pack, { client, legacy = {}, clock } = {}) {
 }
 
 function legacyField(legacy, field) {
-  const [parent, key] = field.split('.');
-  if (parent === 'blockedBy') return Array.isArray(legacy.blockedBy)
-    ? legacy.blockedBy.includes(key) : Boolean(legacy.blockedBy?.[key]);
-  if (parent === 'safety') return legacy.labels.includes(key);
-  return legacy[field] ?? null;
+  return legacyValue(legacy, field) ?? null;
 }
 
 function compare(pack, answers, legacy, engine, tool) {
@@ -146,4 +142,4 @@ async function attachJevToolSafety(command, description, context = {}, legacyLab
   return attach(buildToolPack(command, description, context), command, legacy, { ...opts, surface: opts.surface || context.surface }, true);
 }
 
-module.exports = { resolveDecisions, attachJevShadow, attachJevToolSafety, recordComparison };
+module.exports = { resolveDecisions, attachJevShadow, attachJevToolSafety, recordComparison, compare };
