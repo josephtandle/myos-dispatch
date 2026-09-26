@@ -159,6 +159,9 @@ test('ledger hashes full prompt, omits text by default and retains probabilities
   assert.equal(Object.hasOwn(entry, 'promptText'), false);
   assert.equal(entry.surface, 'codex');
   assert.equal(entry.event, 'prompt');
+  assert.deepEqual(entry.authoritativeFields, []);
+  assert.equal(entry.n, Object.keys(entry.legacy).length);
+  assert.equal(entry.agree, 9);
   assert.equal(entry.ts, new Date(1000).toISOString());
   assert.equal(entry.inputTokens, 17);
   assert.deepEqual(entry.decided.goal_scale.probabilities, { 3: 0.96 });
@@ -249,4 +252,18 @@ test('live zero-based fractional scores are accepted and mapped to goal scale', 
   assert.equal(result.skipped, undefined);
   const plan = await attachJevShadow('synthetic work', legacy, {}, { ...fixture(t), client });
   assert.equal(plan.jev.comparison.goalScale.decided, Math.round(live.answers.goal_scale.score) + 1);
+});
+
+test('authoritative browser open adds a missing legacy label and records the change', async (t) => {
+  const opts = fixture(t, { stage: 'authoritative', authoritativeFields: ['safety.browser_control'], floors: { 'safety.browser_control': 0.7 } });
+  const result = await attachJevToolSafety('open https://console.typesafe.ai/usage', 'Open the usage page', {}, [], {
+    ...opts, client: clientFor({ browser_control: { type: 'noul', noul: 0.95 } }),
+  });
+  assert.deepEqual(result.labels, ['browser_control']);
+  assert.deepEqual(result.jev.authoritativeFields, [{ field: 'safety.browser_control', selectedBy: 'jev' }]);
+  const entry = JSON.parse(fs.readFileSync(opts.ledgerFile, 'utf8'));
+  assert.deepEqual(entry.authoritativeFields, result.jev.authoritativeFields);
+  assert.equal(entry.agree, 8);
+  assert.equal(entry.n, 9);
+  assert.equal(Object.hasOwn(entry, 'promptText'), false);
 });

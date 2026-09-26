@@ -22,6 +22,15 @@ test('rules evaluator reports corpus accuracy, label scores and reliability with
   assert.ok(report.tools.engines.rules);
   assert.ok(report.tools.engines.incumbent);
   assert.equal(report.tools.reliability.rules.read_only.reliability.length, 10);
+  for (const [engine, labels] of Object.entries(report.tools.reliability)) {
+    for (const [label, metrics] of Object.entries(labels)) {
+      assert.equal(metrics.reliability.length, 10, `${engine}:${label}`);
+      assert.equal(metrics.reliability.reduce((sum, bin) => sum + bin.n, 0), report.tools.n, `${engine}:${label}`);
+      assert.equal(metrics.reliability[9].n, report.tools.n);
+      const scores = report.tools.engines[engine][label];
+      assert.equal(metrics.reliability[9].empiricalAgreement, (report.tools.n - scores.fp - scores.fn) / report.tools.n);
+    }
+  }
   assert.equal(typeof report.tools.engines.rules.user_visible_send.f1, 'number');
   assert.deepEqual(report.eligibleFields, []);
   const limited = JSON.parse(execFileSync(process.execPath, [...args, '--limit', '2', '--field', 'actionType'], { env, encoding: 'utf8' }));

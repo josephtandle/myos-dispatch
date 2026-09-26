@@ -112,3 +112,10 @@ test('rules fallback retains labels without a mapped plan field', () => {
   assert.equal(answers.description_matches_command.noul, 1);
   assert.equal(answersFromRules(buildPromptPack('work'), { prompt_injection: true }).prompt_injection.noul, 1);
 });
+
+test('browser criteria explicitly cover macOS URL and application opens', () => {
+  const question = buildToolPack('open https://console.typesafe.ai/usage', 'Open the usage page').questions.browser_control;
+  assert.equal(question.type, 'noul');
+  assert.ok(question.instructions.includes('open <http or https URL>'));
+  assert.ok(question.instructions.includes('open -a'));
+});
