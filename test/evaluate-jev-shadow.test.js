@@ -46,6 +46,24 @@ test('rules evaluator reports corpus accuracy, label scores and reliability with
   const ledger = JSON.parse(execFileSync(process.execPath, [script, '--json'], { env, encoding: 'utf8' }));
   assert.equal(ledger.ledger.fields.goalScale.agreement, 1);
   assert.equal(ledger.ledger.fields.goalScale.meanConfidence, 0.89);
-  assert.equal(ledger.ledger.fields.goalScale.reliability[9].n, 200);
-  assert.deepEqual(ledger.eligibleFields, ['goalScale']);
+  assert.equal(ledger.ledger.fields.goalScale.reliability[8].n, 1);
+  assert.deepEqual(ledger.eligibleFields, []);
+});
+
+test('evaluator reads directories and globs with a global limit and excludes rules self-agreement', t => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'jev-ledgers-'));
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  const row = { event: 'prompt', engine: 'jev', legacy: { actionType: 'read' }, decided: { action: { choice: 'read', confidence: 0.95 } } };
+  fs.writeFileSync(path.join(home, 'jev-shadow.20260926-010101.jsonl'), Array(200).fill(JSON.stringify(row)).join('\n') + '\n');
+  fs.writeFileSync(path.join(home, 'jev-shadow.jsonl'), JSON.stringify(row) + '\n' + JSON.stringify({ ...row, engine: 'rules' }) + '\n');
+  fs.writeFileSync(path.join(home, 'unrelated.jsonl'), 'not JSON');
+  const env = { ...process.env, MYOS_HOME_ROOT: home, MYOS_WORKSPACE_ROOT: home, OPENCLAW_HOME_ROOT: home, MYOS_JEV_ENABLED: '0' };
+  for (const input of [home, path.join(home, 'jev-shadow*.jsonl')]) {
+    const args = [path.resolve(__dirname, '../scripts/evaluate-jev-shadow.js'), '--ledger', input, '--json'];
+    const report = JSON.parse(execFileSync(process.execPath, args, { env, encoding: 'utf8' }));
+    assert.equal(report.ledger.fields.actionType.n, 201);
+    assert.deepEqual(report.eligibleFields, ['actionType']);
+    const limited = JSON.parse(execFileSync(process.execPath, [...args, '--limit', '2'], { env, encoding: 'utf8' }));
+    assert.equal(limited.ledger.fields.actionType.n, 2);
+  }
 });
