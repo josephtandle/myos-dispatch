@@ -902,6 +902,23 @@ function attachShadowDispatch(query, legacyPlan, signals, options = {}) {
   return result;
 }
 
+function resolveToolSafetyMetadata(command, options = {}) {
+  const env = options.env || process.env;
+  const actionType = inferActionType(command);
+  const goal = inferGoalScale(command, { actionType });
+  const text = normalizeText(command).replace(/\s+/g, " ").trim();
+  const blockedReasons = detectBlockedReasons(text, { ...options, actionType });
+  const { backgroundAgentsDisabled } = require("./env-context");
+  const { sidecarOffReason } = require("./sidecar-policy");
+  const { buildExecutionEnvelope } = require("./orchestration/execution-envelope");
+  if (backgroundAgentsDisabled(env)) blockedReasons.push("background_agents_disabled");
+  const offReason = sidecarOffReason(env, options.callerProvider || options.hookSurface);
+  if (offReason) blockedReasons.push(offReason);
+  const taskClass = options.taskClass || (actionType === "write" ? "default_automation" : actionType === "read" ? "cheap_routing" : null);
+  const executionEnvelope = buildExecutionEnvelope(text, { ...goal, actionType }, { env, blockedReasons, taskClass });
+  return { blockedBy: goal.blockedBy, parallelizationPlan: { blockedReasons, executionEnvelope } };
+}
+
 function resolveToolSafetyPlan(command, options = {}) {
   // Protected-project writes depend on project ownership, not just blocker regexes.
   // Preserve that rare legacy gate instead of silently dropping a safety label.
@@ -909,14 +926,8 @@ function resolveToolSafetyPlan(command, options = {}) {
     const protectedProjects = loadProjectIndex().filter(project => ["allsorted", "goldenclaw"].includes(project.slug));
     if (matchProjects(command, protectedProjects).length) return resolveDispatchPlan(command, options);
   }
-  // Reuse the goal classifier's approval predicate without running routing or fanout.
-  const blockedBy = inferGoalScale(command).blockedBy;
-  const text = normalizeText(command).replace(/\s+/g, " ").trim();
-  const blockedReasons = detectBlockedReasons(text, options);
-  const { sidecarOffReason } = require("./sidecar-policy");
-  const offReason = sidecarOffReason(options.env || process.env, options.callerProvider || options.hookSurface);
-  if (offReason) blockedReasons.push(offReason);
-  return { branch: "tool_safety", blockedBy, parallelizationPlan: { blockedReasons } };
+  // Retain the intent contracts using only local classifiers, without routing or fanout.
+  return { branch: "tool_safety", ...resolveToolSafetyMetadata(command, options) };
 }
 
 function resolveDispatchPlan(query, options = {}) {
@@ -1427,6 +1438,7 @@ module.exports = {
   formatDispatchShadowComparison,
   resolveDispatchPlan,
   resolveToolSafetyPlan,
+  resolveToolSafetyMetadata,
   buildWorkspaceContextBundle,
   buildFastpathSections,
   inferFastpathTargetType,

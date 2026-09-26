@@ -218,16 +218,13 @@ test('tier0 bypasses indexes, rules and Jev while retaining logging and RTK rewr
       return { status: 0, stdout: JSON.stringify({hookSpecificOutput:{updatedInput:{command:'rtk ls'}}}) };
     };
   `);
-  for (const payload of [{ prompt: 'OK!!!' }, { prompt: '<machine> block' },
-    { hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'ls' } }]) {
-    const output = JSON.parse(execFileSync(process.execPath, ['--require', preload, hook, '--surface=claude', '--rewrite'], {
-      env, encoding: 'utf8', input: JSON.stringify(payload),
-    })).hookSpecificOutput;
-    assert.equal(output.additionalContext, '[Jev] skipped: tier0_trivial');
-    if (payload.tool_input) assert.equal(output.updatedInput.command, 'rtk ls');
-  }
+  const payload = { hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'ls' } };
+  const output = JSON.parse(execFileSync(process.execPath, ['--require', preload, hook, '--surface=claude', '--rewrite'], {
+    env, encoding: 'utf8', input: JSON.stringify(payload),
+  })).hookSpecificOutput;
+  assert.deepEqual(output, { hookEventName: 'PreToolUse', updatedInput: { command: 'rtk ls' } });
   const rows = fs.readFileSync(path.join(home, 'logs/myos-dispatch-hooks.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
-  assert.equal(rows.length, 3);
+  assert.equal(rows.length, 1);
   assert.ok(rows.every(row => row.branch === 'tier0' && row.jev.skipped === 'tier0_trivial'));
   assert.equal(fs.existsSync(path.join(home, 'logs/jev-shadow.jsonl')), false);
 });

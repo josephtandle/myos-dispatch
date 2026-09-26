@@ -16,6 +16,7 @@ const WORKSPACE_ROOT = path.resolve(__dirname, "..");
 const {
   resolveDispatchPlan,
   resolveToolSafetyPlan,
+  resolveToolSafetyMetadata,
 } = require(path.join(WORKSPACE_ROOT, "src/workspace-context"));
 const { preferredHomeRoot, resolveLogsRoot } = require(path.join(WORKSPACE_ROOT, "src/myos-compat"));
 const {
@@ -1358,9 +1359,8 @@ function handleHookPayload(payload, surface = readSurface(), options) {
   try {
     const tool = hookEventName === "PreToolUse";
     const text = tool ? readCommand(payload) : readPromptText(payload);
-    if ((tool && (!readToolName(payload) || readToolName(payload) === "Bash") && isTier0Command(text))
-      || (hookEventName === "UserPromptSubmit" && isTier0Prompt(text))) {
-      return handleTier0(payload, surface, opts, tool, text);
+    if (tool && (!readToolName(payload) || readToolName(payload) === "Bash") && isTier0Command(text)) {
+      return handleTier0(payload, surface, opts, text);
     }
     if (hookEventName === "UserPromptSubmit") {
       return handleUserPromptSubmit(payload, surface, opts);
@@ -1420,20 +1420,10 @@ async function finishOutput(text = '') {
   }
 }
 
-const ACKNOWLEDGEMENTS = new Set([
-  "ok", "okay", "yes", "no", "thanks", "thank you", "go", "go ahead", "continue",
-  "keep going", "do it", "sure", "great", "nice", "cool", "got it", "k", "y", "n",
-]);
 const TIER0_COMMANDS = new Set([
   "ls", "cat", "head", "tail", "grep", "rg", "find", "pwd", "echo", "which", "wc",
   "stat", "du", "df", "ps", "sysctl", "uname", "date", "whoami", "id",
 ]);
-
-function isTier0Prompt(text) {
-  const value = String(text || "").trim();
-  return Boolean(value) && (ACKNOWLEDGEMENTS.has(value.toLowerCase().replace(/[.!?,;:]+$/, "").trim())
-    || /^https?:\/\/[^\s]+$/i.test(value) || /^[<[]/.test(value));
-}
 
 function isTier0Command(command) {
   let text = String(command || "").trim();
@@ -1472,16 +1462,17 @@ function isTier0Command(command) {
   });
 }
 
-function handleTier0(payload, surface, options, tool, text) {
+function handleTier0(payload, surface, options, text) {
   const jev = { skipped: "tier0_trivial" };
+  const metadata = resolveToolSafetyMetadata(text, { hookSurface: surface });
+  const { intentFidelity, intentHorizon } = metadata.parallelizationPlan.executionEnvelope.features;
   appendRouteLog({ at: new Date().toISOString(), surface,
-    hookEventName: tool ? "PreToolUse" : "UserPromptSubmit",
-    targetKind: tool ? "bash_command" : "user_prompt", inputHash: `sha256:${sha256(text)}`,
+    hookEventName: "PreToolUse", targetKind: "bash_command", inputHash: `sha256:${sha256(text)}`,
     inputLength: text.length, cwd: safeString(payload.cwd || process.cwd()), branch: "tier0",
-    route: { branch: "tier0" }, jev: jevSummary(jev), lanesAutoDispatched: 0, agentCallsObserved: 0 });
-  const updatedInput = tool && options.rewrite ? buildRtkRewrite(payload) : null;
-  return outputHookContext(tool ? "PreToolUse" : "UserPromptSubmit", formatJev(jev),
-    updatedInput ? { updatedInput } : {});
+    route: { branch: "tier0" }, jev: jevSummary(jev), intentFidelity, intentHorizon,
+    lanesAutoDispatched: 0, agentCallsObserved: 0 });
+  const updatedInput = options.rewrite ? buildRtkRewrite(payload) : null;
+  return updatedInput ? outputHookContext("PreToolUse", "", { updatedInput }) : null;
 }
 
 function shouldSamplePrompt(text, state, env = process.env) {
@@ -1499,7 +1490,7 @@ async function prepareJev(payload, surface) {
   const text = tool ? readCommand(payload) : readPromptText(payload);
   if (!text || (!tool && event !== "UserPromptSubmit") || (!tool && /^h$/i.test(text.trim()))
     || (tool && readToolName(payload) && readToolName(payload) !== "Bash")) return {};
-  if (tool ? isTier0Command(text) : isTier0Prompt(text)) {
+  if (tool && isTier0Command(text)) {
     return { plan: { branch: "tier0", jev: { skipped: "tier0_trivial" } } };
   }
 
@@ -1554,11 +1545,6 @@ async function renderRouteFromStdin() {
   // is the plain full route block, ready to prepend to an agent prompt.
   const text = readStdin().trim();
   if (!text) return;
-  if (isTier0Prompt(text)) {
-    const output = handleTier0({ prompt: text }, readSurface(), {}, false, text);
-    await finishOutput(`${output.hookSpecificOutput.additionalContext}\n`);
-    return;
-  }
   const { context } = buildDispatchContext({
     surface: readSurface(),
     hookEventName: "UserPromptSubmit",
@@ -1594,7 +1580,6 @@ if (require.main === module) {
 }
 
 module.exports = {
-  isTier0Prompt,
   isTier0Command,
   shouldSamplePrompt,
   prepareJev,

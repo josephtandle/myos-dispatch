@@ -40,11 +40,11 @@ Prompt route context has one Jev status line after the Intent Fidelity/Horizon l
 
 ## Tier-0
 
-Trivial prompts are exactly the case-insensitive acknowledgement set `ok`, `okay`, `yes`, `no`, `thanks`, `thank you`, `go`, `go ahead`, `continue`, `keep going`, `do it`, `sure`, `great`, `nice`, `cool`, `got it`, `k`, `y`, `n` (trailing punctuation ignored), a bare HTTP(S) URL, or text starting with `<` or `[`. Word count is never a triviality test. Short directives such as "red lighting" and "mute Mac studio" still route normally. The existing `h` ping shortcut is unchanged.
+Tier-0 applies to Bash PreToolUse events only. Prompts never take a tier-0 path: every UserPromptSubmit runs the normal route (with prompt sampling as configured), so acknowledgements such as "ok" or "go" still get the same route context the pre-Jev hook produced. Word count is never a triviality test.
 
 Commands must be simple allow-listed pipelines after removing `cd X &&` and `export X=Y &&` prefixes. Allowed verbs are `ls`, `cat`, `head`, `tail`, `grep`, `rg`, `find`, `pwd`, `echo`, `which`, `wc`, `stat`, `du`, `df`, `ps`, `sysctl`, `uname`, `date`, `whoami`, `id`; env-free `git status|log|diff|show|branch|rev-parse`; and exact `node --version`, `npm --version`, `python3 --version`. Redirects, substitutions, backticks, command separators, sudo, rm, xargs, -exec, tee, curl and ssh disqualify the command. Ambiguous shell syntax and known write/execute flags such as `find -delete`, `git branch -D`, `git diff --output`, `rg --pre`, and loader-related export prefixes also take the normal safety path. Quoted flags receive the same checks.
 
-Tier-0 events skip indexes, shadow planning and Jev, print `[Jev] skipped: tier0_trivial`, and retain one route-log row with `branch: "tier0"`. Tool events still apply the existing opt-in RTK rewrite.
+A tier-0 tool event is invisible on stdout: it prints exactly what the pre-Jev hook printed for that command (nothing on Codex, nothing on Claude unless the opt-in RTK rewrite applies, in which case only the `updatedInput` is emitted). No `[Jev]` line and no context block is injected, so route-context dedupe and footer behaviour are unaffected. The only trace is one route-log row with `branch: "tier0"`, `jev.skipped: "tier0_trivial"`, and the same `intentFidelity` and `intentHorizon` contracts every tool row carries. Tier-0 skips indexes, shadow planning and Jev, so it costs no network call.
 
 ## Efficiency
 
