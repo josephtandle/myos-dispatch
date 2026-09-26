@@ -1,0 +1,9 @@
+{
+  "enabled": false,
+  "port": 8140,
+  "issuer": "https://identity.example",
+  "resource": "https://atelier.example/mcp",
+  "jwksUri": "https://identity.example/.well-known/jwks.json",
+  "registryPath": "/absolute/private/atelier-portfolio.json",
+  "policyPath": "/absolute/private/atelier-grants.json"
+}
