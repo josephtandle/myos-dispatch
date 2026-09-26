@@ -2,7 +2,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { execFileSync } = require("node:child_process");
 const { readJsonCached } = require("./json-cache");
-const { shortlistCapabilities, selectExecutionLane } = require("./capability-router");
+const { loadCapabilityIndex, shortlistCapabilities, selectExecutionLane } = require("./capability-router");
 const { inferGoalScale } = require("./goal-scale");
 const { buildParallelizationPlan } = require("./parallelization-planner");
 const { homeDir, resolveWorkspacePath, resolveWorkspaceRoot } = require("./myos-compat");
@@ -247,6 +247,56 @@ function matchFastpaths(query, maxMatches = 3, filePath = FASTPATHS_FILE) {
     .filter((entry) => entry.score > 0)
     .sort((a, b) => b.score - a.score)
     .slice(0, maxMatches);
+}
+
+function matchRecipes(query, options = {}) {
+  if (options.recipesFirst === false) return [];
+  const promptWords = String(query || "").trim().split(/\s+/).length;
+  const index = loadCapabilityIndex(options);
+  return index.capabilities
+    .filter((capability) => capability.type === "recipe")
+    .map((capability) => {
+      const phrase = [capability.phrases, capability.aliases, capability.use_when]
+        .flatMap((phrases) => Array.isArray(phrases) ? phrases : [])
+        .filter((phrase) => typeof phrase === "string")
+        .map((phrase) => phrase.trim())
+        .filter((phrase) => {
+          const phraseWords = phrase.split(/\s+/).length;
+          return phraseWords >= 2 && promptWords <= phraseWords + 8 && hasFastpathTerm(query, phrase);
+        })
+        .sort((a, b) => b.length - a.length)[0];
+      return phrase ? {
+        capabilityId: capability.id,
+        phrase,
+        score: 100,
+        sourcePath: toWorkspacePath(capability.source_path, capability.scan_dir || index.scan_dir),
+      } : null;
+    })
+    .filter(Boolean)
+    .sort((a, b) => b.phrase.length - a.phrase.length)
+    .slice(0, 3);
+}
+
+function buildRecipeDispatchPlan(signals) {
+  return {
+    branch: "recipe",
+    intentType: signals.intentType,
+    actionType: signals.actionType,
+    stopAfterMatch: true,
+    allowBroadSearch: false,
+    projectSlug: null,
+    projectRecipeFirst: true,
+    serviceAgents: [],
+    searchScope: toWorkspacePath(signals.recipeMatches[0].sourcePath),
+    capabilityId: signals.recipeMatches[0].capabilityId,
+    fastpathMatches: signals.fastpathMatches,
+    projectMatches: signals.projectMatches,
+    route: {
+      lane: "recipe_dispatcher",
+      reason: "recipe_exact_match",
+      candidates: signals.recipeMatches,
+    },
+  };
 }
 
 function firstFastpathPath(fastpath = {}) {
@@ -557,6 +607,7 @@ function chooseSourceOwner({ query, actionType, projectMatches, dataSources, rou
 
 function collectDispatchSignals(query, options = {}) {
   const startedAt = Date.now();
+  const recipeMatches = matchRecipes(query, options);
   const dataSourceOptions = options.dataSourceOptions || {};
   const fastpathMatches = matchFastpaths(query, 3);
   const projects = loadProjectIndex();
@@ -588,6 +639,7 @@ function collectDispatchSignals(query, options = {}) {
     actionType,
     isFollowUp,
     isRoutingComplaint,
+    recipeMatches,
     fastpathMatches,
     fastpathEvidence: fastpathMatches.map(normalizeFastpathEvidence),
     projects,
@@ -618,6 +670,14 @@ function inferShadowExecutionLane(signals, owner) {
 }
 
 function buildTypedEvidenceDispatchPlan(signals) {
+  if (signals.recipeMatches?.[0]) {
+    return finalizeDispatchPlan(signals.query, {
+      ...buildRecipeDispatchPlan(signals),
+      authoritative: false,
+      executionLane: "recipe_dispatcher",
+      timingMs: signals.timingMs,
+    }, signals);
+  }
   const primaryProject = signals.projectMatches[0] || null;
   const owner = chooseSourceOwner({
     query: signals.query,
@@ -845,6 +905,10 @@ function resolveDispatchPlan(query, options = {}) {
     dataSourceOptions,
   } = signals;
   const finalizePlan = (plan) => finalizeDispatchPlan(query, plan, signals);
+
+  if (signals.recipeMatches[0]) {
+    return attachShadowDispatch(query, finalizePlan(buildRecipeDispatchPlan(signals)), signals, options);
+  }
 
   const primaryFastpath = fastpathMatches[0]?.fastpath || null;
   if (primaryFastpath) {
@@ -1344,6 +1408,7 @@ module.exports = {
   listProjectRecipes,
   loadFastpaths,
   matchFastpaths,
+  matchRecipes,
   matchProjects,
   normalizeProjectEntries,
   scoreFastpath,

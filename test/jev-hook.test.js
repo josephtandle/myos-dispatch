@@ -104,3 +104,96 @@ test('PreToolUse renders an authoritative Jev label when legacy safety is empty'
   const entry = JSON.parse(fs.readFileSync(path.join(home, 'logs/jev-shadow.jsonl'), 'utf8'));
   assert.equal(entry.legacy['safety.browser_control'], false);
 });
+
+function isolatedEnv(t) {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'jev-hook-bounds-'));
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  return { ...process.env, MYOS_HOME_ROOT: home, OPENCLAW_HOME_ROOT: home, MYOS_WORKSPACE_ROOT: home,
+    MYOS_DISPATCH_HOOK_LOG_DIR: path.join(home, 'logs'), MYOS_BACKGROUND_AGENTS_ENABLED: '0', MYOS_AUTO_FANOUT: '0',
+    MYOS_JEV_ENABLED: '1', MYOS_JEV_STAGE: 'shadow', TYPESAFE_API_KEY: 'synthetic' };
+}
+
+test('malformed stdin retains exit 1 and a stack on stderr', t => {
+  const { spawnSync } = require('node:child_process');
+  const result = spawnSync(process.execPath, [hook], { input: '{broken', encoding: 'utf8', env: isolatedEnv(t) });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /SyntaxError/);
+  assert.match(result.stderr, /at /);
+});
+
+test('hung transport exits within twice the tool budget after flushing stdout', async t => {
+  const { spawn } = require('node:child_process');
+  const env = { ...isolatedEnv(t), MYOS_JEV_TEST_HANG: '1', MYOS_JEV_TOOL_TIMEOUT_MS: '900' };
+  const started = Date.now();
+  const result = await new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [hook, '--surface=codex'], { env, timeout: 1800 });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', chunk => { stdout += chunk; });
+    child.stderr.on('data', chunk => { stderr += chunk; });
+    child.on('error', reject);
+    child.on('close', (status, signal) => resolve({ status, signal, stdout, stderr }));
+    child.stdin.end(JSON.stringify({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'rm -rf ./synthetic-cache' }, cwd: env.MYOS_HOME_ROOT }));
+  });
+  const elapsed = Date.now() - started;
+  t.diagnostic(`hang hook exit: ${elapsed} ms (900 ms tool budget)`);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.signal, null);
+  JSON.parse(result.stdout);
+  assert.ok(elapsed < 1800, `hook exited in ${elapsed} ms`);
+  const ledger = JSON.parse(fs.readFileSync(path.join(env.MYOS_HOME_ROOT, 'logs/jev-shadow.jsonl')));
+  assert.equal(ledger.skipped, 'timeout');
+});
+
+test('shadow flushes before completion, authority waits, and both append the ledger', async t => {
+  const { spawn } = require('node:child_process');
+  for (const stage of ['shadow', 'authoritative']) {
+    const env = { ...isolatedEnv(t), MYOS_JEV_STAGE: stage, MYOS_JEV_TOOL_TIMEOUT_MS: '900' };
+    const home = env.MYOS_HOME_ROOT;
+    const preload = path.join(home, 'preload.cjs');
+    fs.mkdirSync(path.join(home, 'state'));
+    fs.writeFileSync(path.join(home, 'state/jev-shadow-state.json'), JSON.stringify({ authoritativeFields: ['safety.browser_control'] }));
+    fs.writeFileSync(preload, `require(${JSON.stringify(require.resolve('../src/runtime/jev-client'))}).createJevClient = () => ({
+      isConfigured: () => true, ask: async (_, questions) => {
+        await new Promise(resolve => setTimeout(resolve, 400));
+        require('node:fs').writeFileSync(${JSON.stringify(path.join(home, 'completed'))}, 'yes');
+        return { ok: true, answers: Object.fromEntries(Object.keys(questions).map(key => [key, { noul: key === 'browser_control' ? 1 : 0 }])) };
+      }
+    });`);
+    let completedAtOutput;
+    const output = await new Promise((resolve, reject) => {
+      const child = spawn(process.execPath, ['--require', preload, hook, '--surface=codex'], { env, timeout: 3000 });
+      let text = '';
+      child.stdout.on('data', chunk => {
+        completedAtOutput ??= fs.existsSync(path.join(home, 'completed'));
+        text += chunk;
+      });
+      child.on('error', reject);
+      child.on('close', code => code === 0 ? resolve(text) : reject(new Error(`exit ${code}`)));
+      child.stdin.end(JSON.stringify({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'rm -rf ./synthetic-cache' }, cwd: home }));
+    });
+    assert.equal(completedAtOutput, stage === 'authoritative');
+    if (stage === 'authoritative') assert.match(output, /tool safety.*browser_control/);
+    else assert.doesNotMatch(output, /browser_control/);
+    assert.equal(JSON.parse(fs.readFileSync(path.join(home, 'logs/jev-shadow.jsonl'))).engine, 'jev');
+  }
+});
+
+test('prompt and tool timeout settings have separate defaults and clamp to 200..2500', t => {
+  const env = isolatedEnv(t);
+  const preload = path.join(env.MYOS_HOME_ROOT, 'preload.cjs');
+  const observed = path.join(env.MYOS_HOME_ROOT, 'timeout.json');
+  fs.writeFileSync(preload, `require(${JSON.stringify(require.resolve('../src/runtime/jev-client'))}).createJevClient = opts => {
+    require('node:fs').writeFileSync(${JSON.stringify(observed)}, JSON.stringify(opts));
+    return { isConfigured: () => false };
+  };`);
+  for (const tool of [false, true]) for (const [raw, expected] of [[undefined, tool ? 900 : 1500], ['4000', 2500], ['-1', 200], ['0', 200]]) {
+    const local = { ...env };
+    delete local.MYOS_JEV_TIMEOUT_MS;
+    delete local.MYOS_JEV_TOOL_TIMEOUT_MS;
+    if (raw !== undefined) local[tool ? 'MYOS_JEV_TOOL_TIMEOUT_MS' : 'MYOS_JEV_TIMEOUT_MS'] = raw;
+    const payload = tool ? { hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'printf hello' } } : { prompt: 'Explain a report' };
+    execFileSync(process.execPath, ['--require', preload, hook], { env: local, input: JSON.stringify(payload) });
+    assert.equal(JSON.parse(fs.readFileSync(observed)).timeoutMs, expected);
+  }
+});

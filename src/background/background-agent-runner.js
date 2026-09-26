@@ -25,7 +25,6 @@ const EXECUTION_MODES = Object.freeze({
 const LEGACY_METADATA_ONLY_MODES = new Set(["observe"]);
 const DEFAULT_TIMEOUT_MS = 180 * 1000;
 const DEFAULT_MAX_CONCURRENT_SIDECARS = 4;
-const DEFAULT_MAX_LOAD_AVG = 12;
 const DEFAULT_MIN_FREE_DISK_GIB_FOR_WRITABLE = 12;
 const STRUCTURED_RESULT_CONTRACT = '- End your reply with a single line containing only this JSON object: {"findings":[{"file":"...","note":"..."}],"risks":["..."],"checks":["..."],"confidence":"low|medium|high"}';
 const ORCHESTRATOR_NAME = "myos-dispatch";
@@ -694,8 +693,10 @@ function freeDiskGib(targetPath) {
 function detectHostBackpressure(options = {}) {
   const env = options.env || process.env;
   if (String(env?.MYOS_BACKGROUND_BACKPRESSURE_ENABLED || "1") === "0") return null;
-  const maxLoad = clampNumber(env?.MYOS_BACKGROUND_MAX_LOAD, DEFAULT_MAX_LOAD_AVG, 1, 128);
-  const load = os.loadavg()[0];
+  const defaultMaxLoad = Math.max(8, Math.round((options.cpuCount ?? os.cpus().length) * 0.75));
+  const override = Number(env?.MYOS_BACKGROUND_LOAD_LIMIT ?? env?.MYOS_BACKGROUND_MAX_LOAD);
+  const maxLoad = Number.isSafeInteger(override) && override > 0 ? override : defaultMaxLoad;
+  const load = options.loadAverage ?? os.loadavg()[0];
   if (load > maxLoad) {
     return { reason: "host_backpressure", detail: `1m load average ${load.toFixed(1)} exceeds ${maxLoad}` };
   }

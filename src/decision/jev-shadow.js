@@ -1,8 +1,6 @@
 'use strict';
 
-const fs = require('node:fs');
-const os = require('node:os');
-const path = require('node:path');
+const { locations, readState, effectiveStage, writeMetrics, appendLedger } = require('./jev-state');
 const { createHash } = require('node:crypto');
 const { isDeepStrictEqual } = require('node:util');
 const { buildPromptPack, buildToolPack, answersFromRules } = require('./jev-packs');
@@ -42,29 +40,6 @@ async function resolveDecisions(pack, { client, legacy = {}, clock } = {}) {
   }
   return { engine: 'rules', answers: answersFromRules(pack, legacy), latencyMs,
     skipped: result?.ok ? 'schema_error' : result?.reason || 'network_error' };
-}
-
-function locations(opts, env) {
-  const home = env.MYOS_HOME_ROOT || path.join(os.homedir(), '.myos-dispatch');
-  return { stateFile: opts.stateFile || path.join(home, 'state', 'jev-shadow-state.json'),
-    ledgerFile: opts.ledgerFile || path.join(home, 'logs', 'jev-shadow.jsonl') };
-}
-
-function readState(file) {
-  let state;
-  try { state = JSON.parse(fs.readFileSync(file, 'utf8')); } catch { state = {}; }
-  if (!state || typeof state !== 'object' || Array.isArray(state)) state = {};
-  return { ...state, authoritativeFields: Array.isArray(state.authoritativeFields) ? state.authoritativeFields.filter((field) => typeof field === 'string') : [],
-    floors: state.floors && typeof state.floors === 'object' ? state.floors : {},
-    metrics: state.metrics && typeof state.metrics === 'object' && !Array.isArray(state.metrics) ? state.metrics : {} };
-}
-
-function persist(file, value, append = false) {
-  try {
-    fs.mkdirSync(path.dirname(file), { recursive: true });
-    if (append) fs.appendFileSync(file, `${JSON.stringify(value)}\n`, { mode: 0o600 });
-    else fs.writeFileSync(file, `${JSON.stringify(value)}\n`, { mode: 0o600 });
-  } catch { /* Observation failures must not block dispatch. */ }
 }
 
 function legacyField(legacy, field) {
@@ -113,13 +88,13 @@ function recordComparison(state, comparison) {
   }
 }
 
-function applyAuthority(plan, comparison, pack, state, stage, tool) {
+function applyAuthority(plan, comparison, pack, state, stage) {
   const selected = [];
   const defaults = Object.fromEntries(Object.values(pack.fields).filter((field) => field.planField)
     .map((field) => [field.planField, field.floorDefault]));
   for (const [field, row] of Object.entries(comparison)) {
-    const permitted = stage === 'authoritative' ? state.authoritativeFields.includes(field)
-      : stage === 'canary' && !tool && ['goalConfidence', 'fanoutAggression'].includes(field);
+    const permitted = stage === 'authoritative' && state.authoritativeFields.includes(field)
+      && (field.startsWith('safety.') || field.startsWith('blockedBy.'));
     const floor = unit(state.floors[field]) ? state.floors[field] : defaults[field] ?? 0.9;
     if (!permitted || row.engine !== 'jev' || row.confidence < floor) continue;
     if (field.startsWith('blockedBy.')) {
@@ -130,8 +105,6 @@ function applyAuthority(plan, comparison, pack, state, stage, tool) {
     } else if (field.startsWith('safety.')) {
       if (stage !== 'authoritative' || !row.decided || row.legacy) continue;
       plan.labels = [...plan.labels, field.slice('safety.'.length)];
-    } else {
-      plan[field] = row.decided;
     }
     selected.push({ field, selectedBy: 'jev' });
   }
@@ -141,25 +114,26 @@ function applyAuthority(plan, comparison, pack, state, stage, tool) {
 async function attach(pack, query, legacy, opts, tool) {
   const env = opts.env || process.env;
   const files = locations(opts, env);
-  const state = readState(files.stateFile);
-  const requestedStage = env.MYOS_JEV_STAGE ?? state.stage;
-  const stage = ['shadow', 'canary', 'authoritative'].includes(requestedStage) ? requestedStage : 'shadow';
+  const state = readState(files.stateFile, files.metricsFile);
+  const stage = effectiveStage(state, env);
   const result = await resolveDecisions(pack, { ...opts, legacy });
   const comparison = compare(pack, result.answers, legacy, result.engine, tool);
   const plan = { ...legacy };
-  const authoritativeFields = applyAuthority(plan, comparison, pack, state, stage, tool);
-  plan.jev = { version: 'jev-shadow-v1', stage, engine: result.engine, skipped: result.skipped,
+  const authoritativeFields = applyAuthority(plan, comparison, pack, state.config, stage);
+  plan.jev = { version: 'jev-shadow-v1', stage, configUnreadable: state.configUnreadable, engine: result.engine, skipped: result.skipped,
     latencyMs: result.latencyMs, model: result.model, usage: result.usage, comparison, authoritativeFields };
-  recordComparison(state, comparison);
-  persist(files.stateFile, { ...state, stage: ['shadow', 'canary', 'authoritative'].includes(state.stage) ? state.stage : 'shadow' });
+  if (env.MYOS_JEV_HOOK_METRICS === '1' && !state.metricsUnreadable) {
+    recordComparison(state, comparison);
+    writeMetrics(files.metricsFile, state.metrics);
+  }
   const text = String(query ?? '');
-  persist(files.ledgerFile, { ts: new Date(now(opts.clock)).toISOString(), surface: pack.state.surface || opts.surface || (tool ? 'PreToolUse' : 'UserPromptSubmit'),
+  appendLedger(files.ledgerFile, { ts: new Date(now(opts.clock)).toISOString(), surface: pack.state.surface || opts.surface || (tool ? 'PreToolUse' : 'UserPromptSubmit'),
     event: tool ? 'tool' : 'prompt', promptHash: createHash('sha256').update(text).digest('hex'), promptLength: text.length,
-    stage, engine: result.engine, skipped: result.skipped ?? null, authoritativeFields,
+    stage, configUnreadable: state.configUnreadable, engine: result.engine, skipped: result.skipped ?? null, authoritativeFields,
     agree: Object.values(comparison).filter(row => row.agrees).length, n: Object.keys(comparison).length,
     legacy: Object.fromEntries(Object.entries(comparison).map(([field, row]) => [field, row.legacy])),
     decided: result.answers, latencyMs: result.latencyMs, inputTokens: result.usage?.input_tokens ?? null, model: result.model ?? null,
-    ...(env.MYOS_JEV_LOG_TEXT === '1' ? { promptText: text } : {}) }, true);
+    ...(env.MYOS_JEV_LOG_TEXT === '1' ? { promptText: text } : {}) });
   return plan;
 }
 

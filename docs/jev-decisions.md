@@ -2,28 +2,32 @@
 
 The hook resolves the existing dispatch plan first. UserPromptSubmit and the plain-text `--render-route` path then submit one bounded prompt pack through the shared Jev step. Bash PreToolUse submits a tool pack after computing existing safety labels. Other tools and events retain their existing paths. Direct synchronous hook imports remain compatible; the CLI owns the asynchronous step.
 
-The optional model is `jev-1.13.0`. Requests default to a 1500 ms attempt timeout and one retry, bounded by the client's overall deadline. Invalid answers, timeouts, unavailable credentials, transport failures, and unexpected attachment errors preserve the legacy plan. Tool authority can add safety labels and cannot remove existing labels. Observation write failures cannot block dispatch.
+The optional model is `jev-1.13.0`. Prompt requests default to a 1500 ms total timeout; tool requests default to 900 ms. The hook does not retry. Both hook budgets clamp to 200 through 2500 ms. The client bounds all attempts and backoff by its total timeout. Invalid answers, timeouts, unavailable credentials, transport failures, and unexpected attachment errors preserve the legacy plan. Tool authority can add safety labels and cannot remove existing labels. Observation write failures cannot block dispatch.
 
 ## Stages and fields
 
-`shadow` records comparisons without changing decisions. `canary` can change only goal confidence and fanout aggression above their confidence floors. `authoritative` additionally requires each field to be listed in the state file's `authoritativeFields`. Promotion eligibility is reported, never automatically granted by the evaluator.
+`shadow` records comparisons without changing decisions. `canary` is reserved; no fields today. `authoritative` is effective only for additive `safety.*` and `blockedBy.*` fields explicitly listed in the config file's `authoritativeFields`. All other fields, including goal confidence and fanout aggression, remain shadow-only. Promotion eligibility is reported, never automatically granted by the evaluator.
 
 Prompt fields are intent type, action type, goal scale, correction detection, fanout aggression, and the six blockers: browser control, user-visible send, payment/account mutation, auth sensitive, interactive auth, and destructive/approval sensitive. Capability lane and project are included when a shortlist exists. Prompt injection is diagnostic only. Goal confidence is derived from the score answer.
 
 Tool fields cover those six blockers plus protected-surface write, approval-sensitive operation, and read-only status. Description-match and needs-human answers are diagnostic only. All mapped fields default to a 0.9 confidence floor, including derived goal confidence. State `floors` can override individual fields. Noul decisions use 0.5 as their boolean threshold and the larger of p and 1-p as confidence. Score answers are finite zero-based floats in [0, 3]; goal scale is `Math.round(score) + 1`.
 
-Blocker and safety authority only adds positive gates in the authoritative stage. Existing downstream planner structures are retained; promoting a top-level field does not rebuild the parallelization plan. Stage rollout should account for that distinction.
+Blocker and safety authority only adds positive gates in the authoritative stage. Top-level prompt comparisons remain available in the ledger for grading but cannot override the planner.
 
 ## Configuration and observations
 
 - `TYPESAFE_API_KEY`: optional TypeSafe credential, resolved by the existing client from the environment or workspace env file.
 - `MYOS_JEV_ENABLED=0`: bypasses Jev and preserves legacy behavior; prompt context adds only `[Jev] skipped: disabled`. The hidden `--no-jev` hook flag does the same.
 - `MYOS_JEV_STAGE`: `shadow`, `canary`, or `authoritative`, overriding the saved stage. Invalid values fall back to shadow.
-- `MYOS_JEV_TIMEOUT_MS`: per-attempt timeout, default 1500.
+- `MYOS_JEV_TIMEOUT_MS`: prompt total timeout, default 1500 ms, clamped to [200, 2500].
+- `MYOS_JEV_TOOL_TIMEOUT_MS`: tool total timeout, default 900 ms, clamped to [200, 2500].
+- `MYOS_JEV_HOOK_METRICS=1`: opt into best-effort atomic metrics writes; default off.
 - `MYOS_JEV_LOG_TEXT=1`: explicitly opts into prompt/command text in the shadow ledger. Text is omitted by default.
 - `MYOS_HOME_ROOT`: observation root, defaulting to `~/.myos-dispatch` for Jev observations.
 
-The ledger is `<root>/logs/jev-shadow.jsonl`; state is `<root>/state/jev-shadow-state.json`. Ledger entries contain hashes, lengths, incumbent values, typed answers, stage, engine, latency, tokens, and model. State metrics accumulate only real Jev answers, never rules self-agreement. Reliability bins measure agreement with the incumbent, not correctness against ground truth.
+The ledger is `<root>/logs/jev-shadow.jsonl`. Above 50 MB it rotates by atomic rename to `jev-shadow.<YYYYMMDD-HHMMSS>.jsonl` before append. Config `{stage, authoritativeFields, floors, promotionNote}` is read-only at `<root>/state/jev-shadow-state.json`. An unreadable config forces shadow for that event, records `configUnreadable`, and is never rewritten. Optional metrics live at `<root>/state/jev-shadow-metrics.json` and use same-directory temporary files plus atomic rename. Invalid metrics are not rewritten that event. Legacy config metrics supply the initial metrics until a separate file exists. Concurrent metric updates can be lost; the evaluator derives calibration and eligibility from model ledger rows across active and rotated files. Ledger entries contain hashes, lengths, incumbent values, typed answers, stage, engine, latency, tokens, and model. Opt-in hook metrics accumulate only real Jev answers, never rules self-agreement. Reliability bins measure agreement with the incumbent, not correctness against ground truth.
+
+Model prompt, command, and description text is redacted for common credentials before pack construction. Shadow tool checks flush legacy labels immediately, finish observation work within the tool budget, then exit explicitly. Authoritative tool checks await the result before output.
 
 The existing hook route log adds a compact `jev` summary with stage, engine, skipped reason, agreement counts, latency, input tokens, and model; it contains no answer payload or text. Prompt records also include intent/action, goal scale/mode/confidence, fanout aggression/depth, plan/approval flags, and blockers for every install.
 
@@ -31,7 +35,7 @@ Prompt route context has one Jev status line after the Intent Fidelity/Horizon l
 
 ## Evaluation and smoke checks
 
-`npm run evaluate-jev -- --json` reports the default ledger and state. Options:
+`npm run evaluate-jev -- --json` reports the default ledger directory, including rotations. `--ledger` accepts a file, directory, or quoted glob with `*` and `?`. Options:
 
 ```
 node scripts/evaluate-jev-shadow.js --ledger /tmp/ledger.jsonl --field goalScale

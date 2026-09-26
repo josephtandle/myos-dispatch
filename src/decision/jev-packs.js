@@ -38,6 +38,17 @@ function compact(value) {
     entry !== undefined && entry !== null && entry !== '' && (!Array.isArray(entry) || entry.length > 0)));
 }
 
+function redactForModel(text) {
+  return String(text ?? '')
+    .replace(/(:\/\/)[^\s/@]+:[^\s/@]+@/g, '$1<REDACTED>@')
+    .replace(/(\bBearer\s+)[^\s"'`;]+/gi, '$1<REDACTED>')
+    .replace(/(\bAuthorization\s*:\s*)(?:Bearer\s+)?[^\r\n"'`;]+/gi, '$1<REDACTED>')
+    .replace(/(\bapikey\s*[:=]\s*)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s"'`;]+)/gi, '$1<REDACTED>')
+    .replace(/(\b[A-Za-z_][A-Za-z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD)\s*=\s*|\b(?:KEY|TOKEN|SECRET|PASSWORD)\s*=\s*)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s"'`;]+)/gi, '$1<REDACTED>')
+    .replace(/(-u\s+)(?:"[^"\r\n]*:[^"\r\n]*"|'[^'\r\n]*:[^'\r\n]*'|[^\s:]+:[^\s"'`;]+)/g, '$1<REDACTED>')
+    .replace(/\b(?:sk-[A-Za-z0-9_-]+|(?:sk_live_|sk_test_|rk_live_|whsec_|ghp_|gho_)[A-Za-z0-9_-]+|xox[abp]-[A-Za-z0-9-]+|AKIA[A-Z0-9]+|eyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+|apikey_[0-9a-f]{20,})/g, '<REDACTED>');
+}
+
 function buildPromptPack(query, signals = {}, options = {}) {
   const capabilities = [...new Map((signals.route?.candidates || [])
     .map(({ capability }) => capability).filter((capability) => capability?.id && capability.id !== 'none_of_these')
@@ -45,7 +56,7 @@ function buildPromptPack(query, signals = {}, options = {}) {
       summary: capability.summary || capability.description })])).values()].slice(0, 6);
   const projects = [...new Map((signals.projectMatches || []).filter((project) => project?.slug && project.slug !== 'none')
     .map((project) => [project.slug, compact({ slug: project.slug, name: project.name })])).values()].slice(0, 4);
-  const pack = { state: compact({ prompt: String(query ?? '').slice(0, 6000),
+  const pack = { state: compact({ prompt: redactForModel(query).slice(0, 6000),
     surface: options.surface || options.hookSurface || signals.callerProvider,
     is_follow_up: signals.isFollowUp,
     previous_project: options.previousProject || options.lastDispatchHint?.projectSlug || signals.previousProject,
@@ -78,7 +89,9 @@ function buildPromptPack(query, signals = {}, options = {}) {
 }
 
 function buildToolPack(command, description, context = {}) {
-  const tokens = String(command ?? '').match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g) || [];
+  command = redactForModel(command);
+  description = redactForModel(description);
+  const tokens = command.match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g) || [];
   const argvPaths = tokens.map((token) => token.replace(/["']/g, '').replace(/^[^=]+=([./~])/, '$1'))
     .filter((token) => !token.includes('://') && /^(?:\/|~\/|\.\.?\/)|^[\w.-]+\/[\w./-]+$/.test(token));
   const cwd = path.resolve(context.cwd || '.');
@@ -143,4 +156,4 @@ function answersFromRules(pack, legacy = {}) {
   return answers;
 }
 
-module.exports = { buildPromptPack, buildToolPack, answersFromRules, RULES_ENGINE_BANDS };
+module.exports = { redactForModel, buildPromptPack, buildToolPack, answersFromRules, RULES_ENGINE_BANDS };

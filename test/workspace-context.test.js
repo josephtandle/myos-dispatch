@@ -972,7 +972,8 @@ test("relative scan directory routes external Git repo correctly after process c
     const { resolveDispatchPlan } = loadWorkspaceContextWithHome(tmpDir);
     const plan = resolveDispatchPlan("external git deploy", { indexPath });
 
-    assert.equal(plan.branch, "capability");
+    assert.equal(plan.branch, "recipe");
+    assert.equal(plan.route.reason, "recipe_exact_match");
     assert.equal(fs.realpathSync(plan.searchScope), fs.realpathSync(recipePath));
 
     fs.rmSync(anotherDir, { recursive: true, force: true });
