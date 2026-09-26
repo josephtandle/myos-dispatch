@@ -48,3 +48,15 @@ test('unspecified source audiences do not admit public requests',t=>{
   const result=queryPortfolio({registry,projectId:'a',audiences:['public']});
   assert.deepEqual(result.results.flatMap(r=>r.matches),[]);
 });
+test('document-only projects retrieve their explicit scope without inventing a brand',t=>{
+  const {registry}=fixture(t);
+  registry.sources.operations={...registry.sources.shared,includePaths:['beta.md']};
+  registry.projects.push({id:'operations',brandIds:[],sourceIds:['operations']});
+  const result=queryPortfolio({registry,projectId:'operations',query:'brand'});
+  assert.equal(result.status,'ok');
+  assert.equal(result.brandId,null);
+  assert.deepEqual(result.results.map(r=>r.role),['project']);
+  assert.ok(result.results.flatMap(r=>r.matches).every(n=>n.sourcePath.endsWith('beta.md')));
+  assert.equal(result.results.flatMap(r=>r.matches).length,1);
+  assert.equal(queryPortfolio({registry,projectId:'operations',brandId:'alpha'}).status,'brand_project_mismatch');
+});

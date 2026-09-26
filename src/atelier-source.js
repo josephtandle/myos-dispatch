@@ -25,6 +25,31 @@ function trackedFiles(root) {
     try { return !fs.lstatSync(path.join(root,file)).isSymbolicLink(); } catch { return true; }
   }).sort();
 }
+function originFilePath(root, relative) {
+  if (typeof relative!=='string'||!relative||path.isAbsolute(relative)||SENSITIVE.test(relative)) return null;
+  const resolved=path.resolve(root,relative);
+  return resolved.startsWith(root+path.sep)?resolved:null;
+}
+function sourceOriginReason(origin) {
+  if (origin===undefined) return null;
+  if (!origin||typeof origin!=='object'||Array.isArray(origin)||typeof origin.path!=='string'||!path.isAbsolute(origin.path)||!origin.path||!origin.files||typeof origin.files!=='object'||Array.isArray(origin.files)||!Object.keys(origin.files).length) return 'origin_invalid';
+  let root;
+  try { root=fs.realpathSync(origin.path); if (!fs.statSync(root).isDirectory()) return 'origin_invalid'; } catch { return 'origin_invalid'; }
+  if (root!==origin.path) return 'origin_invalid';
+  for (const [relative,expected] of Object.entries(origin.files)) {
+    if (typeof expected!=='string'||!/^[a-f0-9]{64}$/i.test(expected)) return 'origin_invalid';
+    const file=originFilePath(root,relative);
+    if (!file) return 'origin_invalid';
+    let stat,canonical;
+    try { canonical=fs.realpathSync(file); } catch { return 'origin_changed'; }
+    if (!canonical.startsWith(root+path.sep)||canonical!==file) return 'origin_invalid';
+    try { stat=fs.lstatSync(file); } catch { return 'origin_changed'; }
+    if (stat.isSymbolicLink()||!stat.isFile()) return 'origin_invalid';
+    if (stat.size>50*1024*1024) return 'origin_invalid';
+    try { if (digest(fs.readFileSync(file))!==expected.toLowerCase()) return 'origin_changed'; } catch { return 'origin_changed'; }
+  }
+  return null;
+}
 function fingerprints(root, files) {
   const result = {};
   for (const relative of files) {
@@ -53,6 +78,8 @@ function validGraph(graph) {
 function readAtelierSource(source, options = {}) {
   let root;
   try { root=fs.realpathSync(source.path); } catch { return {status:'unavailable',reason:'repository_missing',matches:[],negativeIsComplete:false}; }
+  const originReason=sourceOriginReason(source.sourceOrigin);
+  if (originReason) return {status:'unavailable',reason:originReason,matches:[],negativeIsComplete:false};
   const audiences = new Set(source.audiences || ['private','team']);
   try {
     const accessPath=path.join(root,'repo-access.v1.json');
@@ -128,6 +155,8 @@ function readAtelierSource(source, options = {}) {
       if(JSON.stringify(after)!==JSON.stringify(current)) return {status:'unavailable',reason:'source_changed',matches:[],negativeIsComplete:false};
     } catch { return {status:'unavailable',reason:'source_changed',matches:[],negativeIsComplete:false}; }
   }
+  const finalOriginReason=sourceOriginReason(source.sourceOrigin);
+  if (finalOriginReason) return {status:'unavailable',reason:finalOriginReason,matches:[],negativeIsComplete:false};
   return {status:reason?'fallback':'fresh',reason,repository:root,negativeIsComplete:false,matches:selected.map(({score,relations,...entry})=>({...entry,relations:Object.fromEntries(Object.entries(relations).map(([kind,ids])=>[kind,Array.isArray(ids)?ids.filter(id=>allowed.has(id)):(allowed.has(ids)?ids:null)]).filter(([,ids])=>ids!==null&&(!Array.isArray(ids)||ids.length)))}))};
 }
 module.exports={readAtelierSource,createSnapshot,validGraph,sourceManifest:root=>fingerprints(fs.realpathSync(root),trackedFiles(fs.realpathSync(root)))};

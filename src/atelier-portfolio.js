@@ -18,7 +18,7 @@ function validatePortfolio(registry) {
     brains.add(canonical);brands.set(brand.id,brand);
   }
   for(const project of registry.projects) {
-    if(typeof project.id!=='string'||!project.id||projects.has(project.id)||!Array.isArray(project.brandIds)||!project.brandIds.length||project.brandIds.some(id=>!brands.has(id))||!Array.isArray(project.sourceIds)) throw new Error('invalid_project');
+    if(typeof project.id!=='string'||!project.id||projects.has(project.id)||!Array.isArray(project.brandIds)||project.brandIds.some(id=>!brands.has(id))||!Array.isArray(project.sourceIds)||(!project.brandIds.length&&!project.sourceIds.length)) throw new Error('invalid_project');
     if(project.primaryBrandId&&!project.brandIds.includes(project.primaryBrandId)) throw new Error('invalid_primary_brand');
     for(const id of project.sourceIds) {
       const source=registry.sources[id];
@@ -32,11 +32,13 @@ function queryPortfolio({registry,projectId,brandId,query='',audiences=['private
   const {brands,projects}=validatePortfolio(registry);
   const project=projectId?projects.get(projectId):null;
   if(projectId&&!project) return {status:'unknown_project',results:[]};
+  const documentsOnly=project?.brandIds.length===0;
   const chosen=brandId||project?.primaryBrandId||(project?.brandIds.length===1?project.brandIds[0]:null);
-  if(!chosen) return {status:'ambiguous_brand',results:[]};
+  if(documentsOnly&&brandId) return {status:'brand_project_mismatch',results:[]};
+  if(!chosen&&!documentsOnly) return {status:'ambiguous_brand',results:[]};
   const brand=brands.get(chosen);
-  if(!brand||project&&!project.brandIds.includes(chosen)) return {status:'brand_project_mismatch',results:[]};
-  const selections=[{id:brand.brain.sourceId,includePaths:[brand.brain.path],role:'brand_brain'},...(project?.sourceIds||[]).map(id=>({id,role:'project'}))];
+  if(!documentsOnly&&(!brand||project&&!project.brandIds.includes(chosen))) return {status:'brand_project_mismatch',results:[]};
+  const selections=[...(brand?[{id:brand.brain.sourceId,includePaths:[brand.brain.path],role:'brand_brain'}]:[]),...(project?.sourceIds||[]).map(id=>({id,role:'project'}))];
   const results=selections.map(({id,includePaths,role})=>{
     const source=registry.sources[id];
     const allowed=audiences.filter(a=>AUDIENCES.includes(a)&&(source.audiences||['private','team']).includes(a));

@@ -79,6 +79,7 @@ function normalizeDataSourceEntry(entry = {}) {
     readOnly: entry.readOnly !== false,
     ...(mode === "atelier" ? { audiences: Array.isArray(entry.audiences) ? entry.audiences.filter(value => ["private", "team", "public"].includes(value)) : ["private", "team"] } : {}),
     ...(mode === "atelier" && entry.includePaths !== undefined ? { includePaths: entry.includePaths } : {}),
+    ...(entry.sourceOrigin !== undefined ? { sourceOrigin: entry.sourceOrigin } : {}),
     preferOverProject: entry.preferOverProject === true,
   };
 }

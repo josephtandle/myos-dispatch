@@ -21,6 +21,10 @@ Supported input is the single-repository `mnstry.atelier-knowledge-graph@v1` art
 
 Tracked symlinks are omitted from labeling and source snapshots, matching the pinned graph builder's regular-file walk. Their targets are not enrolled or edited. Replacing a link with a regular tracked document changes the manifest and requires a rebuild. A canonical Brand Brain must be a real enrolled source, not an external-link shortcut.
 
+Sparse checkout entries intentionally marked skip-worktree are excluded from source enumeration and audience planning. An accidentally missing ordinary tracked document still invalidates freshness. This supports project-local configs in an isolated sparse worktree without enrolling the entire parent workspace.
+
+An isolated adopted view can declare an owner-controlled `sourceOrigin: {path, files}`. `path` is the absolute canonical source directory and `files` maps exact relative source paths to their original SHA-256 hashes. Original bytes are checked before and after retrieval. Changed, unavailable or unsafe origins deny the view rather than returning stale fallback material. This is a guard, not a synchronization writer: when originals change, reconcile the approved files into the owned adoption branch, preserve their audience overrides, rebuild the graph, and update origin hashes only after verifying that the view matches those originals. Never refresh just the hashes to bless an out-of-date view.
+
 After staging intended source/sidecar additions, run `node bin/myos-atelier-sync.js REPOSITORY` using supported Node 24. It runs the pinned graph builder, checks source stability and graph validity, then atomically writes `.atelier-local/myos-dispatch-snapshot.json`. A failed build removes the freshness receipt and retains the prior snapshot as recovery data. This command refreshes derived state only, without editing Brand Brains or uploading anything. Existing GitNexus and Understand Anything indexes are unchanged. The older snapshot command is a diagnostic building block, not a substitute for synchronization.
 
 ## Audience automation
@@ -34,6 +38,8 @@ For a sharing surface, audiences must also be intersected with authenticated per
 ## Multiple brands and projects
 
 Keep an owner-local registry with schema `myos.atelier-portfolio@v1`: `sources` maps IDs to repository paths, allowed audiences and optional `includePaths`; `brands` lists `{id, brain: {sourceId, path}}`; `projects` lists `{id, brandIds, primaryBrandId?, sourceIds}`. Every Brand Brain is a tracked canonical Markdown file. Duplicate canonical mappings and invalid references fail validation. Project sources require explicit path scopes, using exact files or directory prefixes ending in `/`. Shared tooling is a separate source, not a brand's identity. Project-specific brains can be registered as distinct brands and selected explicitly, rather than overwriting a shared parent brain.
+
+Operational or shared-tooling projects may use `brandIds: []` with nonempty, explicitly scoped `sourceIds`. They return project documents with `brandId: null`, not an invented Brand Brain. Explicit brand selection is rejected for these projects. External access requires a matching project grant whose `brandIds` is also empty; another project's brand grant never grants operational access. Their citations use the `_project` segment.
 
 Run `node bin/myos-atelier-query.js REGISTRY --validate`, then `node bin/myos-atelier-query.js REGISTRY PROJECT_ID QUERY`. Multi-brand projects need an explicit brand selection through `queryPortfolio`, or a configured primary brand. Unknown or ambiguous identities return no results. The CLI currently chooses the primary brand. Single-repository edges remain local; cross-repository brand relationships are declared in the portfolio, not fabricated in Atelier metadata.
 
