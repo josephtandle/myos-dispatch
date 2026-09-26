@@ -26,7 +26,7 @@ function readAuthorizedKnowledge({registryPath,policyPath,principal,projectId,br
     const matches=response.results.flatMap(r=>r.matches.map(({id,title,summary,audience,hash})=>({id,title,summary,audience,hash,citation:`atelier://${encodeURIComponent(projectId)}/${encodeURIComponent(chosen||'_project')}/${encodeURIComponent(id)}`})));
     // Reload on each request and fail closed if permissions changed during retrieval.
     if(JSON.stringify(policy)!==JSON.stringify(JSON.parse(fs.readFileSync(policyPath,'utf8')))) return denied;
-    return {status:'ok',projectId,brandId:chosen,matches};
+    return {status:'ok',projectId,brandId:chosen,evidenceStatus:'source_reference',liveFactAuthority:false,matches};
   } catch { return denied; }
 }
 module.exports={readAuthorizedKnowledge};

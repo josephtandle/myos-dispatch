@@ -30,6 +30,8 @@ test('Atelier registered sources retrieve a relevant node and related source cit
   assert.equal(registry.getDataSource('atelier-demo',{config}).mode,'atelier');
   const result=JSON.parse(registry.readConfiguredTextSource('atelier-demo',12000,{config,query:'launch'}));
   assert.equal(result.status,'fresh');
+  assert.equal(result.evidenceStatus,'source_reference');
+  assert.equal(result.liveFactAuthority,false);
   assert.equal(result.matches[0].id,'demo:launch');
   assert.equal(result.matches[0].sourcePath,fs.realpathSync(path.join(root,'launch.md')));
   assert.ok(result.matches.some(n=>n.id==='demo:brief'));

@@ -27,6 +27,8 @@ test('a trusted authenticated principal receives only granted knowledge without 
   const options=fixture(t);
   const result=readAuthorizedKnowledge(options);
   assert.equal(result.status,'ok');
+  assert.equal(result.evidenceStatus,'source_reference');
+  assert.equal(result.liveFactAuthority,false);
   assert.equal(result.matches.length,1);
   assert.equal(result.matches[0].summary,'Team brand guidelines');
   assert.equal(JSON.stringify(result).includes(options.root),false);

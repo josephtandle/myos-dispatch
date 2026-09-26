@@ -157,6 +157,6 @@ function readAtelierSource(source, options = {}) {
   }
   const finalOriginReason=sourceOriginReason(source.sourceOrigin);
   if (finalOriginReason) return {status:'unavailable',reason:finalOriginReason,matches:[],negativeIsComplete:false};
-  return {status:reason?'fallback':'fresh',reason,repository:root,negativeIsComplete:false,matches:selected.map(({score,relations,...entry})=>({...entry,relations:Object.fromEntries(Object.entries(relations).map(([kind,ids])=>[kind,Array.isArray(ids)?ids.filter(id=>allowed.has(id)):(allowed.has(ids)?ids:null)]).filter(([,ids])=>ids!==null&&(!Array.isArray(ids)||ids.length)))}))};
+  return {status:reason?'fallback':'fresh',reason,repository:root,evidenceStatus:'source_reference',liveFactAuthority:false,negativeIsComplete:false,matches:selected.map(({score,relations,...entry})=>({...entry,relations:Object.fromEntries(Object.entries(relations).map(([kind,ids])=>[kind,Array.isArray(ids)?ids.filter(id=>allowed.has(id)):(allowed.has(ids)?ids:null)]).filter(([,ids])=>ids!==null&&(!Array.isArray(ids)||ids.length)))}))};
 }
 module.exports={readAtelierSource,createSnapshot,validGraph,sourceManifest:root=>fingerprints(fs.realpathSync(root),trackedFiles(fs.realpathSync(root)))};
