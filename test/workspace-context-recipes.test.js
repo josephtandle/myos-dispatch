@@ -10,6 +10,7 @@ const root = fs.mkdtempSync(path.join(os.tmpdir(), "dispatch-recipes-"));
 process.env.HOME = root;
 process.env.MYOS_HOME_ROOT = path.join(root, ".myos");
 process.env.OPENCLAW_HOME_ROOT = process.env.MYOS_HOME_ROOT;
+process.env.MYOS_DATA_SOURCES_CONFIG = "none";
 const workspace = path.join(process.env.MYOS_HOME_ROOT, "workspace");
 fs.mkdirSync(workspace, { recursive: true });
 fs.writeFileSync(path.join(workspace, "DISPATCH-FASTPATHS.json"), JSON.stringify({

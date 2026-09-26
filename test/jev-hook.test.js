@@ -10,7 +10,7 @@ for (const surface of ['claude', 'codex']) {
   test(`${surface} CLI fails open with disabled or unconfigured Jev`, (t) => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'jev-hook-'));
     t.after(() => fs.rmSync(home, { recursive: true, force: true }));
-    const env = { ...process.env, MYOS_HOME_ROOT: home, OPENCLAW_HOME_ROOT: home, MYOS_WORKSPACE_ROOT: home,
+    const env = { ...process.env, MYOS_DATA_SOURCES_CONFIG: 'none', MYOS_HOME_ROOT: home, OPENCLAW_HOME_ROOT: home, MYOS_WORKSPACE_ROOT: home,
       MYOS_DISPATCH_HOOK_LOG_DIR: path.join(home, 'logs'), MYOS_BACKGROUND_AGENTS_ENABLED: '0', MYOS_AUTO_FANOUT: '0', MYOS_JEV_PROMPT_SAMPLE: '1' };
     delete env.TYPESAFE_API_KEY;
     const run = (input, flags = [], enabled = '0') => execFileSync(process.execPath,
@@ -56,7 +56,7 @@ test('CLI model metadata and thrown attachments preserve the legacy route', (t) 
     client.createJevClient = () => ({ isConfigured: () => true, ask: async () => ({ ok: true, ...require(${JSON.stringify(livePath)}), usage: { input_tokens: 12 } }) });
     if (process.env.JEV_TEST_THROW === '1') require(${JSON.stringify(shadowPath)}).attachJevShadow = async () => { throw new Error('synthetic error'); };
   `);
-  const env = { ...process.env, MYOS_HOME_ROOT: home, OPENCLAW_HOME_ROOT: home, MYOS_WORKSPACE_ROOT: home,
+  const env = { ...process.env, MYOS_DATA_SOURCES_CONFIG: 'none', MYOS_HOME_ROOT: home, OPENCLAW_HOME_ROOT: home, MYOS_WORKSPACE_ROOT: home,
     MYOS_DISPATCH_HOOK_LOG_DIR: path.join(home, 'logs'), MYOS_BACKGROUND_AGENTS_ENABLED: '0', MYOS_AUTO_FANOUT: '0', MYOS_JEV_PROMPT_SAMPLE: '1', MYOS_JEV_ENABLED: '1', MYOS_JEV_STAGE: 'shadow' };
   delete env.TYPESAFE_API_KEY;
   const run = extra => JSON.parse(execFileSync(process.execPath, ['--require', preload, hook, '--surface=codex'], {
@@ -90,7 +90,7 @@ test('PreToolUse renders an authoritative Jev label when legacy safety is empty'
   fs.writeFileSync(path.join(home, 'state/jev-shadow-state.json'), JSON.stringify({
     stage: 'authoritative', authoritativeFields: ['safety.browser_control'], floors: { 'safety.browser_control': 0.7 },
   }));
-  const env = { ...process.env, MYOS_HOME_ROOT: home, OPENCLAW_HOME_ROOT: home, MYOS_WORKSPACE_ROOT: home,
+  const env = { ...process.env, MYOS_DATA_SOURCES_CONFIG: 'none', MYOS_HOME_ROOT: home, OPENCLAW_HOME_ROOT: home, MYOS_WORKSPACE_ROOT: home,
     MYOS_DISPATCH_HOOK_LOG_DIR: path.join(home, 'logs'), MYOS_BACKGROUND_AGENTS_ENABLED: '0', MYOS_AUTO_FANOUT: '0', MYOS_JEV_PROMPT_SAMPLE: '1' };
   delete env.TYPESAFE_API_KEY;
   delete env.MYOS_JEV_STAGE;
@@ -108,7 +108,7 @@ test('PreToolUse renders an authoritative Jev label when legacy safety is empty'
 function isolatedEnv(t) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'jev-hook-bounds-'));
   t.after(() => fs.rmSync(home, { recursive: true, force: true }));
-  return { ...process.env, MYOS_HOME_ROOT: home, OPENCLAW_HOME_ROOT: home, MYOS_WORKSPACE_ROOT: home,
+  return { ...process.env, MYOS_DATA_SOURCES_CONFIG: 'none', MYOS_HOME_ROOT: home, OPENCLAW_HOME_ROOT: home, MYOS_WORKSPACE_ROOT: home,
     MYOS_DISPATCH_HOOK_LOG_DIR: path.join(home, 'logs'), MYOS_BACKGROUND_AGENTS_ENABLED: '0', MYOS_AUTO_FANOUT: '0', MYOS_JEV_PROMPT_SAMPLE: '1',
     MYOS_JEV_ENABLED: '1', MYOS_JEV_STAGE: 'shadow', TYPESAFE_API_KEY: 'synthetic' };
 }

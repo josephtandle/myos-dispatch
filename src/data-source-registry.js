@@ -20,10 +20,11 @@ function readConfigFile(filePath) {
 function loadDataSourcesConfig(options = {}) {
   if (options.config && typeof options.config === "object") return options.config;
 
+  const override = options.env?.MYOS_DATA_SOURCES_CONFIG || process.env.MYOS_DATA_SOURCES_CONFIG;
+  const localConfig = override === "none" ? null : (override || LOCAL_CONFIG_FILE);
   const candidates = [
     options.configPath,
-    options.env?.MYOS_DATA_SOURCES_CONFIG || process.env.MYOS_DATA_SOURCES_CONFIG,
-    LOCAL_CONFIG_FILE,
+    localConfig,
     DEFAULT_CONFIG_FILE,
   ].filter(Boolean);
 

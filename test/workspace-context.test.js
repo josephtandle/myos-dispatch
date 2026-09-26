@@ -10,6 +10,10 @@ process.env.OPENAI_API_KEY = "fixture-only";
 // Planning only: these tests never execute the returned background tasks.
 process.env.MYOS_BACKGROUND_AGENTS_ENABLED = "1";
 
+const { preserveEnv } = require("./helpers/isolated-home");
+
+test.beforeEach((t) => preserveEnv(t, ["HOME", "MYOS_HOME_ROOT", "OPENCLAW_HOME_ROOT", "MYOS_DATA_SOURCES_CONFIG"]));
+
 function loadWorkspaceContextWithHome(homeDir) {
   process.env.HOME = homeDir;
   process.env.MYOS_HOME_ROOT = path.join(homeDir, ".myos");
@@ -18,7 +22,7 @@ function loadWorkspaceContextWithHome(homeDir) {
   if (fs.existsSync(dataSourcesConfig)) {
     process.env.MYOS_DATA_SOURCES_CONFIG = dataSourcesConfig;
   } else {
-    delete process.env.MYOS_DATA_SOURCES_CONFIG;
+    process.env.MYOS_DATA_SOURCES_CONFIG = "none";
   }
   const modulePath = require.resolve("../src/workspace-context");
   const registryPath = require.resolve("../src/data-source-registry");

@@ -11,7 +11,7 @@ const hook = path.resolve(__dirname, '../bin/myos-dispatch-hook');
 function isolatedEnv(t) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'tier0-hook-'));
   t.after(() => fs.rmSync(home, { recursive: true, force: true }));
-  return { ...process.env, MYOS_HOME_ROOT: home, OPENCLAW_HOME_ROOT: home, MYOS_WORKSPACE_ROOT: home,
+  return { ...process.env, MYOS_DATA_SOURCES_CONFIG: 'none', MYOS_HOME_ROOT: home, OPENCLAW_HOME_ROOT: home, MYOS_WORKSPACE_ROOT: home,
     MYOS_DISPATCH_HOOK_LOG_DIR: path.join(home, 'logs'), MYOS_BACKGROUND_AGENTS_ENABLED: '0',
     MYOS_AUTO_FANOUT: '0', MYOS_JEV_ENABLED: '0' };
 }
