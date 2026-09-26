@@ -8,6 +8,7 @@ const WORKSPACE_ENV_PATH = workspaceEnvPath();
 let envCache = null;
 const SENSITIVE_ENV_KEYS = new Set([
   "OPENAI_API_KEY",
+  "TYPESAFE_API_KEY",
   "OPENROUTER_API_KEY",
   "TELEGRAM_BOT_TOKEN",
   "UNI_BOT_TOKEN",

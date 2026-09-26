@@ -1,34 +1,25 @@
-// jev.js: zero-dependency Node 22+ client for TypeSafe's Jev (System One) decision API.
-// createJevClient() -> { isConfigured, ask }; builders choice/noul/score throw on misuse;
-// ask() never throws for expected failures, it resolves { ok:false, reason } instead.
 'use strict';
-const fs = require('fs');
-const os = require('os');
-const path = require('path');
+const { loadEnvFile } = require('./runtime-secrets');
+const { workspaceEnvPath } = require('../myos-compat');
 
 const ENDPOINT = 'https://api.typesafe.ai/v1/systemone';
 const DEFAULT_MODEL = 'jev-1.13.0';
-const DEFAULT_ENV_FILE = path.join(os.homedir(), '.myos', 'workspace', '.env');
 const REASONS = Object.freeze([
   'typesafe_key_missing', 'schema_error', 'auth_error', 'rate_limited',
-  'overloaded', 'timeout', 'network_error', 'http_error',
+  'overloaded', 'timeout', 'network_error', 'http_error', 'disabled',
 ]);
-
-function readKeyFromEnvFile(file) {
-  try {
-    const m = fs.readFileSync(file, 'utf8').match(/^\s*(?:export\s+)?TYPESAFE_API_KEY\s*=\s*(.*)$/m);
-    return m ? m[1].trim().replace(/^(["'])(.*)\1$/, '$2').trim() : '';
-  } catch {
-    return '';
-  }
-}
 
 function resolveKey(opts) {
   if (opts.apiKey !== undefined) return String(opts.apiKey ?? '').trim();
   const fromEnv = (process.env.TYPESAFE_API_KEY || '').trim();
   if (fromEnv) return fromEnv;
   if (opts.envFile === false) return '';
-  return readKeyFromEnvFile(opts.envFile || DEFAULT_ENV_FILE);
+  try {
+    const env = loadEnvFile({ envPath: opts.envFile || workspaceEnvPath(), env: {} });
+    return String(env.TYPESAFE_API_KEY || '').trim();
+  } catch {
+    return '';
+  }
 }
 
 function isPlainObject(v) {
@@ -49,6 +40,7 @@ function choice(instructions, criteria) {
   checkInstructions('choice', instructions);
   if (!isPlainObject(criteria)) throw new TypeError('choice: criteria must be a plain object { optionName: description }');
   const names = Object.keys(criteria);
+  if (names.length > 255) throw new TypeError('choice: at most 255 options are allowed');
   if (names.length < 2) throw new TypeError('choice: criteria needs at least two options');
   for (const name of names) {
     if (!name.trim()) throw new TypeError('choice: option names must be non-empty strings');
@@ -80,6 +72,12 @@ function yes(answer, { threshold = 0.5 } = {}) {
   return Number(answer.noul) >= threshold;
 }
 
+function level(answer) {
+  if (!answer || answer.type !== 'score') throw new TypeError('level: expects a score answer');
+  const score = Number(answer.score);
+  return { level: Math.round(score), score, confidence: Number(answer.confidence) };
+}
+
 function parseRetryAfter(value) {
   if (!value) return null;
   const secs = Number(value);
@@ -89,6 +87,10 @@ function parseRetryAfter(value) {
 }
 
 function backoffMs(result, attempt) {
+  const milliseconds = result.retryAfterMs;
+  if (milliseconds != null && String(milliseconds).trim() !== '' && Number.isFinite(Number(milliseconds))) {
+    return Math.max(0, Number(milliseconds));
+  }
   const ra = parseRetryAfter(result.retryAfter);
   if (ra !== null) return ra;
   const base = 300 * 2 ** (attempt - 1);
@@ -99,14 +101,23 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 async function attemptOnce(fetchImpl, apiKey, body, timeoutMs) {
   const ac = new AbortController();
-  const timer = setTimeout(() => ac.abort(), Math.max(0, timeoutMs));
-  try {
+  let timer;
+  let requestId = null;
+  const expired = new Promise((resolve) => {
+    timer = setTimeout(() => {
+      resolve({ ok: false, reason: 'timeout', retryable: true, requestId });
+      ac.abort();
+    }, Math.max(0, timeoutMs));
+  });
+  const run = async () => {
     const res = await fetchImpl(ENDPOINT, {
       method: 'POST',
       headers: { authorization: `Bearer ${apiKey}`, 'content-type': 'application/json', accept: 'application/json' },
       body,
       signal: ac.signal,
     });
+    const header = (name) => res.headers?.get?.(name) ?? null;
+    requestId = header('x-typesafe-request-id');
     const text = await res.text();
     let json = null;
     try { json = text ? JSON.parse(text) : null; } catch { json = null; }
@@ -118,19 +129,22 @@ async function attemptOnce(fetchImpl, apiKey, body, timeoutMs) {
       return { ok: true, answers: json.answers, model: json.model, usage: json.usage || {} };
     }
     const detail = json && (json.detail ?? json.error ?? json) || text.slice(0, 500);
-    const retryAfter = res.headers && typeof res.headers.get === 'function' ? res.headers.get('retry-after') : null;
+    const retryAfter = header('retry-after');
+    const retryAfterMs = header('retry-after-ms');
     if (status === 401 || status === 403) return { ok: false, reason: 'auth_error', status, detail, retryable: false };
     if (status === 422) return { ok: false, reason: 'schema_error', status, detail, retryable: false };
-    if (status === 429) return { ok: false, reason: 'rate_limited', status, detail, retryable: true, retryAfter };
-    if (status === 529 || status === 503) return { ok: false, reason: 'overloaded', status, detail, retryable: true, retryAfter };
-    return { ok: false, reason: 'http_error', status, detail, retryable: status >= 500, retryAfter };
+    if (status === 429) return { ok: false, reason: 'rate_limited', status, detail, retryable: true, retryAfter, retryAfterMs };
+    if (status === 529 || status === 503) return { ok: false, reason: 'overloaded', status, detail, retryable: true, retryAfter, retryAfterMs };
+    return { ok: false, reason: 'http_error', status, detail, retryable: status >= 500 && status < 600, retryAfter, retryAfterMs };
+  };
+  try {
+    const result = await Promise.race([run(), expired]);
+    return { ...result, requestId };
   } catch (err) {
     if (ac.signal.aborted || (err && err.name === 'AbortError')) {
       return { ok: false, reason: 'timeout', detail: `no response within ${timeoutMs}ms`, retryable: true };
     }
-    const cause = err && err.cause;
-    const detail = (cause && (cause.code || cause.message)) || (err && (err.code || err.message)) || String(err);
-    return { ok: false, reason: 'network_error', detail, retryable: true };
+    return { ok: false, reason: 'network_error', retryable: true, requestId };
   } finally {
     clearTimeout(timer);
   }
@@ -139,13 +153,13 @@ async function attemptOnce(fetchImpl, apiKey, body, timeoutMs) {
 function createJevClient(opts = {}) {
   const {
     model = DEFAULT_MODEL,
-    timeoutMs = 8000,
-    maxRetries = 3,
+    timeoutMs = 1500,
+    maxRetries = 1,
     onResult = null,
   } = opts;
   const fetchImpl = opts.fetch || globalThis.fetch;
   if (typeof fetchImpl !== 'function') throw new TypeError('createJevClient: no fetch available (Node 18+ required)');
-  const apiKey = resolveKey(opts);
+  const apiKey = process.env.MYOS_JEV_ENABLED === '0' ? '' : resolveKey(opts);
   const configured = apiKey.length > 0;
 
   function report(record) {
@@ -161,31 +175,41 @@ function createJevClient(opts = {}) {
       const out = { ...result, latencyMs: Date.now() - started };
       delete out.retryable;
       delete out.retryAfter;
+      delete out.retryAfterMs;
       report({
         ts: new Date(started).toISOString(),
         model: out.model || usedModel,
         questionKeys,
+        requestId: out.requestId ?? null,
         latencyMs: out.latencyMs,
         attempts: out.attempts,
         ok: out.ok,
         reason: out.ok ? null : out.reason,
         inputTokens: out.ok && out.usage ? out.usage.input_tokens ?? null : null,
+        outputTokens: out.ok && out.usage ? out.usage.output_tokens ?? null : null,
       });
       return out;
     };
 
+    if (process.env.MYOS_JEV_ENABLED === '0') return finish({ ok: false, reason: 'disabled', attempts: 0 });
     if (!configured) return finish({ ok: false, reason: 'typesafe_key_missing', attempts: 0 });
     if (!isPlainObject(questions) || questionKeys.length === 0) {
       return finish({ ok: false, reason: 'schema_error', detail: 'questions must be a non-empty object', attempts: 0 });
     }
 
-    const perAttemptMs = Math.max(1, Number(callOpts.timeoutMs ?? timeoutMs));
-    const retries = Math.max(0, Number(callOpts.maxRetries ?? maxRetries));
+    const requestedTimeout = Number(callOpts.timeoutMs ?? timeoutMs);
+    const requestedRetries = Number(callOpts.maxRetries ?? maxRetries);
+    const perAttemptMs = Number.isFinite(requestedTimeout) ? Math.max(1, requestedTimeout) : 1500;
+    const retries = Number.isFinite(requestedRetries) ? Math.max(0, Math.floor(requestedRetries)) : 1;
     const deadline = started + perAttemptMs * 3;
     const body = JSON.stringify({ state, model: usedModel, questions });
     let attempts = 0;
     let last;
     for (;;) {
+      if (Date.now() >= deadline) {
+        last = { ok: false, reason: 'timeout', requestId: last?.requestId ?? null };
+        break;
+      }
       attempts += 1;
       last = await attemptOnce(fetchImpl, apiKey, body, Math.min(perAttemptMs, deadline - Date.now()));
       if (last.ok || !last.retryable || attempts > retries) break;
@@ -196,7 +220,7 @@ function createJevClient(opts = {}) {
     return finish({ ...last, attempts });
   }
 
-  return { isConfigured: () => configured, ask, model, endpoint: ENDPOINT };
+  return { isConfigured: () => configured && process.env.MYOS_JEV_ENABLED !== '0', ask, model, endpoint: ENDPOINT };
 }
 
-module.exports = { createJevClient, choice, noul, score, decide, yes, REASONS, DEFAULT_MODEL, ENDPOINT };
+module.exports = { createJevClient, choice, noul, score, decide, yes, level, REASONS, DEFAULT_MODEL, ENDPOINT };
