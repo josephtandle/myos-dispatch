@@ -57,6 +57,22 @@ Measured in this isolated worktree on 2026-09-26, fresh Node process per event, 
 
 The after run additionally measured safety rules at 2.29 ms p50, 2.89 ms max for 20 tools; prompt rules were 7.35 ms p50. Timings use the mean of the two middle observations. The tool wall-time sample did not improve; with empty indexes, startup variance and the fixed stub dominate. These are controlled local measurements, not live Jev or production-index results. The network-disabled, no-secret execution envelope prevented reproducing the report's live transport and installed indexes; production's reported roughly 100 ms rules cost and the under-15 ms target still need validation on that install. The original report's live p50s were 646 ms for prompts and 634 ms for tools; do not compare those directly with this stub run.
 
+### Live measurement 2026-09-26 (branch after W11b vs main before W11)
+
+Fresh Node process per event, `--surface=claude`, `MYOS_AUTO_FANOUT=0`, live workspace indexes, real Jev API in authoritative stage, 20 real prompts and 20 real Bash commands sampled from the research corpora (seed 7). p50 wall time in ms:
+
+| Path | main (pre-W11) | branch |
+|---|---|---|
+| prompt, Jev on, default sample 0.2 | 730 | 214 |
+| prompt, Jev on, sample 1.0 | 730 | 662 |
+| prompt, Jev off | 208 | 211 |
+| Bash PreToolUse, Jev on | 666 | 495 |
+| Bash PreToolUse, Jev off | 231 | 57 |
+
+Every run produced valid JSON with exit code 0. The remaining cost on the tool path is the Jev call itself: server time to first byte is about 310 ms and the TLS handshake only about 80 ms, so connection reuse would save at most 80 ms per call. Tier-0 matches 3.0% of real commands (22 of 738 in the corpus; 55 of 9,493 live PreToolUse rows). A broader read-only-pipeline gate was estimated at 13.8% coverage but 12 of those commands carry a truth safety label, so it was not adopted.
+
+Value of Jev on the tool path from the live ledger (2,186 Bash events, 24 h): the rules flag a safety label on 4.5% of events; Jev at the 0.7 floor adds a safety label the rules missed on 3.5% (auth_sensitive 43, approval_sensitive_operation 20, user_visible_send 5, browser_control 4, destructive_or_approval_sensitive 4, protected_surface_write 1). The price is about 440 ms per non-tier-0 Bash call. Turning it off is `MYOS_JEV_ENABLED=0` or `MYOS_JEV_TOOL_TIMEOUT_MS`; the default stays on because the missed labels sit on hard gates.
+
 ## Evaluation and smoke checks
 
 `npm run evaluate-jev -- --json` reports the default ledger directory, including rotations. `--ledger` accepts a file, directory, or quoted glob with `*` and `?`. Options:
