@@ -6,6 +6,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const cp = require('node:child_process');
 const registry = require('../src/data-source-registry');
+const {createSnapshot,readAtelierSource}=require('../src/atelier-source');
 const hash = data => crypto.createHash('sha256').update(data).digest('hex');
 function fixture(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(),'atelier-source-'));
@@ -137,4 +138,28 @@ test('registry preserves an explicit Atelier path scope',t=>{
   config.dataSources[0].includePaths=['launch.md'];
   const result=JSON.parse(registry.readConfiguredTextSource('atelier-demo',12000,{config}));
   assert.deepEqual(result.matches.map(n=>n.id),['demo:launch']);
+});
+test('sparse checkout omits intentionally absent tracked siblings from the source census',t=>{
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),'atelier-source-sparse-'));
+  t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
+  cp.execFileSync('git',['init','-q',root]);
+  fs.writeFileSync(path.join(root,'atelier.project.json'),JSON.stringify({name:'demo'}));
+  fs.writeFileSync(path.join(root,'visible.md'),'---\nkg:\n  audience: team\n---\n# Visible\n');
+  fs.writeFileSync(path.join(root,'excluded.md'),'---\nkg:\n  audience: team\n---\n# Excluded\n');
+  cp.execFileSync('git',['-C',root,'add','.']);
+  cp.execFileSync('git',['-C',root,'commit','-qm','fixture']);
+  cp.execFileSync('git',['-C',root,'sparse-checkout','set','--no-cone','/*','!/excluded.md']);
+  fs.mkdirSync(path.join(root,'atelier-output')); fs.mkdirSync(path.join(root,'.atelier-local'));
+  const graph={schema:'mnstry.atelier-knowledge-graph@v1',nodes:[{id:'demo:visible',path:'visible.md',title:'Visible',audience:'team',relations:{}}],errors:[]};
+  const graphPath=path.join(root,'atelier-output/knowledge.graph.json');
+  fs.writeFileSync(graphPath,JSON.stringify(graph));
+  const snapshot=createSnapshot(root);
+  assert.deepEqual(Object.keys(snapshot.files).sort(),['atelier.project.json','visible.md']);
+  fs.writeFileSync(path.join(root,'.atelier-local/myos-dispatch-snapshot.json'),JSON.stringify(snapshot));
+  assert.equal(readAtelierSource({path:root,audiences:['team']}).status,'fresh');
+});
+test('missing non-sparse tracked source still fails fingerprinting',t=>{
+  const {root}=fixture(t);
+  fs.unlinkSync(path.join(root,'launch.md'));
+  assert.throws(()=>createSnapshot(root),/source_unavailable/);
 });

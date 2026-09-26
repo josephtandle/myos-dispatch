@@ -13,8 +13,14 @@ function safePath(root, relative) {
   try { if (!fs.realpathSync(resolved).startsWith(root + path.sep)) return null; } catch { return null; }
   return resolved;
 }
+function trackedGitFiles(root) {
+  return cp.execFileSync('git',['--no-optional-locks','-C',root,'ls-files','-t','-z'],{encoding:'utf8',timeout:5000,maxBuffer:4*1024*1024})
+    .split('\0').filter(Boolean)
+    .filter(entry=>entry[0]!=='S')
+    .map(entry=>entry.slice(2));
+}
 function trackedFiles(root) {
-  return cp.execFileSync('git',['--no-optional-locks','-C',root,'ls-files','-z'],{encoding:'utf8',timeout:5000,maxBuffer:4*1024*1024}).split('\0').filter(file=>(DOCUMENT.test(file)||['atelier.project.json','repo-access.v1.json','boundary-policy.v1.json','atelier.audience-policy.json'].includes(file)) && !SENSITIVE.test(file) && !/^(atelier-output|\.atelier-local)\//.test(file)).filter(file=>{
+  return trackedGitFiles(root).filter(file=>(DOCUMENT.test(file)||['atelier.project.json','repo-access.v1.json','boundary-policy.v1.json','atelier.audience-policy.json'].includes(file)) && !SENSITIVE.test(file) && !/^(atelier-output|\.atelier-local)\//.test(file)).filter(file=>{
     // Match Atelier's regular-file census. Missing tracked files still fail fingerprinting.
     try { return !fs.lstatSync(path.join(root,file)).isSymbolicLink(); } catch { return true; }
   }).sort();
