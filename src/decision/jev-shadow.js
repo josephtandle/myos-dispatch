@@ -155,7 +155,8 @@ async function attach(pack, query, legacy, opts, tool) {
   const text = String(query ?? '');
   persist(files.ledgerFile, { ts: new Date(now(opts.clock)).toISOString(), surface: pack.state.surface || opts.surface || (tool ? 'PreToolUse' : 'UserPromptSubmit'),
     event: tool ? 'tool' : 'prompt', promptHash: createHash('sha256').update(text).digest('hex'), promptLength: text.length,
-    stage, engine: result.engine, skipped: result.skipped ?? null,
+    stage, engine: result.engine, skipped: result.skipped ?? null, authoritativeFields,
+    agree: Object.values(comparison).filter(row => row.agrees).length, n: Object.keys(comparison).length,
     legacy: Object.fromEntries(Object.entries(comparison).map(([field, row]) => [field, row.legacy])),
     decided: result.answers, latencyMs: result.latencyMs, inputTokens: result.usage?.input_tokens ?? null, model: result.model ?? null,
     ...(env.MYOS_JEV_LOG_TEXT === '1' ? { promptText: text } : {}) }, true);

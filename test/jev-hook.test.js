@@ -73,3 +73,34 @@ test('CLI model metadata and thrown attachments preserve the legacy route', (t) 
   assert.equal(summary.inputTokens, 12);
   assert.deepEqual(Object.keys(summary).sort(), ['stage', 'engine', 'skipped', 'agree', 'n', 'latencyMs', 'inputTokens', 'model'].sort());
 });
+
+test('PreToolUse renders an authoritative Jev label when legacy safety is empty', (t) => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'jev-hook-tool-'));
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  const preload = path.join(home, 'preload.cjs');
+  const clientPath = require.resolve('../src/runtime/jev-client');
+  fs.writeFileSync(preload, `
+    require(${JSON.stringify(clientPath)}).createJevClient = () => ({
+      isConfigured: () => true,
+      ask: async (state, questions) => ({ ok: true, answers: Object.fromEntries(Object.keys(questions)
+        .map(key => [key, { type: 'noul', noul: key === 'browser_control' ? 0.95 : 0.1 }])) }),
+    });
+  `);
+  fs.mkdirSync(path.join(home, 'state'));
+  fs.writeFileSync(path.join(home, 'state/jev-shadow-state.json'), JSON.stringify({
+    stage: 'authoritative', authoritativeFields: ['safety.browser_control'], floors: { 'safety.browser_control': 0.7 },
+  }));
+  const env = { ...process.env, MYOS_HOME_ROOT: home, OPENCLAW_HOME_ROOT: home, MYOS_WORKSPACE_ROOT: home,
+    MYOS_DISPATCH_HOOK_LOG_DIR: path.join(home, 'logs'), MYOS_BACKGROUND_AGENTS_ENABLED: '0', MYOS_AUTO_FANOUT: '0' };
+  delete env.TYPESAFE_API_KEY;
+  delete env.MYOS_JEV_STAGE;
+  const run = enabled => execFileSync(process.execPath, ['--require', preload, hook, '--surface=codex'], {
+    input: JSON.stringify({ hook_event_name: 'PreToolUse', tool_name: 'Bash',
+      tool_input: { command: 'printf hello', description: 'Print greeting' }, cwd: home }),
+    encoding: 'utf8', env: { ...env, MYOS_JEV_ENABLED: enabled },
+  });
+  assert.doesNotMatch(run('0'), /MyOS Dispatch tool safety/);
+  assert.match(run('1'), /\[MyOS Dispatch tool safety\] browser_control/);
+  const entry = JSON.parse(fs.readFileSync(path.join(home, 'logs/jev-shadow.jsonl'), 'utf8'));
+  assert.equal(entry.legacy['safety.browser_control'], false);
+});
