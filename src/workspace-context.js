@@ -251,14 +251,19 @@ function matchFastpaths(query, maxMatches = 3, filePath = FASTPATHS_FILE) {
 
 function matchRecipes(query, options = {}) {
   if (options.recipesFirst === false) return [];
+  const promptWords = String(query || "").trim().split(/\s+/).length;
   const index = loadCapabilityIndex(options);
   return index.capabilities
     .filter((capability) => capability.type === "recipe")
     .map((capability) => {
       const phrase = [capability.phrases, capability.aliases, capability.use_when]
         .flatMap((phrases) => Array.isArray(phrases) ? phrases : [])
-        .filter((phrase) => typeof phrase === "string" && hasFastpathTerm(query, phrase))
+        .filter((phrase) => typeof phrase === "string")
         .map((phrase) => phrase.trim())
+        .filter((phrase) => {
+          const phraseWords = phrase.split(/\s+/).length;
+          return phraseWords >= 2 && promptWords <= phraseWords + 8 && hasFastpathTerm(query, phrase);
+        })
         .sort((a, b) => b.length - a.length)[0];
       return phrase ? {
         capabilityId: capability.id,

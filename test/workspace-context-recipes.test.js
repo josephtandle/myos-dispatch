@@ -63,8 +63,33 @@ test("recipe boundaries match fast path boundaries", () => {
   const plan = resolveDispatchPlan("handoffs", { indexPath });
   assert.notEqual(plan.branch, "recipe");
   assert.equal(plan.fastpathMatches.length, 0);
-  assert.equal(resolveDispatchPlan("handoff!", { indexPath }).branch, "recipe");
+  assert.equal(resolveDispatchPlan("daily handoff!", { indexPath }).branch, "recipe");
   assert.equal(resolveDispatchPlan("daily\t handoff", { indexPath }).branch, "recipe");
+});
+
+test("a workshop alias does not short-circuit a portal redirect request", () => {
+  const workshopIndexPath = path.join(root, "workshop.json");
+  fs.writeFileSync(workshopIndexPath, JSON.stringify({ capabilities: [
+    { id: "recipe:agent/brand-manager/run-workshop", type: "recipe", execution_lane: "recipe_dispatcher",
+      aliases: ["workshop"], source_path: "recipes/workshop.recipe.json" },
+  ] }));
+  const prompt = "redirect workshop session pages to the main portal but keep giveaways live";
+  assert.notEqual(resolveDispatchPlan(prompt, { indexPath: workshopIndexPath }).branch, "recipe");
+  assert.notEqual(resolveDispatchPlan("workshop", { indexPath: workshopIndexPath }).branch, "recipe");
+});
+
+test("a two-word recipe matches short asks but not a mention in a long prompt", () => {
+  const handoffIndexPath = path.join(root, "write-handoff.json");
+  fs.writeFileSync(handoffIndexPath, JSON.stringify({ capabilities: [
+    { id: "recipe:write-handoff", type: "recipe", execution_lane: "recipe_dispatcher",
+      phrases: ["write handoff"], source_path: "recipes/write-handoff.recipe.json" },
+  ] }));
+  const options = { indexPath: handoffIndexPath };
+  assert.equal(resolveDispatchPlan("write handoff for this session", options).branch, "recipe");
+  assert.equal(resolveDispatchPlan("write handoff", options).branch, "recipe");
+  const prompt = "review the portal changes and write handoff notes while keeping all existing giveaways live";
+  assert.equal(prompt.split(/\s+/).length, 14);
+  assert.notEqual(resolveDispatchPlan(prompt, options).branch, "recipe");
 });
 
 test("an index without recipes yields the same plan with recipesFirst disabled", () => {
