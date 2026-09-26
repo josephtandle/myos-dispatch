@@ -1,0 +1,10 @@
+{"prompt": "Explain this report format", "incumbent": {"actionType": "read"}, "truth": {"actionType": "read"}}
+{"prompt": "What is a unit test?", "incumbent": {"actionType": "read"}, "truth": {"actionType": "read"}}
+{"prompt": "Read the README and summarize it", "incumbent": {"actionType": "read"}, "truth": {"actionType": "read"}}
+{"prompt": "List the files in this synthetic repo", "incumbent": {"actionType": "read"}, "truth": {"actionType": "read"}}
+{"prompt": "Compare these two draft designs", "incumbent": {"actionType": "read"}, "truth": null}
+{"prompt": "Create a synthetic report draft", "incumbent": {"actionType": "write"}, "truth": {"actionType": "write"}}
+{"prompt": "Fix the sample parser and verify it", "incumbent": {"actionType": "write"}, "truth": {"actionType": "write"}}
+{"prompt": "Update the example documentation", "incumbent": {"actionType": "write"}, "truth": {"actionType": "write"}}
+{"prompt": "Rename the sample file", "incumbent": {"actionType": "write"}, "truth": {"actionType": "write"}}
+{"prompt": "Build a demo dashboard and test it", "incumbent": {"actionType": "write"}, "truth": {"actionType": "write"}}

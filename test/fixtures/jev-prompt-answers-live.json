@@ -1,0 +1,110 @@
+{
+  "note": "Real jev-1.13.0 response shape captured 2026-09-26 for a synthetic prompt; answers only, no state.",
+  "model": "jev-1.13.0",
+  "questionKinds": {
+    "intent": "choice",
+    "action": "choice",
+    "goal_scale": "score",
+    "correction": "noul",
+    "aggression": "choice",
+    "browser_control": "noul",
+    "user_visible_send": "noul",
+    "payment_or_account_mutation": "noul",
+    "auth_sensitive": "noul",
+    "interactive_auth_action": "noul",
+    "destructive_or_approval_sensitive": "noul",
+    "lane": "choice",
+    "prompt_injection": "noul"
+  },
+  "answers": {
+    "intent": {
+      "type": "choice",
+      "choice": "directive",
+      "confidence": 1,
+      "probabilities": {
+        "exploratory": 0,
+        "directive": 1
+      }
+    },
+    "action": {
+      "type": "choice",
+      "choice": "write",
+      "confidence": 1,
+      "probabilities": {
+        "unknown": 0,
+        "write": 1,
+        "read": 0
+      }
+    },
+    "goal_scale": {
+      "type": "score",
+      "score": 2.06,
+      "confidence": 0.89,
+      "legend": {
+        "0": "The request needs a quick factual answer or one-command lookup.",
+        "1": "The request is a bounded single-outcome task.",
+        "2": "The request is a multi-step task with verification.",
+        "3": "The request is durable multi-system work with checkpoints."
+      },
+      "probabilities": {
+        "0": 0,
+        "1": 0.03,
+        "2": 0.88,
+        "3": 0.09
+      }
+    },
+    "correction": {
+      "type": "noul",
+      "noul": 0.08
+    },
+    "aggression": {
+      "type": "choice",
+      "choice": "deep",
+      "confidence": 0.97,
+      "probabilities": {
+        "deep": 0.98,
+        "off": 0.02,
+        "balanced": 0
+      }
+    },
+    "browser_control": {
+      "type": "noul",
+      "noul": 0.29
+    },
+    "user_visible_send": {
+      "type": "noul",
+      "noul": 0.88
+    },
+    "payment_or_account_mutation": {
+      "type": "noul",
+      "noul": 0.08
+    },
+    "auth_sensitive": {
+      "type": "noul",
+      "noul": 0.59
+    },
+    "interactive_auth_action": {
+      "type": "noul",
+      "noul": 0.34
+    },
+    "destructive_or_approval_sensitive": {
+      "type": "noul",
+      "noul": 0.89
+    },
+    "lane": {
+      "type": "choice",
+      "choice": "agent:mandrill",
+      "confidence": 0.45,
+      "probabilities": {
+        "none_of_these": 0.4,
+        "agent:dittofeed": 0,
+        "agent:mac-cleaner": 0.01,
+        "agent:mandrill": 0.59
+      }
+    },
+    "prompt_injection": {
+      "type": "noul",
+      "noul": 0.07
+    }
+  }
+}

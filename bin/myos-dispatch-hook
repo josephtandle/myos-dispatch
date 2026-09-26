@@ -7,9 +7,13 @@ const os = require("node:os");
 const path = require("node:path");
 const { spawnSync, spawn } = require("node:child_process");
 
+const { createJevClient } = require("../src/runtime/jev-client");
+const { attachJevShadow, attachJevToolSafety } = require("../src/decision/jev-shadow");
+
 const WORKSPACE_ROOT = path.resolve(__dirname, "..");
 const {
   resolveDispatchPlan,
+  collectDispatchSignals,
 } = require(path.join(WORKSPACE_ROOT, "src/workspace-context"));
 const { preferredHomeRoot, resolveLogsRoot } = require(path.join(WORKSPACE_ROOT, "src/myos-compat"));
 const {
@@ -405,6 +409,7 @@ function formatDispatchContext({ surface, hookEventName, targetKind, text, plan,
     parallel.intentHorizon?.enabled
       ? `[Intent Horizon contract] version=${parallel.intentHorizon.version} sweep=required-once candidates=${parallel.intentHorizon.sweep.maxCandidates} auto_apply=${parallel.intentHorizon.sweep.maxAutoApply} causal_depth=${parallel.intentHorizon.sweep.maxCausalDepth}`
       : "",
+    formatJev(plan.jev),
     route.typedEvidence.authoritative ? `Typed evidence authority: ${route.typedEvidence.activeStage}` : "",
     ...formatLaneAssignments(surface, parallel),
   ].filter(Boolean);
@@ -477,6 +482,7 @@ function formatCompactDispatchContext({ surface, plan, autoDispatchedTasks = [] 
     parallel.intentHorizon?.enabled
       ? `[Intent Horizon contract] ${parallel.intentHorizon.version} sweep=required-once candidates=${parallel.intentHorizon.sweep.maxCandidates} auto_apply=${parallel.intentHorizon.sweep.maxAutoApply} depth=${parallel.intentHorizon.sweep.maxCausalDepth}`
       : "",
+    formatJev(plan.jev),
     roles ? `Read-only lanes: ${roles}` : "",
   ];
   if (parallel.mode !== "none" && parallel.nativeTaskCount > 0) {
@@ -520,8 +526,7 @@ function resolveHookPlan(text, options = {}) {
   });
 }
 
-function buildDispatchContext({ surface, hookEventName, targetKind, text, contextMode = "full", autoDispatchedTasks = [], state = null }) {
-  const plan = resolveHookPlan(text, { hookSurface: surface, hookEventName });
+function buildDispatchContext({ surface, hookEventName, targetKind, text, contextMode = "full", autoDispatchedTasks = [], state = null, plan = resolveHookPlan(text, { hookSurface: surface, hookEventName }) }) {
   return {
     context: buildContextForMode({ surface, hookEventName, targetKind, text, plan, contextMode, autoDispatchedTasks, state }),
     route: compactRoute(plan),
@@ -1180,7 +1185,7 @@ function handleUserPromptSubmit(payload, surface, options = {}) {
 
   const sidecarResultsText = collectAndMarkDeliveredResults(sidecarResultsDir, manifestPath);
 
-  const plan = resolveHookPlan(text, { hookSurface: surface, hookEventName: "UserPromptSubmit" });
+  const plan = options.plan || resolveHookPlan(text, { hookSurface: surface, hookEventName: "UserPromptSubmit" });
   const routeObj = compactRoute(plan);
 
   const manifest = loadSidecarManifest(manifestPath);
@@ -1266,6 +1271,17 @@ function handleUserPromptSubmit(payload, surface, options = {}) {
     // byte-identical prompts, so no faithful bridge from this log to the observer was
     // possible and the learning loop had no signal at all. These two fields are what
     // make a repeated route countable.
+    intentType: plan.intentType,
+    actionType: plan.actionType,
+    goalScale: plan.goalScale,
+    goalMode: plan.goalMode,
+    goalConfidence: plan.goalConfidence ?? null,
+    aggression: routeObj.parallelization.aggression,
+    depth: routeObj.parallelization.depth,
+    requiresPlan: Boolean(plan.requiresPlan),
+    requiresApproval: Boolean(plan.requiresApproval),
+    blockedBy: routeObj.blockedBy,
+    ...(plan.jev ? { jev: jevSummary(plan.jev) } : {}),
     capabilityId: routeObj.capabilityId || null,
     branch: routeObj.branch || null,
     intentHorizon: routeObj.parallelization?.intentHorizon || null,
@@ -1295,6 +1311,7 @@ function handlePreToolUse(payload, surface, options = {}) {
     hookEventName: "PreToolUse",
     targetKind: "bash_command",
     text: command,
+    plan: options.plan,
     contextMode: "none",
     state,
   });
@@ -1312,6 +1329,7 @@ function handlePreToolUse(payload, surface, options = {}) {
     inputLength: command.length,
     cwd: safeString(payload.cwd || process.cwd()),
     route: route.route,
+    ...(options.toolSafety?.jev ? { jev: jevSummary(options.toolSafety.jev) } : {}),
     intentHorizon: route.route?.parallelization?.intentHorizon || null,
     intentFidelity: route.route?.parallelization?.intentFidelity || null,
     ...(route.route?.fastpaths ? { fastpaths: route.route.fastpaths } : {}),
@@ -1319,13 +1337,10 @@ function handlePreToolUse(payload, surface, options = {}) {
   const updatedInput = options.rewrite ? buildRtkRewrite(payload) : null;
   // A shell command is not a new user turn. Keep the safety evidence and RTK
   // rewrite, but never inject a task plan, fanout mandate or expansion contract.
-  const safetyReasons = [...new Set([
-    ...(route.route?.blockedBy || []),
-    ...(route.route?.parallelization?.blockedReasons || []),
-  ])].filter((reason) => reason !== "background_agents_disabled");
+  const safetyReasons = [...new Set([...toolSafetyLabels(route.route), ...(options.toolSafety?.labels || [])])];
   route.context = options.contextMode === "none" || safetyReasons.length === 0
     ? ""
-    : `[MyOS Dispatch tool safety] ${safetyReasons.join(", ")}. Respect existing authorization and safety gates.`;
+    : `[MyOS Dispatch tool safety] ${safetyReasons.join(", ")}. Respect existing authorization and safety gates.${options.toolSafety?.jev && !options.toolSafety.jev.skipped ? ` jev=${jevSummary(options.toolSafety.jev).agree}/${jevSummary(options.toolSafety.jev).n}` : ""}`;
   // Route evidence is already logged above. When there is nothing actionable
   // (no rewrite and no context to inject), stay a true no-op so the PreToolUse
   // surface behaves exactly like the bare rewrite hook it replaces.
@@ -1357,7 +1372,54 @@ function handleHookPayload(payload, surface = readSurface(), options) {
   }
 }
 
-function renderRouteFromStdin() {
+function toolSafetyLabels(route) {
+  return [...new Set([...(route?.blockedBy || []), ...(route?.parallelization?.blockedReasons || [])])]
+    .filter((reason) => reason !== "background_agents_disabled");
+}
+
+function jevSummary(jev) {
+  const rows = Object.values(jev.comparison || {});
+  return { stage: jev.stage ?? null, engine: jev.engine || "rules", skipped: jev.skipped ?? null,
+    agree: rows.filter(row => row.agrees).length, n: rows.length, latencyMs: jev.latencyMs ?? 0,
+    inputTokens: jev.usage?.input_tokens ?? null, model: jev.model ?? null };
+}
+
+function formatJev(jev) {
+  if (!jev) return "";
+  if (jev.skipped) return `[Jev] skipped: ${jev.skipped}`;
+  const summary = jevSummary(jev);
+  return `[Jev] stage=${summary.stage} engine=${summary.engine} agree=${summary.agree}/${summary.n} latency=${summary.latencyMs}ms`;
+}
+
+let jevClient;
+async function prepareJev(payload, surface) {
+  const event = readHookEventName(payload);
+  const tool = event === "PreToolUse";
+  const text = tool ? readCommand(payload) : readPromptText(payload);
+  if (!text || (!tool && event !== "UserPromptSubmit") || (!tool && /^h$/i.test(text.trim()))
+    || (tool && readToolName(payload) && readToolName(payload) !== "Bash")) return {};
+  const plan = resolveHookPlan(text, { hookSurface: surface, hookEventName: event });
+  const labels = tool ? toolSafetyLabels(compactRoute(plan)) : [];
+  const fallback = reason => tool ? { plan, toolSafety: { labels, jev: { skipped: reason } } }
+    : { plan: { ...plan, jev: { skipped: reason } } };
+  if (process.env.MYOS_JEV_ENABLED === "0" || readArg("--no-jev") === "1") return fallback("disabled");
+  try {
+    jevClient ||= createJevClient({ timeoutMs: Number(process.env.MYOS_JEV_TIMEOUT_MS) || 1500, maxRetries: 1 });
+    const opts = { env: process.env, client: jevClient, surface };
+    if (tool) {
+      const input = payload.tool_input || payload.toolInput || {};
+      const toolSafety = await attachJevToolSafety(text, input.description || "", { cwd: payload.cwd || process.cwd(), surface }, labels, opts);
+      return { plan, toolSafety: { ...toolSafety, labels: [...new Set([...labels, ...toolSafety.labels])] } };
+    }
+    const signals = jevClient.isConfigured()
+      ? collectDispatchSignals(text, { hookSurface: surface, hookEventName: event }) : {};
+    return { plan: await attachJevShadow(text, plan, signals, opts) };
+  } catch {
+    return fallback("internal_error");
+  }
+}
+
+async function renderRouteFromStdin() {
   // CLI mode for wrappers (e.g. bin/codex): stdin is raw prompt text, output
   // is the plain full route block, ready to prepend to an agent prompt.
   const text = readStdin().trim();
@@ -1367,33 +1429,38 @@ function renderRouteFromStdin() {
     hookEventName: "UserPromptSubmit",
     targetKind: "user_prompt",
     text,
+    plan: (await prepareJev({ prompt: text }, readSurface())).plan,
     contextMode: "full",
   });
   if (context) process.stdout.write(`${context}\n`);
 }
 
-function main() {
+async function main() {
   if (readArg("--render-route") === "1") {
     try {
-      renderRouteFromStdin();
+      await renderRouteFromStdin();
     } catch {
       // Fail open: wrappers must never block on route rendering.
     }
     return;
   }
   const payload = parseJsonInput(readStdin());
-  const output = handleHookPayload(payload);
+  const surface = readSurface();
+  let prepared = {};
+  try { prepared = await prepareJev(payload, surface); } catch {}
+  const output = handleHookPayload(payload, surface, { contextMode: readContextMode(), rewrite: readRewriteEnabled(), ...prepared });
   if (output) {
     process.stdout.write(`${JSON.stringify(output)}\n`);
   }
 }
 
 if (require.main === module) {
-  main();
+  (async () => { await main(); })().catch(() => {});
 }
 
 module.exports = {
   compactRoute,
+  toolSafetyLabels,
   formatDispatchContext,
   handleHookPayload,
   readHookEventName,

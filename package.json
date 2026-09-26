@@ -18,6 +18,7 @@
     "node": ">=20"
   },
   "scripts": {
+    "evaluate-jev": "node scripts/evaluate-jev-shadow.js",
     "test": "MYOS_OAUTH_RECOVERY=0 MYOS_BACKGROUND_BACKPRESSURE_ENABLED=0 node --test test/*.test.js",
     "audit": "node --test test/dispatch-fastpaths-audit.test.js",
     "evaluate-shadow": "node --test test/typed-evidence-shadow-policy.test.js test/typed-evidence-shadow-canary.test.js"
