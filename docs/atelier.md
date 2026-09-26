@@ -19,6 +19,8 @@ The local config is `config/data-sources.json` or the file selected by `MYOS_DAT
 
 Supported input is the single-repository `mnstry.atelier-knowledge-graph@v1` artifact from @mnstry/atelier 0.2.0-alpha.12. Source documents remain canonical. Retrieval returns original paths, SHA-256 digests, selected metadata, and one hop of declared relationships. Private repo boundaries cannot be weakened by node audience labels. Missing/invalid graphs or changed tracked documents fall back to current tracked Markdown and omit stale relationships. Results never claim an exhaustive negative.
 
+Tracked symlinks are omitted from labeling and source snapshots, matching the pinned graph builder's regular-file walk. Their targets are not enrolled or edited. Replacing a link with a regular tracked document changes the manifest and requires a rebuild. A canonical Brand Brain must be a real enrolled source, not an external-link shortcut.
+
 After staging intended source/sidecar additions, run `node bin/myos-atelier-sync.js REPOSITORY` using supported Node 24. It runs the pinned graph builder, checks source stability and graph validity, then atomically writes `.atelier-local/myos-dispatch-snapshot.json`. A failed build removes the freshness receipt and retains the prior snapshot as recovery data. This command refreshes derived state only, without editing Brand Brains or uploading anything. Existing GitNexus and Understand Anything indexes are unchanged. The older snapshot command is a diagnostic building block, not a substitute for synchronization.
 
 ## Audience automation

@@ -43,6 +43,7 @@ function planAudiences(root) {
   const changes=[]; const decisions={};
   for(const file of files) {
     const full=path.join(root,file);
+    if(fs.lstatSync(full).isSymbolicLink()) continue;
     if(!fs.realpathSync(full).startsWith(root+path.sep)) throw new Error('Source escapes repo: '+file);
     if(fs.statSync(full).size>4*1024*1024) throw new Error('Source too large: '+file);
     const text=fs.readFileSync(full,'utf8');
