@@ -21,6 +21,7 @@
     "node": ">=20"
   },
   "scripts": {
+    "test:atelier-access": "npm test --prefix packages/atelier-access",
     "evaluate-jev": "node scripts/evaluate-jev-shadow.js",
     "test": "MYOS_OAUTH_RECOVERY=0 MYOS_BACKGROUND_BACKPRESSURE_ENABLED=0 node --test test/*.test.js",
     "audit": "node --test test/dispatch-fastpaths-audit.test.js",

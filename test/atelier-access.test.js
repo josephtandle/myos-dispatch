@@ -27,6 +27,8 @@ test('a trusted authenticated principal receives only granted knowledge without 
   const options=fixture(t);
   const result=readAuthorizedKnowledge(options);
   assert.equal(result.status,'ok');
+  assert.equal(result.evidenceStatus,'source_reference');
+  assert.equal(result.liveFactAuthority,false);
   assert.equal(result.matches.length,1);
   assert.equal(result.matches[0].summary,'Team brand guidelines');
   assert.equal(JSON.stringify(result).includes(options.root),false);
@@ -51,4 +53,25 @@ test('stale sources are unavailable to external access instead of falling back',
   const options=fixture(t);
   fs.appendFileSync(path.join(options.root,'brain.md'),'\nUpdated');
   assert.deepEqual(readAuthorizedKnowledge(options),{status:'unavailable',matches:[]});
+});
+test('document-only projects require an explicit project grant with no brand authority',t=>{
+  const options=fixture(t);
+  const registry=JSON.parse(fs.readFileSync(options.registryPath,'utf8'));
+  registry.sources.brain.includePaths=['brain.md'];
+  registry.projects.push({id:'operations',brandIds:[],sourceIds:['brain']});
+  fs.writeFileSync(options.registryPath,JSON.stringify(registry));
+  const request={...options,projectId:'operations'};
+  assert.equal(readAuthorizedKnowledge(request).status,'denied');
+  options.policy.grants.push({...options.policy.grants[0],projectId:'operations',brandIds:[]});
+  fs.writeFileSync(options.policyPath,JSON.stringify(options.policy));
+  const result=readAuthorizedKnowledge(request);
+  assert.equal(result.status,'ok');
+  assert.equal(result.brandId,null);
+  assert.equal(result.matches.length,1);
+  assert.match(result.matches[0].citation,/^atelier:\/\/operations\/_project\//);
+  assert.equal(readAuthorizedKnowledge({...request,brandId:'brand'}).status,'denied');
+  assert.equal(readAuthorizedKnowledge({...request,principal:{...options.principal,subject:'bob'}}).status,'denied');
+  options.policy.grants[1].disabled=true;
+  fs.writeFileSync(options.policyPath,JSON.stringify(options.policy));
+  assert.equal(readAuthorizedKnowledge(request).status,'denied');
 });

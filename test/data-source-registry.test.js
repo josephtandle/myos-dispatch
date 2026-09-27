@@ -73,3 +73,11 @@ for (const override of ["none", "/missing/data-sources.json"]) {
       JSON.parse(readFileSync(registry.DEFAULT_CONFIG_FILE, "utf8")));
   });
 }
+
+test("normalization preserves a trusted Atelier source origin", () => {
+  const sourceOrigin = { path: "/tmp/canonical-origin", files: { "brain.md": "a".repeat(64) } };
+  const [source] = require("../src/data-source-registry").getConfiguredDataSources({
+    config: { version: 1, dataSources: [{ id: "atelier", mode: "atelier", path: "/tmp/view", sourceOrigin }] },
+  });
+  assert.deepEqual(source.sourceOrigin, sourceOrigin);
+});

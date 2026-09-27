@@ -6,6 +6,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const cp = require('node:child_process');
 const registry = require('../src/data-source-registry');
+const {createSnapshot,readAtelierSource}=require('../src/atelier-source');
 const hash = data => crypto.createHash('sha256').update(data).digest('hex');
 function fixture(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(),'atelier-source-'));
@@ -29,6 +30,8 @@ test('Atelier registered sources retrieve a relevant node and related source cit
   assert.equal(registry.getDataSource('atelier-demo',{config}).mode,'atelier');
   const result=JSON.parse(registry.readConfiguredTextSource('atelier-demo',12000,{config,query:'launch'}));
   assert.equal(result.status,'fresh');
+  assert.equal(result.evidenceStatus,'source_reference');
+  assert.equal(result.liveFactAuthority,false);
   assert.equal(result.matches[0].id,'demo:launch');
   assert.equal(result.matches[0].sourcePath,fs.realpathSync(path.join(root,'launch.md')));
   assert.ok(result.matches.some(n=>n.id==='demo:brief'));
@@ -137,4 +140,97 @@ test('registry preserves an explicit Atelier path scope',t=>{
   config.dataSources[0].includePaths=['launch.md'];
   const result=JSON.parse(registry.readConfiguredTextSource('atelier-demo',12000,{config}));
   assert.deepEqual(result.matches.map(n=>n.id),['demo:launch']);
+});
+test('sparse checkout omits intentionally absent tracked siblings from the source census',t=>{
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),'atelier-source-sparse-'));
+  t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
+  cp.execFileSync('git',['init','-q',root]);
+  fs.writeFileSync(path.join(root,'atelier.project.json'),JSON.stringify({name:'demo'}));
+  fs.writeFileSync(path.join(root,'visible.md'),'---\nkg:\n  audience: team\n---\n# Visible\n');
+  fs.writeFileSync(path.join(root,'excluded.md'),'---\nkg:\n  audience: team\n---\n# Excluded\n');
+  cp.execFileSync('git',['-C',root,'add','.']);
+  cp.execFileSync('git',['-C',root,'commit','-qm','fixture']);
+  cp.execFileSync('git',['-C',root,'sparse-checkout','set','--no-cone','/*','!/excluded.md']);
+  fs.mkdirSync(path.join(root,'atelier-output')); fs.mkdirSync(path.join(root,'.atelier-local'));
+  const graph={schema:'mnstry.atelier-knowledge-graph@v1',nodes:[{id:'demo:visible',path:'visible.md',title:'Visible',audience:'team',relations:{}}],errors:[]};
+  const graphPath=path.join(root,'atelier-output/knowledge.graph.json');
+  fs.writeFileSync(graphPath,JSON.stringify(graph));
+  const snapshot=createSnapshot(root);
+  assert.deepEqual(Object.keys(snapshot.files).sort(),['atelier.project.json','visible.md']);
+  fs.writeFileSync(path.join(root,'.atelier-local/myos-dispatch-snapshot.json'),JSON.stringify(snapshot));
+  assert.equal(readAtelierSource({path:root,audiences:['team']}).status,'fresh');
+});
+test('missing non-sparse tracked source still fails fingerprinting',t=>{
+  const {root}=fixture(t);
+  fs.unlinkSync(path.join(root,'launch.md'));
+  assert.throws(()=>createSnapshot(root),/source_unavailable/);
+});
+test('trusted source origin permits a fresh read while enrolled bytes remain unchanged',t=>{
+  const {root,config}=fixture(t);
+  const origin=fs.mkdtempSync(path.join(os.tmpdir(),'atelier-origin-'));
+  t.after(()=>fs.rmSync(origin,{recursive:true,force:true}));
+  const bytes=fs.readFileSync(path.join(root,'launch.md'));
+  fs.writeFileSync(path.join(origin,'launch.md'),bytes);
+  config.dataSources[0].sourceOrigin={path:fs.realpathSync(origin),files:{'launch.md':hash(bytes)}};
+  const result=JSON.parse(registry.readConfiguredTextSource('atelier-demo',12000,{config,query:'launch'}));
+  assert.equal(result.status,'fresh');
+  assert.equal(result.matches[0].id,'demo:launch');
+});
+test('trusted source origin denies retrieval when an enrolled file changes or disappears',t=>{
+  const {root,config}=fixture(t);
+  const origin=fs.mkdtempSync(path.join(os.tmpdir(),'atelier-origin-'));
+  t.after(()=>fs.rmSync(origin,{recursive:true,force:true}));
+  const bytes=fs.readFileSync(path.join(root,'launch.md'));
+  fs.writeFileSync(path.join(origin,'launch.md'),bytes);
+  config.dataSources[0].sourceOrigin={path:fs.realpathSync(origin),files:{'launch.md':hash(bytes)}};
+  fs.writeFileSync(path.join(origin,'launch.md'),'changed');
+  let result=JSON.parse(registry.readConfiguredTextSource('atelier-demo',12000,{config,query:'launch'}));
+  assert.deepEqual(result,{status:'unavailable',reason:'origin_changed',matches:[],negativeIsComplete:false});
+  fs.unlinkSync(path.join(origin,'launch.md'));
+  result=JSON.parse(registry.readConfiguredTextSource('atelier-demo',12000,{config,query:'launch'}));
+  assert.deepEqual(result,{status:'unavailable',reason:'origin_changed',matches:[],negativeIsComplete:false});
+});
+test('invalid trusted source origin scopes deny retrieval without leaking outside paths',t=>{
+  const {root,config}=fixture(t);
+  const outside=path.join(path.dirname(root),'atelier-origin-outside.md');
+  fs.writeFileSync(outside,'outside');
+  t.after(()=>fs.rmSync(outside,{force:true}));
+  config.dataSources[0].sourceOrigin={path:fs.realpathSync(root),files:{'../atelier-origin-outside.md':hash(Buffer.from('outside'))}};
+  const result=JSON.parse(registry.readConfiguredTextSource('atelier-demo',12000,{config,query:'launch'}));
+  assert.deepEqual(result,{status:'unavailable',reason:'origin_invalid',matches:[],negativeIsComplete:false});
+});
+test('trusted origin rejects symlinked parent directories, non-string hashes, and oversized files',t=>{
+  const {root,config}=fixture(t);
+  const origin=fs.mkdtempSync(path.join(os.tmpdir(),'atelier-origin-'));
+  const outside=fs.mkdtempSync(path.join(os.tmpdir(),'atelier-origin-outside-'));
+  t.after(()=>{fs.rmSync(origin,{recursive:true,force:true});fs.rmSync(outside,{recursive:true,force:true});});
+  fs.writeFileSync(path.join(outside,'launch.md'),'outside');
+  fs.symlinkSync(outside,path.join(origin,'linked'));
+  config.dataSources[0].sourceOrigin={path:fs.realpathSync(origin),files:{'linked/launch.md':hash(Buffer.from('outside'))}};
+  let result=JSON.parse(registry.readConfiguredTextSource('atelier-demo',12000,{config,query:'launch'}));
+  assert.equal(result.reason,'origin_invalid');
+  config.dataSources[0].sourceOrigin={path:fs.realpathSync(origin),files:{'launch.md':123}};
+  result=JSON.parse(registry.readConfiguredTextSource('atelier-demo',12000,{config,query:'launch'}));
+  assert.equal(result.reason,'origin_invalid');
+  fs.writeFileSync(path.join(origin,'large.md'),Buffer.alloc(50*1024*1024+1));
+  config.dataSources[0].sourceOrigin={path:fs.realpathSync(origin),files:{'large.md':hash(fs.readFileSync(path.join(origin,'large.md')))}};
+  result=JSON.parse(registry.readConfiguredTextSource('atelier-demo',12000,{config,query:'launch'}));
+  assert.equal(result.reason,'origin_invalid');
+});
+test('trusted origin read failures become origin_changed',t=>{
+  const {root,config}=fixture(t);
+  const origin=fs.mkdtempSync(path.join(os.tmpdir(),'atelier-origin-'));
+  t.after(()=>fs.rmSync(origin,{recursive:true,force:true}));
+  const bytes=fs.readFileSync(path.join(root,'launch.md'));
+  const originRoot=fs.realpathSync(origin);
+  const originFile=path.join(originRoot,'launch.md');
+  fs.writeFileSync(originFile,bytes);
+  config.dataSources[0].sourceOrigin={path:originRoot,files:{'launch.md':hash(bytes)}};
+  const readFileSync=fs.readFileSync;
+  t.mock.method(fs,'readFileSync',(file,...args)=>{
+    if (file===originFile) { const error=new Error('permission denied'); error.code='EACCES'; throw error; }
+    return readFileSync(file,...args);
+  });
+  const result=JSON.parse(registry.readConfiguredTextSource('atelier-demo',12000,{config,query:'launch'}));
+  assert.deepEqual(result,{status:'unavailable',reason:'origin_changed',matches:[],negativeIsComplete:false});
 });

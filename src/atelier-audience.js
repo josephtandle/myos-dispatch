@@ -3,6 +3,12 @@ const fs=require('node:fs');
 const path=require('node:path');
 const cp=require('node:child_process');
 const AUDIENCES=new Set(['private','team','public']);
+function trackedGitFiles(root) {
+  return cp.execFileSync('git',['--no-optional-locks','-C',root,'ls-files','-t','-z'],{encoding:'utf8',timeout:5000,maxBuffer:4*1024*1024})
+    .split('\0').filter(Boolean)
+    .filter(entry=>entry[0]!=='S')
+    .map(entry=>entry.slice(2));
+}
 function classifyAudience({path:file='',text='',override,existing,previous}) {
   const giveawayCandidate=/giveaway|free[ -]?download|lead[ -]?magnet|freebie/i.test(file+' '+text);
   if(override!==undefined) {
@@ -39,10 +45,11 @@ function planAudiences(root) {
   if(!policy.overrides || typeof policy.overrides!=='object' || Array.isArray(policy.overrides)) throw new Error('Audience overrides must be a path-to-audience object');
   const statePath=path.join(root,'.atelier-local/audience-decisions.json');
   const previous=fs.existsSync(statePath)?JSON.parse(fs.readFileSync(statePath,'utf8')):{};
-  const files=cp.execFileSync('git',['--no-optional-locks','-C',root,'ls-files','-z'],{encoding:'utf8',timeout:5000}).split('\0').filter(f=>/\.(md|markdown|mdown|kg\.json)$/i.test(f)&&!/(^|\/)\.env/.test(f));
+  const files=trackedGitFiles(root).filter(f=>/\.(md|markdown|mdown|kg\.json)$/i.test(f)&&!/(^|\/)\.env/.test(f));
   const changes=[]; const decisions={};
   for(const file of files) {
     const full=path.join(root,file);
+    if(fs.lstatSync(full).isSymbolicLink()) continue;
     if(!fs.realpathSync(full).startsWith(root+path.sep)) throw new Error('Source escapes repo: '+file);
     if(fs.statSync(full).size>4*1024*1024) throw new Error('Source too large: '+file);
     const text=fs.readFileSync(full,'utf8');

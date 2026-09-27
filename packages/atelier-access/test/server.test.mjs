@@ -1,0 +1,97 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {once} from 'node:events';
+import {createAccessServer} from '../server.mjs';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import cp from 'node:child_process';
+import {generateKeyPair,SignJWT} from 'jose';
+import {Client} from '@modelcontextprotocol/sdk/client/index.js';
+import {StreamableHTTPClientTransport} from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import source from '../../../src/atelier-source.js';
+const config={enabled:true,issuer:'https://identity.example',resource:'https://atelier.example/mcp',jwksUri:'https://identity.example/jwks',registryPath:'/unused/registry',policyPath:'/unused/policy'};
+test('unauthenticated MCP requests receive a discoverable OAuth challenge',async t=>{
+  const server=createAccessServer(config);
+  server.listen(0,'127.0.0.1');await once(server,'listening');
+  t.after(()=>{server.closeAllConnections();server.close();});
+  const base='http://127.0.0.1:'+server.address().port;
+  const response=await fetch(base+'/mcp',{method:'POST',headers:{'content-type':'application/json'},body:'{}'});
+  assert.equal(response.status,401);
+  assert.ok(response.headers.get('www-authenticate').includes('resource_metadata="https://atelier.example/.well-known/oauth-protected-resource/mcp"'));
+  const metadata=await (await fetch(base+'/.well-known/oauth-protected-resource/mcp')).json();
+  assert.equal(metadata.resource,config.resource);
+  assert.deepEqual(metadata.authorization_servers,[config.issuer]);
+});
+test('real HTTP and MCP clients enforce identity, project, revocation and freshness',async t=>{
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),'atelier-http-'));
+  t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
+  cp.execFileSync('git',['init','-q',root]);
+  fs.writeFileSync(path.join(root,'brain.md'),'---\nkg:\n  audience: team\n---\n# Brand\nTeam brand guidelines');
+  cp.execFileSync('git',['-C',root,'add','brain.md']);
+  fs.mkdirSync(path.join(root,'atelier-output'));fs.mkdirSync(path.join(root,'.atelier-local'));
+  fs.writeFileSync(path.join(root,'atelier-output/knowledge.graph.json'),JSON.stringify({schema:'mnstry.atelier-knowledge-graph@v1',nodes:[{id:'brand:brain',path:'brain.md',title:'Brand',summary:'Team brand guidelines',audience:'team',relations:{}}],errors:[]}));
+  for(const directory of ['allowed','other']) {
+    fs.mkdirSync(path.join(root,directory));
+    fs.writeFileSync(path.join(root,directory,'note.md'),'---\nkg:\n  audience: team\n---\n# '+directory+'\n'+directory+' project content');
+    cp.execFileSync('git',['-C',root,'add',directory+'/note.md']);
+  }
+  const graphPath=path.join(root,'atelier-output/knowledge.graph.json');
+  const graph=JSON.parse(fs.readFileSync(graphPath,'utf8'));
+  graph.nodes.push(...['allowed','other'].map(directory=>({id:directory,path:directory+'/note.md',title:directory,summary:directory+' project content',audience:'team',relations:{}})));
+  fs.writeFileSync(graphPath,JSON.stringify(graph));
+  fs.writeFileSync(path.join(root,'.atelier-local/myos-dispatch-snapshot.json'),JSON.stringify(source.createSnapshot(root)));
+  const registryPath=path.join(root,'portfolio.json'),policyPath=path.join(root,'grants.json');
+  fs.writeFileSync(registryPath,JSON.stringify({schema:'myos.atelier-portfolio@v1',sources:{brain:{path:root},project:{path:root,includePaths:['allowed/']}},brands:[{id:'brand',brain:{sourceId:'brain',path:'brain.md'}}],projects:[{id:'demo',brandIds:['brand'],sourceIds:['project']}]}));
+  const policy={schema:'myos.atelier-grants@v1',grants:[{issuer:config.issuer,subject:'alice',projectId:'demo',brandIds:['brand'],audiences:['team']}]};
+  fs.writeFileSync(policyPath,JSON.stringify(policy));
+  const {publicKey,privateKey}=await generateKeyPair('RS256');
+  const token=await new SignJWT({scope:'atelier:read'}).setProtectedHeader({alg:'RS256'}).setIssuer(config.issuer).setSubject('alice').setAudience(config.resource).setExpirationTime('5m').sign(privateKey);
+  const audit=[];
+  const server=createAccessServer({...config,registryPath,policyPath},{key:publicKey,audit:event=>audit.push(event)});
+  server.listen(0,'127.0.0.1');await once(server,'listening');
+  t.after(()=>{server.closeAllConnections();server.close();});
+  const base='http://127.0.0.1:'+server.address().port;
+  const headers={authorization:'Bearer '+token,'content-type':'application/json'};
+  const post=body=>fetch(base+'/api/knowledge',{method:'POST',headers,body:JSON.stringify(body)});
+  let response=await post({projectId:'demo',query:'brand'});
+  assert.equal(response.status,200);
+  const result=await response.json();
+  assert.equal(result.matches[0].summary,'Team brand guidelines');
+  assert.equal(JSON.stringify(result).includes(root),false);
+  assert.equal((await post({projectId:'other'})).status,403);
+  assert.equal((await (await post({projectId:'demo',query:'other'})).json()).matches.length,0);
+  assert.equal((await (await post({projectId:'demo',query:'allowed'})).json()).matches.length,1);
+  assert.equal((await post({projectId:'demo',principal:{subject:'other'}})).status,400);
+  assert.equal((await fetch(base+'/api/knowledge',{method:'POST',headers:{...headers,origin:'https://evil.example'},body:'{}'})).status,403);
+  const client=new Client({name:'atelier-test',version:'1.0.0'});
+  const transport=new StreamableHTTPClientTransport(new URL(base+'/mcp'),{requestInit:{headers}});
+  await client.connect(transport);
+  t.after(()=>client.close());
+  const listing=await client.listTools();
+  assert.equal(listing.tools.length,1);
+  assert.equal(listing.tools[0].annotations.readOnlyHint,true);
+  assert.deepEqual(listing.tools[0]._meta.securitySchemes,[{type:'oauth2',scopes:['atelier:read']}]);
+  const called=await client.callTool({name:'search_knowledge',arguments:{projectId:'demo',query:'brand'}});
+  assert.equal(called.isError,false);
+  assert.equal(called.structuredContent.matches[0].summary,'Team brand guidelines');
+  const excluded=await client.callTool({name:'search_knowledge',arguments:{projectId:'demo',query:'other'}});
+  assert.equal(excluded.structuredContent.matches.length,0);
+  policy.grants=[];fs.writeFileSync(policyPath,JSON.stringify(policy));
+  assert.equal((await post({projectId:'demo'})).status,403);
+  assert.equal((await client.callTool({name:'search_knowledge',arguments:{projectId:'demo'}})).isError,true);
+  assert.equal(JSON.stringify(audit).includes(token),false);
+  assert.equal(JSON.stringify(audit).includes('brand guidelines'),false);
+  policy.grants=[{issuer:config.issuer,subject:'alice',projectId:'demo',brandIds:['brand'],audiences:['team']}];
+  fs.writeFileSync(policyPath,JSON.stringify(policy));
+  fs.appendFileSync(path.join(root,'brain.md'),'\nChanged');
+  assert.equal((await post({projectId:'demo'})).status,503);
+});
+test('external access is opt-in',()=>{
+  assert.throws(()=>createAccessServer({...config,enabled:false}),/access_disabled/);
+});
+test('resource identity must match the served MCP endpoint',()=>{
+  for(const resource of ['https://atelier.example','https://atelier.example/tenant/atelier','https://atelier.example/mcp/']) {
+    assert.throws(()=>createAccessServer({...config,resource}),/resource_endpoint_mismatch/);
+  }
+});

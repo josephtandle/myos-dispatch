@@ -1,6 +1,7 @@
 const test=require('node:test');
 const assert=require('node:assert/strict');
 const {classifyAudience:classify,updateMarkdown}=require('../src/atelier-audience');
+const {planAudiences}=require('../src/atelier-audience');
 test('ordinary project material defaults to team',()=>assert.equal(classify({path:'notes/plan.md',text:'Launch plan'}).audience,'team'));
 test('specific sensitive material is private',()=>assert.equal(classify({path:'personnel/payroll.md',text:'Staff amounts'}).audience,'private'));
 test('giveaway is a candidate and stays team automatically',()=>assert.deepEqual(classify({path:'giveaways/ebook.md'}),{audience:'team',reason:'team-default',giveawayCandidate:true}));
@@ -29,4 +30,19 @@ test('policy without overrides is accepted and invalid override shapes are rejec
   assert.equal(planAudiences(root).decisions['README.md'].audience,'team');
   fs.writeFileSync(path.join(root,'atelier.audience-policy.json'),JSON.stringify({overrides:[]}));
   assert.throws(()=>planAudiences(root),/Audience overrides/);
+});
+test('audience planning ignores intentionally absent sparse-checkout siblings',t=>{
+  const fs=require('node:fs'),os=require('node:os'),path=require('node:path'),cp=require('node:child_process');
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),'atelier-audience-sparse-'));
+  t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
+  cp.execFileSync('git',['init','-q',root]);
+  fs.writeFileSync(path.join(root,'atelier.project.json'),JSON.stringify({name:'demo'}));
+  fs.writeFileSync(path.join(root,'visible.md'),'# Visible\n');
+  fs.writeFileSync(path.join(root,'excluded.md'),'# Excluded\n');
+  cp.execFileSync('git',['-C',root,'add','.']);
+  cp.execFileSync('git',['-C',root,'commit','-qm','fixture']);
+  cp.execFileSync('git',['-C',root,'sparse-checkout','set','--no-cone','/*','!/excluded.md']);
+  const plan=planAudiences(root);
+  assert.deepEqual(Object.keys(plan.decisions),['visible.md']);
+  assert.equal(plan.decisions['visible.md'].audience,'team');
 });
