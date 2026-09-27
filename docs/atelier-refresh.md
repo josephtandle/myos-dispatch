@@ -9,10 +9,10 @@ Minimal shape:
 ```json
 {
   "schema": "myos.atelier-refresh@v1",
-  "owner": "joe",
+  "owner": "example-owner",
   "taskClass": "maintenance",
   "maxRefreshes": 5,
-  "statePath": "/Users/myos/.myos/state/atelier-refresh.json",
+  "statePath": "/absolute/owner-state/atelier-refresh.json",
   "retry": { "maxAttempts": 3, "baseDelayMs": 60000, "maxDelayMs": 3600000 },
   "sources": [
     {
