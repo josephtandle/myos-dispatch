@@ -11,6 +11,18 @@ const { syncAtelier } = require('../src/atelier-sync');
 const { readAtelierSource } = require('../src/atelier-source');
 const { runRefresh, validateConfig } = require('../src/atelier-refresh');
 
+test('actual CLI accepts the documented absolute config flag and returns a fresh report', t => {
+  const f = fixture(t);
+  const file = path.join(f.root, 'runner-config.json');
+  fs.writeFileSync(file, JSON.stringify(config(f)));
+  const result = cp.spawnSync(process.execPath, [path.join(__dirname, '../bin/myos-atelier-refresh.js'), '--config', file], { encoding: 'utf8' });
+  assert.equal(result.status, 0, result.stderr);
+  const report = JSON.parse(result.stdout);
+  assert.equal(report.status, 'complete');
+  assert.equal(report.sources.length, 2);
+  assert.ok(report.sources.every(source => source.status === 'skipped'));
+});
+
 test('missing nested source path still excludes state descendants in their original order', t => {
   const f = fixture(t);
   const missing = path.join(f.root, 'not-created', 'source');

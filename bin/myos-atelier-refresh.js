@@ -12,7 +12,7 @@ if (process.versions.node.split('.')[0] !== '24') {
   const { DEFAULT_CONFIG_PATH, readConfig, runRefresh } = require('../src/atelier-refresh');
   const args = process.argv.slice(2);
   let configPath = DEFAULT_CONFIG_PATH;
-  for (let index = 0; index < args.length; index += 1) {
+  for (let index = 0; index < args.length; index += 2) {
     if (args[index] !== '--config' || !args[index + 1] || index + 2 !== args.length) {
       console.error('Usage: myos-atelier-refresh.js [--config ABSOLUTE_CONFIG_PATH]');
       process.exitCode = 2;
