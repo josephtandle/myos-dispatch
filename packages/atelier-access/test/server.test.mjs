@@ -23,7 +23,8 @@ test('unauthenticated MCP requests receive a discoverable OAuth challenge',async
   assert.equal(metadata.resource,config.resource);
   assert.deepEqual(metadata.authorization_servers,[config.issuer]);
 });
-test('real HTTP and MCP clients enforce identity, project, revocation and freshness',async t=>{
+for(const authMode of ['bearer','cloudflare-access'])test(`${authMode}: real HTTP and MCP clients enforce identity, project, revocation and freshness`,async t=>{
+  const deployment=authMode==='bearer'?config:{...config,authMode,issuer:'https://example.cloudflareaccess.com',jwksUri:'https://example.cloudflareaccess.com/cdn-cgi/access/certs',applicationAudience:'a'.repeat(64),allowedEmails:['alice@example.com']};
   const root=fs.mkdtempSync(path.join(os.tmpdir(),'atelier-http-'));
   t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
   cp.execFileSync('git',['init','-q',root]);
@@ -43,16 +44,16 @@ test('real HTTP and MCP clients enforce identity, project, revocation and freshn
   fs.writeFileSync(path.join(root,'.atelier-local/myos-dispatch-snapshot.json'),JSON.stringify(source.createSnapshot(root)));
   const registryPath=path.join(root,'portfolio.json'),policyPath=path.join(root,'grants.json');
   fs.writeFileSync(registryPath,JSON.stringify({schema:'myos.atelier-portfolio@v1',sources:{brain:{path:root},project:{path:root,includePaths:['allowed/']}},brands:[{id:'brand',brain:{sourceId:'brain',path:'brain.md'}}],projects:[{id:'demo',brandIds:['brand'],sourceIds:['project']}]}));
-  const policy={schema:'myos.atelier-grants@v1',grants:[{issuer:config.issuer,subject:'alice',projectId:'demo',brandIds:['brand'],audiences:['team']}]};
+  const policy={schema:'myos.atelier-grants@v1',grants:[{issuer:deployment.issuer,subject:'alice',projectId:'demo',brandIds:['brand'],audiences:['team']}]};
   fs.writeFileSync(policyPath,JSON.stringify(policy));
   const {publicKey,privateKey}=await generateKeyPair('RS256');
-  const token=await new SignJWT({scope:'atelier:read'}).setProtectedHeader({alg:'RS256'}).setIssuer(config.issuer).setSubject('alice').setAudience(config.resource).setExpirationTime('5m').sign(privateKey);
+  const token=await new SignJWT({scope:'atelier:read',type:'app',email:'alice@example.com'}).setProtectedHeader({alg:'RS256'}).setIssuer(deployment.issuer).setSubject('alice').setAudience(deployment.applicationAudience||config.resource).setExpirationTime('5m').sign(privateKey);
   const audit=[];
-  const server=createAccessServer({...config,registryPath,policyPath},{key:publicKey,audit:event=>audit.push(event)});
+  const server=createAccessServer({...deployment,registryPath,policyPath},{key:publicKey,audit:event=>audit.push(event)});
   server.listen(0,'127.0.0.1');await once(server,'listening');
   t.after(()=>{server.closeAllConnections();server.close();});
   const base='http://127.0.0.1:'+server.address().port;
-  const headers={authorization:'Bearer '+token,'content-type':'application/json'};
+  const headers=authMode==='bearer'?{authorization:'Bearer '+token,'content-type':'application/json'}:{authorization:'Bearer oauth:opaque','cf-access-jwt-assertion':token,'content-type':'application/json'};
   const post=body=>fetch(base+'/api/knowledge',{method:'POST',headers,body:JSON.stringify(body)});
   let response=await post({projectId:'demo',query:'brand'});
   assert.equal(response.status,200);
@@ -71,7 +72,7 @@ test('real HTTP and MCP clients enforce identity, project, revocation and freshn
   const listing=await client.listTools();
   assert.equal(listing.tools.length,1);
   assert.equal(listing.tools[0].annotations.readOnlyHint,true);
-  assert.deepEqual(listing.tools[0]._meta.securitySchemes,[{type:'oauth2',scopes:['atelier:read']}]);
+  assert.deepEqual(listing.tools[0]._meta.securitySchemes,[{type:'oauth2',scopes:authMode==='bearer'?['atelier:read']:[]}]);
   const called=await client.callTool({name:'search_knowledge',arguments:{projectId:'demo',query:'brand'}});
   assert.equal(called.isError,false);
   assert.equal(called.structuredContent.matches[0].summary,'Team brand guidelines');
@@ -82,7 +83,7 @@ test('real HTTP and MCP clients enforce identity, project, revocation and freshn
   assert.equal((await client.callTool({name:'search_knowledge',arguments:{projectId:'demo'}})).isError,true);
   assert.equal(JSON.stringify(audit).includes(token),false);
   assert.equal(JSON.stringify(audit).includes('brand guidelines'),false);
-  policy.grants=[{issuer:config.issuer,subject:'alice',projectId:'demo',brandIds:['brand'],audiences:['team']}];
+  policy.grants=[{issuer:deployment.issuer,subject:'alice',projectId:'demo',brandIds:['brand'],audiences:['team']}];
   fs.writeFileSync(policyPath,JSON.stringify(policy));
   fs.appendFileSync(path.join(root,'brain.md'),'\nChanged');
   assert.equal((await post({projectId:'demo'})).status,503);

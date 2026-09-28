@@ -2,6 +2,7 @@
 import fs from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { importJWK } from 'jose';
+import { createTokenVerifier } from './auth.mjs';
 
 const MAX_BODY = 256 * 1024;
 function strictUrl(value) {
@@ -49,9 +50,11 @@ function endpoint(value, origin) {
 }
 
 async function providerChecks(config, report, fetchImpl) {
-  const issuer = strictUrl(config.issuer);
+  const cloudflare=config.authMode==='cloudflare-access';
+  const authorizationIssuer=config.issuer;
+  const issuer = strictUrl(authorizationIssuer);
   const suffix = issuer.pathname === '/' ? '' : issuer.pathname.replace(/\/$/, '');
-  const candidates = [new URL(`${suffix}/.well-known/openid-configuration`, issuer.origin), new URL(`/.well-known/oauth-authorization-server${suffix}`, issuer.origin)];
+  const candidates = cloudflare?[new URL('/.well-known/oauth-authorization-server',new URL(config.resource).origin)]:[new URL(`${suffix}/.well-known/openid-configuration`, issuer.origin), new URL(`/.well-known/oauth-authorization-server${suffix}`, issuer.origin)];
   let metadata = null;
   for (const candidate of candidates) {
     metadata = await json(fetchImpl, candidate, report, 'metadata.unavailable', false);
@@ -59,7 +62,7 @@ async function providerChecks(config, report, fetchImpl) {
   }
   if (!metadata) code(report, 'metadata.unavailable');
   if (metadata) {
-    const valid = metadata.issuer === config.issuer && metadata.jwks_uri === config.jwksUri &&
+    const valid = metadata.issuer === authorizationIssuer && (cloudflare||metadata.jwks_uri === config.jwksUri) &&
       Array.isArray(metadata.response_types_supported) && metadata.response_types_supported.includes('code') &&
       (!metadata.grant_types_supported || (Array.isArray(metadata.grant_types_supported) && metadata.grant_types_supported.includes('authorization_code'))) &&
       Array.isArray(metadata.code_challenge_methods_supported) && metadata.code_challenge_methods_supported.includes('S256') &&
@@ -77,13 +80,14 @@ async function providerChecks(config, report, fetchImpl) {
   const resource = strictUrl(config.resource);
   if (!resource) { code(report, 'config.resource_url'); return; }
   const resourceMetadata = await json(fetchImpl, new URL('/.well-known/oauth-protected-resource/mcp', resource.origin), report, 'resource_metadata.unavailable');
-  if (resourceMetadata && resourceMetadata.resource === config.resource && Array.isArray(resourceMetadata.authorization_servers) && resourceMetadata.authorization_servers.includes(config.issuer)) report.checks.resourceMetadata = true;
+  if (resourceMetadata && resourceMetadata.resource === config.resource && Array.isArray(resourceMetadata.authorization_servers) && resourceMetadata.authorization_servers.includes(authorizationIssuer)) report.checks.resourceMetadata = true;
   else if (resourceMetadata) code(report, 'resource_metadata.contract');
 }
 
 export async function inspectConfig(config, { fetchImpl = globalThis.fetch } = {}) {
   const report = { enabled: config?.enabled === true, ready: false, errors: [], checks: { localFiles: false, oauthMetadata: false, jwks: false, resourceMetadata: false }, clientRegistrationRequired: true, grantCount: 0, deploymentVerified: false, loginVerified: false };
   for (const [name, value] of [['issuer', config?.issuer], ['resource', config?.resource], ['jwksUri', config?.jwksUri]]) if (!strictUrl(value)) code(report, urlError(name, value));
+  if(config?.authMode!==undefined){try{createTokenVerifier(config);}catch{code(report,'config.auth_mode_contract');}}
   if (config?.resource !== undefined && !strictUrl(config.resource)) code(report, 'config.resource_https');
   try { if (config?.resource !== undefined && strictUrl(config.resource)?.pathname !== '/mcp') code(report, 'config.resource_path'); } catch { code(report, 'config.resource_url'); }
   if (!report.enabled && !config?.registryPath && !config?.policyPath) return report;

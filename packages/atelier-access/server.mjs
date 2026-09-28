@@ -19,10 +19,11 @@ export function createAccessServer(config,{key,audit=()=>{}}={}) {
   if(config.enabled!==true)throw new Error('access_disabled');
   const verify=createTokenVerifier(config,{key});
   const resource=new URL(config.resource);
+  const cloudflare=config.authMode==='cloudflare-access';
   if(resource.pathname!=='/mcp')throw new Error('resource_endpoint_mismatch');
   const metadataPath='/.well-known/oauth-protected-resource'+(resource.pathname==='/'?'':resource.pathname);
   const metadataUrl=resource.origin+metadataPath;
-  const challenge=`Bearer resource_metadata="${metadataUrl}", scope="atelier:read"`;
+  const challenge=`Bearer resource_metadata="${metadataUrl}"${cloudflare?'':', scope="atelier:read"'}`;
   let active=0;
   const server=http.createServer({maxHeaderSize:20000,requestTimeout:10000,headersTimeout:10000},async(req,res)=>{
     const localHost='127.0.0.1:'+server.address().port;
@@ -32,11 +33,15 @@ export function createAccessServer(config,{key,audit=()=>{}}={}) {
     try {
       const route=new URL(req.url,'http://localhost').pathname;
       if(req.method==='GET'&&route===metadataPath){
-        send(res,200,{resource:config.resource,authorization_servers:[config.issuer],scopes_supported:['atelier:read'],bearer_methods_supported:['header']});return;
+        send(res,200,{resource:config.resource,authorization_servers:[config.issuer],scopes_supported:cloudflare?[]:['atelier:read'],bearer_methods_supported:['header']});return;
       }
-      if(!['/mcp','/api/knowledge'].includes(route)){send(res,404,{error:'not_found'});return;}
+      if(!['/mcp','/api/knowledge',...(cloudflare?['/api/identity']:[])].includes(route)){send(res,404,{error:'not_found'});return;}
       let principal;
-      try{principal=await verify(req.headers.authorization);}catch{audit({taskClass,event:'authentication_denied'});send(res,401,{error:'authentication_required'},{'WWW-Authenticate':route==='/mcp'?challenge:'Bearer scope="atelier:read"'});return;}
+      try{principal=await verify(req.headers.authorization,req.headers['cf-access-jwt-assertion']);}catch{audit({taskClass,event:'authentication_denied'});send(res,401,{error:'authentication_required'},{'WWW-Authenticate':challenge});return;}
+      if(route==='/api/identity'){
+        if(req.method!=='GET'){send(res,405,{error:'method_not_allowed'},{Allow:'GET'});return;}
+        send(res,200,principal);return;
+      }
       if(req.method!=='POST'){send(res,405,{error:'method_not_allowed'},{Allow:'POST'});return;}
       let body;
       try{body=await readBody(req);}catch{send(res,400,{error:'invalid_request'});return;}
@@ -52,7 +57,7 @@ export function createAccessServer(config,{key,audit=()=>{}}={}) {
       mcp.registerTool('search_knowledge',{
         title:'Search permitted project knowledge',description:'Read current knowledge for one explicit project and optional brand. Does not change sources.',inputSchema:schema.shape,
         annotations:{readOnlyHint:true,destructiveHint:false,openWorldHint:false},
-        _meta:{securitySchemes:[{type:'oauth2',scopes:['atelier:read']}]}
+        _meta:{securitySchemes:[{type:'oauth2',scopes:cloudflare?[]:['atelier:read']}]}
       },async input=>{const result=query(input);return {content:[{type:'text',text:JSON.stringify(result)}],structuredContent:result,isError:result.status!=='ok'};});
       const transport=new StreamableHTTPServerTransport({sessionIdGenerator:undefined,enableJsonResponse:true});
       res.once('close',()=>{void transport.close();void mcp.close();});

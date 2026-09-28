@@ -17,6 +17,24 @@ function fixture() {
   return { root, registryPath, policyPath };
 }
 
+test('Cloudflare doctor separates edge OAuth metadata from origin assertion signing keys',async()=>{
+  const f=fixture();
+  const config={enabled:true,authMode:'cloudflare-access',issuer:'https://example.cloudflareaccess.com',jwksUri:'https://example.cloudflareaccess.com/cdn-cgi/access/certs',applicationAudience:'a'.repeat(64),allowedEmails:['alice@example.com'],resource:'https://team.example/mcp',registryPath:f.registryPath,policyPath:f.policyPath};
+  const publicJwk=generateKeyPairSync('rsa',{modulusLength:2048}).publicKey.export({format:'jwk'});
+  const fetchImpl=async url=>{
+    if(String(url)==='https://team.example/.well-known/oauth-authorization-server')return Response.json({issuer:config.issuer,authorization_endpoint:config.issuer+'/cdn-cgi/access/oauth/authorization',token_endpoint:config.issuer+'/cdn-cgi/access/oauth/token',response_types_supported:['code'],code_challenge_methods_supported:['S256']});
+    if(String(url)===config.jwksUri)return Response.json({keys:[{...publicJwk,alg:'RS256'}]});
+    if(String(url)==='https://team.example/.well-known/oauth-protected-resource/mcp')return Response.json({resource:config.resource,authorization_servers:[config.issuer]});
+    return new Response('',{status:404});
+  };
+  const report=await inspectConfig(config,{fetchImpl});
+  assert.equal(report.checks.oauthMetadata,true);
+  assert.equal(report.checks.jwks,true);
+  assert.equal(report.checks.resourceMetadata,true);
+  assert.equal(report.ready,false);
+  assert.equal(report.loginVerified,false);
+});
+
 test('disabled config is safe and never claims readiness', async () => {
   const report = await inspectConfig({ enabled: false });
   assert.equal(report.enabled, false);
