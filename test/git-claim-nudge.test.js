@@ -130,13 +130,14 @@ test("default workspace store, safe state names and pruning", t => {
   assert.equal(fs.readdirSync(f.options.stateDir).length, 1);
 });
 
-test("200 nudge calls average under 10 ms", t => {
+test("200 nudge calls stay inside the 50 ms hook budget", t => {
   const f = fixture(t);
   const start = performance.now();
   for (let i = 0; i < 200; i++) assert.ok(claimNudge({ ...f.options, sessionId: `latency-${i}` }));
   const average = (performance.now() - start) / 200;
   t.diagnostic(`claimNudge average: ${average.toFixed(3)} ms over 200 calls`);
-  assert.ok(average < 10, `average ${average} ms`);
+  // Budget is the hook's 50 ms ceiling; ~1 ms idle, but the full suite runs files in parallel.
+  assert.ok(average < 50, `average ${average} ms`);
 });
 
 test("PreToolUse adds context only, respects none, and leaves git status alone", t => {
