@@ -6,6 +6,12 @@ const path = require("node:path");
 
 const WRITE_VERBS = new Set(["commit", "merge", "push", "cherry-pick", "revert", "am", "rebase", "pull"]);
 
+// The shell expands these before git runs; the hook sees them literally.
+function expandHome(dir, env = process.env) {
+  const home = env.HOME || os.homedir();
+  return dir.replace(/^~(?=$|\/)/, home).replace(/^\$(?:HOME|\{HOME\})(?=$|\/)/, home);
+}
+
 function gitWriteTarget(command) {
   if (typeof command !== "string") return null;
   const tokens = command.match(/&&|\|\||[;|]|(?:"[^"\\]*(?:\\.[^"\\]*)*"|'[^']*'|\\.|[^\s;&|"'\\])+/g) || [];
@@ -18,7 +24,8 @@ function gitWriteTarget(command) {
       continue;
     }
     if (words[0] === "cd" && words.length === 2 && token === "&&") {
-      dir = path.isAbsolute(words[1]) ? words[1] : path.join(dir, words[1]);
+      const next = expandHome(words[1]);
+      dir = path.isAbsolute(next) ? next : path.join(dir, next);
     } else if (words[0] === "git") {
       let gitDir = dir;
       let i = 1;
@@ -27,7 +34,7 @@ function gitWriteTarget(command) {
         if (["-C", "-c", "--git-dir", "--work-tree", "--namespace", "--config-env"].includes(option)) {
           const value = words[++i];
           if (value === undefined) return null;
-          if (option === "-C") gitDir = path.isAbsolute(value) ? value : path.join(gitDir, value);
+          if (option === "-C") gitDir = path.isAbsolute(expandHome(value)) ? expandHome(value) : path.join(gitDir, value);
         } else if (option.startsWith("-C")) {
           const value = option.slice(2);
           gitDir = path.isAbsolute(value) ? value : path.join(gitDir, value);
