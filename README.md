@@ -408,4 +408,4 @@ with the smoke test above.
 
 ## License
 
-See [LICENSE](./LICENSE).
+All Sorted Personal Use License: use it for yourself, never sell or redistribute it. See [LICENSE](./LICENSE).
