@@ -8,6 +8,7 @@ const path = require("node:path");
 const { spawnSync, spawn } = require("node:child_process");
 
 const { createJevClient } = require("../src/runtime/jev-client");
+const { claimNudge: gitClaimNudge } = require("../src/git-claim-nudge");
 const { attachJevShadow, attachJevToolSafety } = require("../src/decision/jev-shadow");
 
 const { buildPromptPack, buildToolPack } = require("../src/decision/jev-packs");
@@ -1347,6 +1348,12 @@ function handlePreToolUse(payload, surface, options = {}) {
   // Route evidence is already logged above. When there is nothing actionable
   // (no rewrite and no context to inject), stay a true no-op so the PreToolUse
   // surface behaves exactly like the bare rewrite hook it replaces.
+  try {
+    if (options.contextMode !== "none") {
+      const nudge = gitClaimNudge({ command, cwd: safeString(payload.cwd || process.cwd()), sessionId: rawSessionId, stateDir: path.join(preferredHomeRoot(), "state", "git-claim-nudge") });
+      if (nudge) route.context = route.context ? `${route.context}\n${nudge}` : nudge;
+    }
+  } catch {}
   if (!updatedInput && !route.context) return null;
   return outputHookContext("PreToolUse", route.context, {
     ...(updatedInput ? { updatedInput } : {}),
