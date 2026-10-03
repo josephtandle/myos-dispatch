@@ -52,6 +52,14 @@ test("gitWriteTarget recognizes writes and ignores read-only commands and argume
     assert.equal(gitWriteTarget(command).verb, "tag");
 });
 
+test("gitWriteTarget expands ~ and $HOME the way the shell will", () => {
+  const home = process.env.HOME || require("node:os").homedir();
+  assert.deepEqual(gitWriteTarget("git -C ~/repo commit -m x"), { verb: "commit", dir: path.join(home, "repo") });
+  assert.deepEqual(gitWriteTarget("cd ~/repo && git push"), { verb: "push", dir: path.join(home, "repo") });
+  assert.deepEqual(gitWriteTarget("cd $HOME/repo && git merge x"), { verb: "merge", dir: path.join(home, "repo") });
+  assert.deepEqual(gitWriteTarget("git -C ~ commit"), { verb: "commit", dir: home });
+});
+
 test("findRepoTop resolves primary repositories and linked worktrees", t => {
   const f = fixture(t);
   const nested = path.join(f.repo, "nested", "directory");
